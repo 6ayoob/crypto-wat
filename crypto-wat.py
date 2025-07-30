@@ -1,6 +1,6 @@
 import asyncio
 import logging
-from datetime import datetime, timedelta
+from datetime import datetime, timezone
 from pybit import HTTP
 import aiohttp
 from telegram import Bot
@@ -29,7 +29,11 @@ async def fetch_top_100():
     }
     async with aiohttp.ClientSession() as session_http:
         async with session_http.get(url, params=params) as resp:
-            return await resp.json()
+            data = await resp.json()
+            if isinstance(data, dict) and data.get("error"):
+                logging.error(f"CoinGecko API error: {data.get('error')}")
+                return []
+            return data
 
 last_alerted = {}
 
@@ -59,15 +63,18 @@ async def place_order(symbol, side, qty):
 async def check_signals():
     logging.info("Checking market conditions...")
     coins = await fetch_top_100()
-    now = datetime.utcnow()
+    if not isinstance(coins, list):
+        logging.error("Unexpected data format from CoinGecko API")
+        return
+
+    now = datetime.now(timezone.utc)
 
     for coin in coins:
         try:
             symbol = coin['symbol'].upper() + "USDT"
             price = coin['current_price']
             price_change_5m = coin.get('price_change_percentage_5m_in_currency', 0)
-            volume_15m = coin.get('total_volume', 0)  # Approximation - CoinGecko does not give volume per timeframe
-            # Here you can enhance by getting real volume from Bybit API if needed
+            volume_15m = coin.get('total_volume', 0)  # Approximation
 
             key = coin['id']
             last_time = last_alerted.get(key)
@@ -77,16 +84,16 @@ async def check_signals():
                 if order_resp and 'ret_code' in order_resp and order_resp['ret_code'] == 0:
                     last_alerted[key] = now
                     msg = (
-                        f"🚨 تم فتح صفقة شراء على {coin['name']} ({symbol})\n"
-                        f"💰 السعر: ${price}\n"
-                        f"📈 التغير خلال 5 دقائق: {price_change_5m:.2f}%\n"
-                        f"🔢 الكمية: {qty}\n"
-                        f"🎯 هدف الربح: +{config.TAKE_PROFIT_PERCENT}%\n"
-                        f"🛑 وقف الخسارة: -{config.STOP_LOSS_PERCENT}%\n"
+                        f"🚨 تم فتح صفقة شراء على {coin['name']} ({symbol})\\n"
+                        f"💰 السعر: ${price}\\n"
+                        f"📈 التغير خلال 5 دقائق: {price_change_5m:.2f}%\\n"
+                        f"🔢 الكمية: {qty}\\n"
+                        f"🎯 هدف الربح: +{config.TAKE_PROFIT_PERCENT}%\\n"
+                        f"🛑 وقف الخسارة: -{config.STOP_LOSS_PERCENT}%\\n"
                     )
                     await send_telegram_message(msg)
 
-                    # TODO: ضع هنا أوامر وقف خسارة وهدف ربح (يمكن إضافتها لاحقًا)
+                    # TODO: إضافة أوامر وقف خسارة وهدف ربح
 
         except Exception as e:
             logging.error(f"Error processing coin {coin.get('id')}: {e}")
@@ -97,7 +104,7 @@ async def main_loop():
             await check_signals()
         except Exception as e:
             logging.error(f"Error in main loop: {e}")
-        await asyncio.sleep(300)  # كل 5 دقائق
+        await asyncio.sleep(300)
 
 if __name__ == "__main__":
     asyncio.run(main_loop())
