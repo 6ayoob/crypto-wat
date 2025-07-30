@@ -1,8 +1,8 @@
 import os
 
-API_KEY = os.getenv("RL1vDDShwTgdlCdleD")
-API_SECRET = os.getenv("3MyYwolwVyiHU3hN06jTR3VxWplUJe8rgRSY")
-TELEGRAM_TOKEN = os.getenv("8300868885:AAEx8Zxdkz9CRUHmjJ0vvn6L3kC2kOPCHuk")
+API_KEY = os.getenv("API_KEY")
+API_SECRET = os.getenv("API_SECRET")
+TELEGRAM_TOKEN = os.getenv("TELEGRAM_TOKEN")
 TELEGRAM_CHAT_ID = int(os.getenv("TELEGRAM_CHAT_ID"))
 
 TRADE_AMOUNT_USDT = float(os.getenv("TRADE_AMOUNT_USDT", 20))
