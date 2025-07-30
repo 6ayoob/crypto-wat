@@ -16,6 +16,7 @@ session = HTTP(
     endpoint="https://api.bybit.com",
     api_key=config.API_KEY,
     api_secret=config.API_SECRET,
+    recv_window=10000  # زيادة زمن الاستجابة قليلاً
 )
 
 COINGECKO_API = "https://api.coingecko.com/api/v3"
@@ -106,8 +107,9 @@ async def check_signals():
 async def test_connections():
     try:
         await bot.send_message(chat_id=config.TELEGRAM_CHAT_ID, text="✅ البوت يعمل وتستطيع استقبال الرسائل")
-        wallet = session.get_wallet_balance()
-        logging.info(f"Bybit wallet balance: {wallet}")
+        # تم تعليق استدعاء رصيد المحفظة لتجنب خطأ 409
+        # wallet = session.get_wallet_balance()
+        # logging.info(f"Bybit wallet balance: {wallet}")
     except Exception as e:
         logging.error(f"Error in test_connections: {e}")
 
