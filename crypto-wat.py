@@ -98,7 +98,16 @@ async def check_signals():
         except Exception as e:
             logging.error(f"Error processing coin {coin.get('id')}: {e}")
 
+async def test_connections():
+    try:
+        await bot.send_message(chat_id=config.TELEGRAM_CHAT_ID, text="✅ البوت يعمل وتستطيع استقبال الرسائل")
+        wallet = session.get_wallet_balance()
+        logging.info(f"Bybit wallet balance: {wallet}")
+    except Exception as e:
+        logging.error(f"Error in test_connections: {e}")
+
 async def main_loop():
+    await test_connections()
     while True:
         try:
             await check_signals()
