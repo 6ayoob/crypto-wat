@@ -1,7 +1,7 @@
 import asyncio
 import logging
 from datetime import datetime, timedelta
-from pybit import usdt_perpetual
+from pybit import HTTP
 import aiohttp
 from telegram import Bot
 import config
@@ -10,7 +10,7 @@ logging.basicConfig(level=logging.INFO)
 
 bot = Bot(token=config.TELEGRAM_TOKEN)
 
-session = usdt_perpetual.HTTP(
+session = HTTP(
     endpoint="https://api.bybit.com",
     api_key=config.API_KEY,
     api_secret=config.API_SECRET,
