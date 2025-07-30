@@ -1,12 +1,14 @@
 import asyncio
 import logging
 from datetime import datetime, timezone
-from pybit import HTTP
+from pybit.usdt_perpetual import HTTP
 import aiohttp
 from telegram import Bot
 import config
 
 logging.basicConfig(level=logging.INFO)
+
+print("TELEGRAM_TOKEN =", config.TELEGRAM_TOKEN)  # للتأكد من قراءة التوكن
 
 bot = Bot(token=config.TELEGRAM_TOKEN)
 
@@ -32,6 +34,9 @@ async def fetch_top_100():
             data = await resp.json()
             if isinstance(data, dict) and data.get("error"):
                 logging.error(f"CoinGecko API error: {data.get('error')}")
+                return []
+            if not isinstance(data, list):
+                logging.error(f"Unexpected CoinGecko data format: {data}")
                 return []
             return data
 
