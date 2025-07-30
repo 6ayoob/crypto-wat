@@ -3,7 +3,7 @@ import os
 API_KEY = os.getenv("RL1vDDShwTgdlCdleD")
 API_SECRET = os.getenv("3MyYwolwVyiHU3hN06jTR3VxWplUJe8rgRSY")
 TELEGRAM_TOKEN = os.getenv("8300868885:AAEx8Zxdkz9CRUHmjJ0vvn6L3kC2kOPCHuk")
-TELEGRAM_CHAT_ID = int(os.getenv("658712542"))
+TELEGRAM_CHAT_ID = int(os.getenv("TELEGRAM_CHAT_ID"))
 
 TRADE_AMOUNT_USDT = float(os.getenv("TRADE_AMOUNT_USDT", 20))
 TAKE_PROFIT_PERCENT = float(os.getenv("TAKE_PROFIT_PERCENT", 5))
