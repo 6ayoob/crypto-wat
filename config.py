@@ -6,3 +6,13 @@ TELEGRAM_CHAT_IDs = [7863509137, 658712542]
 TRADE_AMOUNT_USDT = 20  # حجم كل صفقة بالدولار
 TAKE_PROFIT_PERCENT = 5  # هدف الربح %
 STOP_LOSS_PERCENT = 3    # وقف الخسارة %
+import os
+
+API_KEY = os.getenv("RL1vDDShwTgdlCdleD")
+API_SECRET = os.getenv("3MyYwolwVyiHU3hN06jTR3VxWplUJe8rgRSY")
+TELEGRAM_TOKEN = os.getenv("8300868885:AAEx8Zxdkz9CRUHmjJ0vvn6L3kC2kOPCHuk")
+TELEGRAM_CHAT_ID = int(os.getenv("658712542"))
+
+TRADE_AMOUNT_USDT = float(os.getenv("TRADE_AMOUNT_USDT", 20))
+TAKE_PROFIT_PERCENT = float(os.getenv("TAKE_PROFIT_PERCENT", 5))
+STOP_LOSS_PERCENT = float(os.getenv("STOP_LOSS_PERCENT", 3))
