@@ -8,15 +8,13 @@ import config
 
 logging.basicConfig(level=logging.INFO)
 
-print("TELEGRAM_TOKEN =", config.TELEGRAM_TOKEN)  # للتأكد من قراءة التوكن
-
 bot = Bot(token=config.TELEGRAM_TOKEN)
 
 session = HTTP(
     endpoint="https://api.bybit.com",
     api_key=config.API_KEY,
     api_secret=config.API_SECRET,
-    recv_window=10000  # زيادة زمن الاستجابة قليلاً
+    recv_window=10000
 )
 
 COINGECKO_API = "https://api.coingecko.com/api/v3"
@@ -31,15 +29,22 @@ async def fetch_top_100():
         "price_change_percentage": "5m,15m,1h"
     }
     async with aiohttp.ClientSession() as session_http:
-        async with session_http.get(url, params=params) as resp:
-            data = await resp.json()
-            if isinstance(data, dict) and data.get("error"):
-                logging.error(f"CoinGecko API error: {data.get('error')}")
-                return []
-            if not isinstance(data, list):
-                logging.error(f"Unexpected CoinGecko data format: {data}")
-                return []
-            return data
+        try:
+            async with session_http.get(url, params=params) as resp:
+                if resp.status == 429:
+                    logging.warning("🚫 تجاوزت الحد المسموح من CoinGecko! سيتم الانتظار.")
+                    return []
+                data = await resp.json()
+                if isinstance(data, dict) and data.get("error"):
+                    logging.error(f"CoinGecko API error: {data.get('error')}")
+                    return []
+                if not isinstance(data, list):
+                    logging.error(f"Unexpected CoinGecko data format: {data}")
+                    return []
+                return data
+        except Exception as e:
+            logging.error(f"Exception in fetch_top_100: {e}")
+            return []
 
 last_alerted = {}
 
@@ -69,9 +74,8 @@ async def place_order(symbol, side, qty):
 async def check_signals():
     logging.info("Checking market conditions...")
     coins = await fetch_top_100()
-    if not isinstance(coins, list):
-        logging.error("Unexpected data format from CoinGecko API")
-        return
+    if not coins:
+        return  # تم الحظر أو فشل في الجلب
 
     now = datetime.now(timezone.utc)
 
@@ -80,26 +84,23 @@ async def check_signals():
             symbol = coin['symbol'].upper() + "USDT"
             price = coin['current_price']
             price_change_5m = coin.get('price_change_percentage_5m_in_currency', 0)
-            volume_15m = coin.get('total_volume', 0)  # Approximation
 
             key = coin['id']
             last_time = last_alerted.get(key)
             if price_change_5m and price_change_5m > 2 and (not last_time or (now - last_time).seconds > 1800):
                 qty = usdt_to_qty(config.TRADE_AMOUNT_USDT, price)
                 order_resp = await place_order(symbol, "Buy", qty)
-                if order_resp and 'ret_code' in order_resp and order_resp['ret_code'] == 0:
+                if order_resp and order_resp.get('ret_code') == 0:
                     last_alerted[key] = now
                     msg = (
-                        f"🚨 تم فتح صفقة شراء على {coin['name']} ({symbol})\\n"
-                        f"💰 السعر: ${price}\\n"
-                        f"📈 التغير خلال 5 دقائق: {price_change_5m:.2f}%\\n"
-                        f"🔢 الكمية: {qty}\\n"
-                        f"🎯 هدف الربح: +{config.TAKE_PROFIT_PERCENT}%\\n"
-                        f"🛑 وقف الخسارة: -{config.STOP_LOSS_PERCENT}%\\n"
+                        f"🚨 تم فتح صفقة شراء على {coin['name']} ({symbol})\n"
+                        f"💰 السعر: ${price}\n"
+                        f"📈 التغير خلال 5 دقائق: {price_change_5m:.2f}%\n"
+                        f"🔢 الكمية: {qty}\n"
+                        f"🎯 هدف الربح: +{config.TAKE_PROFIT_PERCENT}%\n"
+                        f"🛑 وقف الخسارة: -{config.STOP_LOSS_PERCENT}%\n"
                     )
                     await send_telegram_message(msg)
-
-                    # TODO: إضافة أوامر وقف خسارة وهدف ربح
 
         except Exception as e:
             logging.error(f"Error processing coin {coin.get('id')}: {e}")
@@ -107,9 +108,6 @@ async def check_signals():
 async def test_connections():
     try:
         await bot.send_message(chat_id=config.TELEGRAM_CHAT_ID, text="✅ البوت يعمل وتستطيع استقبال الرسائل")
-        # تم تعليق استدعاء رصيد المحفظة لتجنب خطأ 409
-        # wallet = session.get_wallet_balance()
-        # logging.info(f"Bybit wallet balance: {wallet}")
     except Exception as e:
         logging.error(f"Error in test_connections: {e}")
 
@@ -120,7 +118,7 @@ async def main_loop():
             await check_signals()
         except Exception as e:
             logging.error(f"Error in main loop: {e}")
-        await asyncio.sleep(300)
+        await asyncio.sleep(900)  # كل 15 دقيقة
 
 if __name__ == "__main__":
     asyncio.run(main_loop())
