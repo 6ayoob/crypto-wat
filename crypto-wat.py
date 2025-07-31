@@ -28,23 +28,29 @@ async def fetch_top_100():
         "page": 1,
         "price_change_percentage": "5m,15m,1h"
     }
-    async with aiohttp.ClientSession() as session_http:
-        try:
-            async with session_http.get(url, params=params) as resp:
-                if resp.status == 429:
-                    logging.warning("🚫 تجاوزت الحد المسموح من CoinGecko! سيتم الانتظار.")
-                    return []
-                data = await resp.json()
-                if isinstance(data, dict) and data.get("error"):
-                    logging.error(f"CoinGecko API error: {data.get('error')}")
-                    return []
-                if not isinstance(data, list):
-                    logging.error(f"Unexpected CoinGecko data format: {data}")
-                    return []
-                return data
-        except Exception as e:
-            logging.error(f"Exception in fetch_top_100: {e}")
-            return []
+
+    for attempt in range(3):
+        async with aiohttp.ClientSession() as session_http:
+            try:
+                async with session_http.get(url, params=params) as resp:
+                    if resp.status == 429:
+                        logging.warning("🚫 تجاوزت الحد المسموح من CoinGecko! سيتم الانتظار 60 ثانية...")
+                        await asyncio.sleep(60)
+                        continue
+                    elif resp.status != 200:
+                        logging.error(f"❌ خطأ من CoinGecko: {resp.status}")
+                        return []
+                    data = await resp.json()
+                    if isinstance(data, list):
+                        return data
+                    else:
+                        logging.error(f"❌ تنسيق البيانات غير متوقع: {data}")
+                        return []
+            except Exception as e:
+                logging.exception(f"❌ استثناء أثناء جلب البيانات من CoinGecko: {e}")
+                await asyncio.sleep(5)
+    logging.error("❌ فشل جلب البيانات بعد 3 محاولات.")
+    return []
 
 last_alerted = {}
 
@@ -52,7 +58,10 @@ def usdt_to_qty(usdt_amount, price):
     return round(usdt_amount / price, 4)
 
 async def send_telegram_message(text):
-    await bot.send_message(chat_id=config.TELEGRAM_CHAT_ID, text=text)
+    try:
+        await bot.send_message(chat_id=config.TELEGRAM_CHAT_ID, text=text)
+    except Exception as e:
+        logging.error(f"❌ فشل في إرسال رسالة تيليجرام: {e}")
 
 async def place_order(symbol, side, qty):
     try:
@@ -65,17 +74,17 @@ async def place_order(symbol, side, qty):
             reduce_only=False,
             close_on_trigger=False,
         )
-        logging.info(f"Order placed: {response}")
+        logging.info(f"✅ تم تنفيذ الطلب: {response}")
         return response
     except Exception as e:
-        logging.error(f"Error placing order for {symbol}: {e}")
+        logging.error(f"❌ خطأ في تنفيذ الطلب على {symbol}: {e}")
         return None
 
 async def check_signals():
-    logging.info("Checking market conditions...")
+    logging.info("🔍 جاري فحص السوق...")
     coins = await fetch_top_100()
     if not coins:
-        return  # تم الحظر أو فشل في الجلب
+        return
 
     now = datetime.now(timezone.utc)
 
@@ -103,13 +112,13 @@ async def check_signals():
                     await send_telegram_message(msg)
 
         except Exception as e:
-            logging.error(f"Error processing coin {coin.get('id')}: {e}")
+            logging.error(f"❌ خطأ أثناء معالجة العملة {coin.get('id')}: {e}")
 
 async def test_connections():
     try:
         await bot.send_message(chat_id=config.TELEGRAM_CHAT_ID, text="✅ البوت يعمل وتستطيع استقبال الرسائل")
     except Exception as e:
-        logging.error(f"Error in test_connections: {e}")
+        logging.error(f"❌ خطأ في اختبار الاتصال: {e}")
 
 async def main_loop():
     await test_connections()
@@ -117,7 +126,7 @@ async def main_loop():
         try:
             await check_signals()
         except Exception as e:
-            logging.error(f"Error in main loop: {e}")
+            logging.error(f"❌ خطأ في حلقة التنفيذ الرئيسية: {e}")
         await asyncio.sleep(900)  # كل 15 دقيقة
 
 if __name__ == "__main__":
