@@ -1,6 +1,4 @@
-python-telegram-bot==20.8
-aiohttp
-pybit==2.0.0
+
 aiogram==2.25.1
 httpx
 pandas
