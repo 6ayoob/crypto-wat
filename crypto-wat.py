@@ -12,18 +12,18 @@ COINGECKO_API = "https://api.coingecko.com/api/v3"
 bot = Bot(token=TELEGRAM_TOKEN)
 dp = Dispatcher(bot)
 
-# تخزين البيانات مؤقتًا لتقليل الضغط
 cg_cache = {
     "data": None,
     "timestamp": None
 }
 
 
-async def fetch_top_100():
+async def fetch_top_100(retries=3):
     now = datetime.now(timezone.utc)
 
+    # استخدم الكاش إذا لم يمض أكثر من 60 ثانية
     if cg_cache["data"] and cg_cache["timestamp"]:
-        if (now - cg_cache["timestamp"]).total_seconds() < 600:
+        if (now - cg_cache["timestamp"]).total_seconds() < 60:
             return cg_cache["data"]
 
     url = f"{COINGECKO_API}/coins/markets"
@@ -35,30 +35,32 @@ async def fetch_top_100():
         "price_change_percentage": "5m,15m,1h"
     }
 
-    async with aiohttp.ClientSession() as session_http:
-        try:
-            async with session_http.get(url, params=params) as resp:
-                if resp.status == 429:
-                    logging.warning("🚫 تجاوزت الحد المسموح من CoinGecko! سيتم الانتظار 60 ثانية...")
-                    await asyncio.sleep(60)
-                    return []
+    for attempt in range(retries):
+        async with aiohttp.ClientSession() as session_http:
+            try:
+                async with session_http.get(url, params=params) as resp:
+                    if resp.status == 429:
+                        logging.warning("🚫 تجاوزت الحد المسموح من CoinGecko! سيتم الانتظار 60 ثانية...")
+                        await asyncio.sleep(60)
+                        continue
 
-                elif resp.status != 200:
-                    logging.error(f"❌ خطأ من CoinGecko: {resp.status}")
-                    return []
+                    elif resp.status != 200:
+                        logging.error(f"❌ خطأ من CoinGecko: {resp.status}")
+                        return []
 
-                data = await resp.json()
-                if isinstance(data, list):
-                    cg_cache["data"] = data
-                    cg_cache["timestamp"] = now
-                    return data
-                else:
-                    logging.error(f"❌ تنسيق البيانات غير متوقع: {data}")
-                    return []
+                    data = await resp.json()
+                    if isinstance(data, list):
+                        cg_cache["data"] = data
+                        cg_cache["timestamp"] = now
+                        return data
+                    else:
+                        logging.error(f"❌ تنسيق البيانات غير متوقع: {data}")
+                        return []
+            except Exception as e:
+                logging.exception(f"❌ استثناء أثناء جلب البيانات من CoinGecko: {e}")
+                await asyncio.sleep(5)
 
-        except Exception as e:
-            logging.exception(f"❌ استثناء أثناء جلب البيانات من CoinGecko: {e}")
-            return []
+    return []
 
 
 async def scan_market():
@@ -102,6 +104,7 @@ async def main_loop():
             for user_id in ALLOWED_USER_IDS:
                 try:
                     await bot.send_message(chat_id=user_id, text=report)
+                    await asyncio.sleep(1)  # تأخير بسيط بين الرسائل لتفادي السبام
                 except Exception as e:
                     logging.warning(f"❗ خطأ في الإرسال للمستخدم {user_id}: {e}")
         except Exception as e:
