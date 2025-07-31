@@ -1,10 +1,13 @@
-import os
+TELEGRAM_TOKEN = "8300868885:AAEx8Zxdkz9CRUHmjJ0vvn6L3kC2kOPCHuk"
+TELEGRAM_CHAT_ID = 658712542  # رقم معرفك في تيليجرام
 
-API_KEY = os.getenv("API_KEY")
-API_SECRET = os.getenv("API_SECRET")
-TELEGRAM_TOKEN = os.getenv("TELEGRAM_TOKEN")
-TELEGRAM_CHAT_ID = int(os.getenv("TELEGRAM_CHAT_ID"))
+API_KEY = "مفتاح_API_بـybit"
+API_SECRET = "سر_API_بـybit"
 
-TRADE_AMOUNT_USDT = float(os.getenv("TRADE_AMOUNT_USDT", 20))
-TAKE_PROFIT_PERCENT = float(os.getenv("TAKE_PROFIT_PERCENT", 5))
-STOP_LOSS_PERCENT = float(os.getenv("STOP_LOSS_PERCENT", 3))
+FINNHUB_API_KEY = "d1qisl1r01qo4qd7h510d1qisl1r01qo4qd7h51g"
+
+TRADE_AMOUNT_USDT = 20
+
+STOP_LOSS_PERCENT = 1.5
+
+TAKE_PROFIT_PERCENT = 3
