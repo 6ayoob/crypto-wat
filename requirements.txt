@@ -1,5 +1,7 @@
-
-aiogram==2.25.1
-httpx
-pandas
 python-dotenv
+aiohttp==3.8.5
+requests
+httpx
+pytz
+schedule
+aiogram==2.25.1
