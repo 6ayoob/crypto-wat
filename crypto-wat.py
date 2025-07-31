@@ -18,6 +18,16 @@ session = HTTP(
 )
 
 COINGECKO_API = "https://api.coingecko.com/api/v3"
+last_alerted = {}
+
+def usdt_to_qty(usdt_amount, price):
+    return round(usdt_amount / price, 4)
+
+async def send_telegram_message(text):
+    try:
+        await bot.send_message(chat_id=config.TELEGRAM_CHAT_ID, text=text)
+    except Exception as e:
+        logging.error(f"❌ فشل في إرسال رسالة تيليجرام: {e}")
 
 async def fetch_top_100():
     url = f"{COINGECKO_API}/coins/markets"
@@ -43,25 +53,10 @@ async def fetch_top_100():
                     data = await resp.json()
                     if isinstance(data, list):
                         return data
-                    else:
-                        logging.error(f"❌ تنسيق البيانات غير متوقع: {data}")
-                        return []
             except Exception as e:
                 logging.exception(f"❌ استثناء أثناء جلب البيانات من CoinGecko: {e}")
                 await asyncio.sleep(5)
-    logging.error("❌ فشل جلب البيانات بعد 3 محاولات.")
     return []
-
-last_alerted = {}
-
-def usdt_to_qty(usdt_amount, price):
-    return round(usdt_amount / price, 4)
-
-async def send_telegram_message(text):
-    try:
-        await bot.send_message(chat_id=config.TELEGRAM_CHAT_ID, text=text)
-    except Exception as e:
-        logging.error(f"❌ فشل في إرسال رسالة تيليجرام: {e}")
 
 async def place_order(symbol, side, qty):
     try:
@@ -129,5 +124,7 @@ async def main_loop():
             logging.error(f"❌ خطأ في حلقة التنفيذ الرئيسية: {e}")
         await asyncio.sleep(900)  # كل 15 دقيقة
 
+# استخدام طريقة مستقرة لتشغيل اللوب
 if __name__ == "__main__":
-    asyncio.run(main_loop())
+    loop = asyncio.get_event_loop()
+    loop.run_until_complete(main_loop())
