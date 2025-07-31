@@ -110,7 +110,7 @@ async def main_loop():
         except Exception as e:
             logging.error(f"❌ خطأ في الحلقة الرئيسية: {e}")
 
-        await asyncio.sleep(1800)  # كل 30 دقيقة
+        await asyncio.sleep(900)  # كل 30 دقيقة
 
 
 async def main():
