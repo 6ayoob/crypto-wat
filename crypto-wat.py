@@ -59,7 +59,8 @@ def place_order(symbol, side, quantity):
         "side": side,
         "type": "MARKET",
         "quantity": quantity,
-        "timestamp": timestamp
+        "timestamp": timestamp,
+        "recvWindow": 10000
     }
     query_string = '&'.join([f"{k}={v}" for k, v in params.items()])
     signature = hmac.new(BINANCE_SECRET.encode(), query_string.encode(), hashlib.sha256).hexdigest()
@@ -76,7 +77,11 @@ def place_order(symbol, side, quantity):
 def get_balance(asset="USDT"):
     url = "https://api.binance.com/api/v3/account"
     timestamp = get_binance_server_time()
-    query_string = f"timestamp={timestamp}"
+    params = {
+        "timestamp": timestamp,
+        "recvWindow": 10000
+    }
+    query_string = '&'.join([f"{k}={v}" for k, v in params.items()])
     signature = hmac.new(BINANCE_SECRET.encode(), query_string.encode(), hashlib.sha256).hexdigest()
     headers = {"X-MBX-APIKEY": BINANCE_API}
     url = f"{url}?{query_string}&signature={signature}"
@@ -132,7 +137,6 @@ def trade_logic():
             time.sleep(1)
             continue
 
-        # شراء عند اختراق EMA9 فوق EMA21 إذا لا توجد صفقة مفتوحة مسبقاً لهذا الرمز
         if ema9 > ema21 and not any(t["symbol_pair"] == symbol_pair for t in open_trades):
             price = closes[-1]
             qty = round(30 / price, 5)
@@ -150,7 +154,7 @@ def trade_logic():
                     "sold_target1": False
                 })
 
-        time.sleep(1)  # احترام حدود API
+        time.sleep(1)
 
 def follow_trades():
     global open_trades
@@ -196,4 +200,4 @@ if __name__ == "__main__":
             follow_trades()
         except Exception as e:
             send_telegram(f"❌ خطأ عام: {e}")
-        time.sleep(300)  # كل 5 دقائق
+        time.sleep(300)
