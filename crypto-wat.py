@@ -69,7 +69,12 @@ def get_balance():
     }
     params["sign"] = generate_signature(params, BYBIT_API_SECRET)
     response = requests.get(url, params=params).json()
-    balance = float(response["result"]["list"][0]["coin"][0]["walletBalance"])
+    # تأكد من بنية الاستجابة إذا تغيرت حسب API
+    balance = 0.0
+    try:
+        balance = float(response["result"]["list"][0]["coin"][0]["walletBalance"])
+    except Exception as e:
+        print("Error getting balance:", e, response)
     return balance
 
 async def trading_loop():
@@ -99,3 +104,6 @@ async def trading_loop():
             send_telegram(f"❌ حدث خطأ: {str(e)}")
 
         await asyncio.sleep(CHECK_INTERVAL_MINUTES * 60)
+
+if __name__ == "__main__":
+    asyncio.run(trading_loop())
