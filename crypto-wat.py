@@ -35,7 +35,7 @@ def calculate_ema(prices, length):
     return ema
 
 def place_order(symbol, side, quantity):
-    timestamp = int(time.time() * 1000)
+timestamp = get_binance_server_time()
     params = {
         "symbol": symbol,
         "side": side,
@@ -57,7 +57,7 @@ def place_order(symbol, side, quantity):
 
 def get_balance(asset="USDT"):
     url = "https://api.binance.com/api/v3/account"
-    timestamp = int(time.time() * 1000)
+timestamp = get_binance_server_time()
     query_string = f"timestamp={timestamp}"
     signature = hmac.new(BINANCE_SECRET.encode(), query_string.encode(), hashlib.sha256).hexdigest()
     headers = {"X-MBX-APIKEY": BINANCE_API}
