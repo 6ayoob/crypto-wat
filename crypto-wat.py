@@ -4,9 +4,23 @@ import time
 import hmac
 import hashlib
 import requests
-from config import *
+
+# ====== إعدادات خاصة بك =======
+BYBIT_API_KEY = "your_api_key"
+BYBIT_API_SECRET = "your_api_secret"
+TELEGRAM_TOKEN = "your_telegram_bot_token"
+TELEGRAM_CHAT_ID = "your_chat_id"
+
+TOP_COINS = 50
+TRADE_AMOUNT_PERCENT = 0.1  # 10% من الرصيد للتداول
+STOP_LOSS_PERCENT = 2       # وقف خسارة 2%
+TAKE_PROFIT_MIN = 3         # جني ربح من 3%
+TAKE_PROFIT_MAX = 6         # حتى 6%
+CHECK_INTERVAL_MINUTES = 25
 
 BASE_URL = "https://api.bybit.com"
+
+# ====== دوال المساعدة ======
 
 def send_telegram(msg):
     url = f"https://api.telegram.org/bot{TELEGRAM_TOKEN}/sendMessage"
@@ -18,12 +32,26 @@ def send_telegram(msg):
     except Exception as e:
         print("Telegram Exception:", e)
 
+def generate_signature(params, secret):
+    sorted_params = sorted(params.items())
+    query_string = "&".join([f"{k}={v}" for k, v in sorted_params])
+    return hmac.new(secret.encode(), query_string.encode(), hashlib.sha256).hexdigest()
+
+def read_symbols(filename="symbols.txt"):
+    try:
+        with open(filename, "r") as file:
+            symbols = [line.strip() for line in file if line.strip()]
+        return symbols
+    except FileNotFoundError:
+        print("symbols.txt غير موجود، سيتم جلب الرموز من Bybit.")
+        return []
+
 def get_top_50_symbols():
     url = f"{BASE_URL}/v5/market/tickers?category=spot"
     try:
         response = requests.get(url)
         data = response.json()
-        print("🧪 DEBUG - Tick Data:", data)  # ✅ ستطبع البيانات القادمة من Bybit
+        # print("DEBUG - Tick Data:", data)
 
         tickers = data.get("result", {}).get("list", [])
         sorted_tickers = sorted(tickers, key=lambda x: float(x["volume24h"]), reverse=True)
@@ -31,14 +59,6 @@ def get_top_50_symbols():
 
     except Exception as e:
         print("❌ Error fetching tickers:", e)
-        return []
-
-        data = response.json()
-        tickers = data.get("result", {}).get("list", [])
-        sorted_tickers = sorted(tickers, key=lambda x: float(x["volume24h"]), reverse=True)
-        return [t["symbol"] for t in sorted_tickers[:TOP_COINS] if "USDT" in t["symbol"]]
-    except Exception as e:
-        print("Exception in get_top_50_symbols:", e)
         return []
 
 def get_klines(symbol, interval="60", limit=200):
@@ -64,11 +84,6 @@ def get_price(symbol):
     except Exception as e:
         print(f"Exception in get_price for {symbol}:", e)
         return 0.0
-
-def generate_signature(params, secret):
-    sorted_params = sorted(params.items())
-    query_string = "&".join([f"{k}={v}" for k, v in sorted_params])
-    return hmac.new(secret.encode(), query_string.encode(), hashlib.sha256).hexdigest()
 
 def place_order(symbol, side, qty):
     url = f"{BASE_URL}/v5/order/create"
@@ -113,20 +128,29 @@ def get_balance():
     try:
         response = requests.get(url, params=params)
         data = response.json()
-        print("💰 DEBUG - Balance Response:", data)  # ✅ ستطبع البيانات الخاصة برصيد الحساب
+        print("💰 DEBUG - Balance Response:", data)
 
-        balance = float(data["result"]["list"][0]["coin"][0]["walletBalance"])
-        return balance
+        coins = data.get("result", {}).get("list", [])
+        usdt_balance = 0.0
+        for coin_info in coins:
+            if coin_info.get("coin") == "USDT":
+                usdt_balance = float(coin_info.get("walletBalance", 0))
+                break
+        return usdt_balance
 
     except Exception as e:
         print("❌ Error getting balance:", e)
         return 0.0
 
+# ====== الحلقة الرئيسية ======
 
 async def trading_loop():
     while True:
         try:
-            symbols = get_top_50_symbols()
+            symbols = read_symbols()
+            if not symbols:
+                symbols = get_top_50_symbols()
+
             balance = get_balance()
             usdt_to_trade = balance * TRADE_AMOUNT_PERCENT
             send_telegram(f"📈 فحص السوق بدأ لـ {len(symbols)} عملة، الرصيد: {balance:.2f} USDT")
