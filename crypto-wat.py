@@ -12,24 +12,50 @@ def send_telegram(msg):
     url = f"https://api.telegram.org/bot{TELEGRAM_TOKEN}/sendMessage"
     payload = {"chat_id": TELEGRAM_CHAT_ID, "text": msg}
     try:
-        requests.post(url, data=payload)
+        response = requests.post(url, data=payload)
+        if response.status_code != 200:
+            print("Telegram Error:", response.status_code, response.text)
     except Exception as e:
-        print("Telegram error:", e)
+        print("Telegram Exception:", e)
 
 def get_top_50_symbols():
     url = f"{BASE_URL}/v5/market/tickers?category=spot"
-    data = requests.get(url).json()
-    tickers = data.get("result", {}).get("list", [])
-    sorted_tickers = sorted(tickers, key=lambda x: float(x["volume24h"]), reverse=True)
-    return [t["symbol"] for t in sorted_tickers[:TOP_COINS] if "USDT" in t["symbol"]]
+    try:
+        response = requests.get(url)
+        if response.status_code != 200:
+            print("Error fetching tickers:", response.status_code, response.text)
+            return []
+        data = response.json()
+        tickers = data.get("result", {}).get("list", [])
+        sorted_tickers = sorted(tickers, key=lambda x: float(x["volume24h"]), reverse=True)
+        return [t["symbol"] for t in sorted_tickers[:TOP_COINS] if "USDT" in t["symbol"]]
+    except Exception as e:
+        print("Exception in get_top_50_symbols:", e)
+        return []
 
 def get_klines(symbol, interval="60", limit=200):
     url = f"{BASE_URL}/v5/market/kline?category=spot&symbol={symbol}&interval={interval}&limit={limit}"
-    return requests.get(url).json().get("result", {}).get("list", [])
+    try:
+        response = requests.get(url)
+        if response.status_code != 200:
+            print(f"Error fetching klines for {symbol}:", response.status_code, response.text)
+            return []
+        return response.json().get("result", {}).get("list", [])
+    except Exception as e:
+        print(f"Exception in get_klines for {symbol}:", e)
+        return []
 
 def get_price(symbol):
     url = f"{BASE_URL}/v2/public/tickers?symbol={symbol}"
-    return float(requests.get(url).json()["result"][0]["last_price"])
+    try:
+        response = requests.get(url)
+        if response.status_code != 200:
+            print(f"Error fetching price for {symbol}:", response.status_code, response.text)
+            return 0.0
+        return float(response.json()["result"][0]["last_price"])
+    except Exception as e:
+        print(f"Exception in get_price for {symbol}:", e)
+        return 0.0
 
 def generate_signature(params, secret):
     sorted_params = sorted(params.items())
@@ -49,7 +75,14 @@ def place_order(symbol, side, qty):
         "category": "spot"
     }
     params["sign"] = generate_signature(params, BYBIT_API_SECRET)
-    return requests.post(url, data=params).json()
+    try:
+        response = requests.post(url, data=params)
+        if response.status_code != 200:
+            print(f"Order error for {symbol}:", response.status_code, response.text)
+        return response.json()
+    except Exception as e:
+        print(f"Exception in place_order for {symbol}:", e)
+        return {}
 
 def calculate_signals(klines):
     closes = [float(k[4]) for k in klines]
@@ -68,14 +101,16 @@ def get_balance():
         "timestamp": timestamp,
     }
     params["sign"] = generate_signature(params, BYBIT_API_SECRET)
-    response = requests.get(url, params=params).json()
-    # تأكد من بنية الاستجابة إذا تغيرت حسب API
-    balance = 0.0
     try:
-        balance = float(response["result"]["list"][0]["coin"][0]["walletBalance"])
+        response = requests.get(url, params=params)
+        if response.status_code != 200:
+            print("Balance error:", response.status_code, response.text)
+            return 0.0
+        balance = float(response.json()["result"]["list"][0]["coin"][0]["walletBalance"])
+        return balance
     except Exception as e:
-        print("Error getting balance:", e, response)
-    return balance
+        print("Exception in get_balance:", e)
+        return 0.0
 
 async def trading_loop():
     while True:
@@ -101,7 +136,7 @@ async def trading_loop():
 
             send_telegram("✅ فحص السوق اكتمل، سيتم التكرار خلال 25 دقيقة.")
         except Exception as e:
-            send_telegram(f"❌ حدث خطأ: {str(e)}")
+            send_telegram(f"❌ حدث خطأ في الدورة: {str(e)}")
 
         await asyncio.sleep(CHECK_INTERVAL_MINUTES * 60)
 
