@@ -14,6 +14,15 @@ def send_telegram(msg):
     except Exception as e:
         print(f"Telegram send error: {e}")
 
+def get_external_ip():
+    try:
+        response = requests.get("https://api.ipify.org?format=json", timeout=10)
+        response.raise_for_status()
+        ip = response.json().get("ip", "غير معروف")
+        return ip
+    except Exception as e:
+        return f"خطأ في جلب IP: {e}"
+
 def get_binance_server_time():
     try:
         response = requests.get("https://api.binance.com/api/v3/time", timeout=10)
@@ -179,6 +188,8 @@ def follow_trades():
     open_trades = still_open
 
 if __name__ == "__main__":
+    ip = get_external_ip()
+    send_telegram(f"🤖 بدأ تشغيل البوت على IP: {ip}")
     while True:
         try:
             trade_logic()
