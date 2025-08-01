@@ -1,26 +1,8 @@
 import asyncio
 import random
-import time
-import hmac
-import hashlib
 import requests
-
-# ====== إعدادات خاصة بك =======
-BYBIT_API_KEY = "your_api_key"
-BYBIT_API_SECRET = "your_api_secret"
-TELEGRAM_TOKEN = "your_telegram_bot_token"
-TELEGRAM_CHAT_ID = "your_chat_id"
-
-TOP_COINS = 50
-TRADE_AMOUNT_PERCENT = 0.1  # 10% من الرصيد للتداول
-STOP_LOSS_PERCENT = 2       # وقف خسارة 2%
-TAKE_PROFIT_MIN = 3         # جني ربح من 3%
-TAKE_PROFIT_MAX = 6         # حتى 6%
-CHECK_INTERVAL_MINUTES = 25
-
-BASE_URL = "https://api.bybit.com"
-
-# ====== دوال المساعدة ======
+from binance_api import get_price, get_klines, get_balance, place_order
+from config import TELEGRAM_TOKEN, TELEGRAM_CHAT_ID, TRADE_AMOUNT_PERCENT, STOP_LOSS_PERCENT, TAKE_PROFIT_MIN, TAKE_PROFIT_MAX, CHECK_INTERVAL_MINUTES
 
 def send_telegram(msg):
     url = f"https://api.telegram.org/bot{TELEGRAM_TOKEN}/sendMessage"
@@ -32,81 +14,6 @@ def send_telegram(msg):
     except Exception as e:
         print("Telegram Exception:", e)
 
-def generate_signature(params, secret):
-    sorted_params = sorted(params.items())
-    query_string = "&".join([f"{k}={v}" for k, v in sorted_params])
-    return hmac.new(secret.encode(), query_string.encode(), hashlib.sha256).hexdigest()
-
-def read_symbols(filename="symbols.txt"):
-    try:
-        with open(filename, "r") as file:
-            symbols = [line.strip() for line in file if line.strip()]
-        return symbols
-    except FileNotFoundError:
-        print("symbols.txt غير موجود، سيتم جلب الرموز من Bybit.")
-        return []
-
-def get_top_50_symbols():
-    url = f"{BASE_URL}/v5/market/tickers?category=spot"
-    try:
-        response = requests.get(url)
-        data = response.json()
-        # print("DEBUG - Tick Data:", data)
-
-        tickers = data.get("result", {}).get("list", [])
-        sorted_tickers = sorted(tickers, key=lambda x: float(x["volume24h"]), reverse=True)
-        return [t["symbol"] for t in sorted_tickers[:TOP_COINS] if "USDT" in t["symbol"]]
-
-    except Exception as e:
-        print("❌ Error fetching tickers:", e)
-        return []
-
-def get_klines(symbol, interval="60", limit=200):
-    url = f"{BASE_URL}/v5/market/kline?category=spot&symbol={symbol}&interval={interval}&limit={limit}"
-    try:
-        response = requests.get(url)
-        if response.status_code != 200:
-            print(f"Error fetching klines for {symbol}:", response.status_code, response.text)
-            return []
-        return response.json().get("result", {}).get("list", [])
-    except Exception as e:
-        print(f"Exception in get_klines for {symbol}:", e)
-        return []
-
-def get_price(symbol):
-    url = f"{BASE_URL}/v2/public/tickers?symbol={symbol}"
-    try:
-        response = requests.get(url)
-        if response.status_code != 200:
-            print(f"Error fetching price for {symbol}:", response.status_code, response.text)
-            return 0.0
-        return float(response.json()["result"][0]["last_price"])
-    except Exception as e:
-        print(f"Exception in get_price for {symbol}:", e)
-        return 0.0
-
-def place_order(symbol, side, qty):
-    url = f"{BASE_URL}/v5/order/create"
-    timestamp = str(int(time.time() * 1000))
-    params = {
-        "api_key": BYBIT_API_KEY,
-        "timestamp": timestamp,
-        "symbol": symbol,
-        "side": side,
-        "orderType": "Market",
-        "qty": qty,
-        "category": "spot"
-    }
-    params["sign"] = generate_signature(params, BYBIT_API_SECRET)
-    try:
-        response = requests.post(url, data=params)
-        if response.status_code != 200:
-            print(f"Order error for {symbol}:", response.status_code, response.text)
-        return response.json()
-    except Exception as e:
-        print(f"Exception in place_order for {symbol}:", e)
-        return {}
-
 def calculate_signals(klines):
     closes = [float(k[4]) for k in klines]
     if len(closes) < 200:
@@ -116,42 +23,21 @@ def calculate_signals(klines):
     ma200 = sum(closes[-200:]) / 200
     return ma20 > ma50 > ma200
 
-def get_balance():
-    url = f"{BASE_URL}/v5/account/wallet-balance?accountType=SPOT"
-    timestamp = str(int(time.time() * 1000))
-    params = {
-        "api_key": BYBIT_API_KEY,
-        "timestamp": timestamp,
-    }
-    params["sign"] = generate_signature(params, BYBIT_API_SECRET)
-
+def read_symbols(filename="symbols.txt"):
     try:
-        response = requests.get(url, params=params)
-        data = response.json()
-        print("💰 DEBUG - Balance Response:", data)
-
-        coins = data.get("result", {}).get("list", [])
-        usdt_balance = 0.0
-        for coin_info in coins:
-            if coin_info.get("coin") == "USDT":
-                usdt_balance = float(coin_info.get("walletBalance", 0))
-                break
-        return usdt_balance
-
-    except Exception as e:
-        print("❌ Error getting balance:", e)
-        return 0.0
-
-# ====== الحلقة الرئيسية ======
+        with open(filename) as f:
+            return [line.strip().upper() for line in f if line.strip()]
+    except:
+        return []
 
 async def trading_loop():
     while True:
         try:
             symbols = read_symbols()
             if not symbols:
-                symbols = get_top_50_symbols()
+                symbols = ["BTCUSDT", "ETHUSDT", "BNBUSDT"]
 
-            balance = get_balance()
+            balance = get_balance("USDT")
             usdt_to_trade = balance * TRADE_AMOUNT_PERCENT
             send_telegram(f"📈 فحص السوق بدأ لـ {len(symbols)} عملة، الرصيد: {balance:.2f} USDT")
 
@@ -159,19 +45,18 @@ async def trading_loop():
                 klines = get_klines(symbol)
                 if not klines:
                     continue
-                signal = calculate_signals(klines)
-                if signal:
+                if calculate_signals(klines):
                     price = float(klines[-1][4])
                     qty = round(usdt_to_trade / price, 4)
-                    place_order(symbol, "Buy", qty)
+                    order = place_order(symbol, "BUY", qty)
                     sl_price = price * (1 - STOP_LOSS_PERCENT / 100)
                     tp_price = price * (1 + random.uniform(TAKE_PROFIT_MIN, TAKE_PROFIT_MAX) / 100)
-                    send_telegram(f"✅ إشارة شراء {symbol}\nالسعر: {price:.4f}\nالكمية: {qty}\n🚫 وقف خسارة: {sl_price:.4f}\n🎯 جني ربح: {tp_price:.4f}")
+                    send_telegram(f"✅ إشارة شراء {symbol}\nالسعر: {price:.4f}\nالكمية: {qty}\n🚫 وقف خسارة: {sl_price:.4f}\n🎯 جني ربح: {tp_price:.4f}\n\n{order}")
                     await asyncio.sleep(1.5)
 
             send_telegram("✅ فحص السوق اكتمل، سيتم التكرار خلال 25 دقيقة.")
         except Exception as e:
-            send_telegram(f"❌ حدث خطأ في الدورة: {str(e)}")
+            send_telegram(f"❌ حدث خطأ في الدورة: {e}")
 
         await asyncio.sleep(CHECK_INTERVAL_MINUTES * 60)
 
