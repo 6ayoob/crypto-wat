@@ -4,6 +4,8 @@ import hmac
 import hashlib
 from config import TELEGRAM_TOKEN, TELEGRAM_CHAT_ID, BINANCE_API, BINANCE_SECRET
 
+open_trades = []
+
 def send_telegram(msg):
     url = f"https://api.telegram.org/bot{TELEGRAM_TOKEN}/sendMessage"
     payload = {"chat_id": TELEGRAM_CHAT_ID, "text": msg}
@@ -73,6 +75,7 @@ def get_balance(asset="USDT"):
         return 0.0
 
 def trade_logic():
+    global open_trades
     try:
         with open("coins.txt", "r") as f:
             symbols = [line.strip().upper() for line in f.readlines() if line.strip()]
@@ -91,7 +94,6 @@ def trade_logic():
         symbol_pair = symbol + "USDT"
         klines = get_klines(symbol_pair)
 
-        # تحقق من وجود بيانات كافية
         if not klines or len(klines) < 20:
             send_telegram(f"⚠️ بيانات غير كافية لـ {symbol_pair}, تم تخطيه")
             time.sleep(1)
@@ -112,55 +114,66 @@ def trade_logic():
             time.sleep(1)
             continue
 
-        # استراتيجية الشراء عند اختراق EMA9 فوق EMA21
-        if ema9 > ema21:
+        # شراء عند اختراق EMA9 فوق EMA21 إذا لا توجد صفقة مفتوحة مسبقاً لهذا الرمز
+        if ema9 > ema21 and not any(t["symbol_pair"] == symbol_pair for t in open_trades):
             price = closes[-1]
             qty = round(30 / price, 5)
             order = place_order(symbol_pair, "BUY", qty)
             if order:
                 send_telegram(f"✅ تم شراء {symbol} بسعر {price:.4f}, كمية: {qty}")
+                open_trades.append({
+                    "symbol_pair": symbol_pair,
+                    "symbol": symbol,
+                    "qty": qty,
+                    "entry_price": price,
+                    "target1": price * 1.05,
+                    "target2": price * 1.10,
+                    "stop_loss": price * 0.98,
+                    "sold_target1": False
+                })
 
-                # استراتيجيات البيع والوقف
-                target1 = price * 1.05
-                target2 = price * 1.10
-                stop_loss = price * 0.98
-                holding = True
-                send_telegram(f"📊 متابعة صفقة {symbol} الآن...")
+        time.sleep(1)  # احترام حدود API
 
-                while holding:
-                    current_klines = get_klines(symbol_pair)
-                    if not current_klines or len(current_klines) == 0:
-                        send_telegram(f"⚠️ تعذر جلب بيانات متابعة لـ {symbol_pair}")
-                        time.sleep(10)
-                        continue
-                    current_price = float(current_klines[-1][4])
+def follow_trades():
+    global open_trades
+    still_open = []
+    for trade in open_trades:
+        symbol_pair = trade["symbol_pair"]
+        qty = trade["qty"]
+        try:
+            klines = get_klines(symbol_pair)
+            if not klines:
+                continue
+            current_price = float(klines[-1][4])
 
-                    if current_price >= target1:
-                        # بيع نصف الكمية عند +5%
-                        half_qty = round(qty / 2, 5)
-                        place_order(symbol_pair, "SELL", half_qty)
-                        send_telegram(f"🎯 بيع 50% من {symbol} عند +5% بسعر {current_price:.4f}")
-                        target1 = float('inf')  # تعطيل البيع الثاني
-                    if current_price >= target2:
-                        # بيع الباقي عند +10%
-                        place_order(symbol_pair, "SELL", qty - half_qty)
-                        send_telegram(f"🏁 بيع 100% من {symbol} عند +10% بسعر {current_price:.4f}")
-                        holding = False
-                    if current_price <= stop_loss:
-                        # بيع الكمية كاملة عند الوقف
-                        place_order(symbol_pair, "SELL", qty)
-                        send_telegram(f"🚨 وقف خسارة {symbol} عند {current_price:.4f}")
-                        holding = False
-                    time.sleep(30)
+            if not trade["sold_target1"] and current_price >= trade["target1"]:
+                half_qty = round(qty / 2, 5)
+                place_order(symbol_pair, "SELL", half_qty)
+                send_telegram(f"🎯 بيع 50% من {trade['symbol']} عند +5% بسعر {current_price:.4f}")
+                trade["sold_target1"] = True
+                trade["qty"] -= half_qty
 
-        time.sleep(1)  # تأخير بسيط بين العملات للالتزام بالـ API limits
+            elif current_price >= trade["target2"]:
+                place_order(symbol_pair, "SELL", trade["qty"])
+                send_telegram(f"🏁 بيع الباقي من {trade['symbol']} عند +10% بسعر {current_price:.4f}")
 
-    send_telegram("✅ فحص السوق اكتمل، سيتم التكرار بعد 5 دقائق.")
+            elif current_price <= trade["stop_loss"]:
+                place_order(symbol_pair, "SELL", trade["qty"])
+                send_telegram(f"🚨 وقف خسارة {trade['symbol']} عند {current_price:.4f}")
+
+            else:
+                still_open.append(trade)
+
+        except Exception as e:
+            send_telegram(f"❌ خطأ في متابعة الصفقة {trade['symbol']}: {e}")
+            still_open.append(trade)
+    open_trades = still_open
 
 if __name__ == "__main__":
     while True:
         try:
             trade_logic()
+            follow_trades()
         except Exception as e:
             send_telegram(f"❌ خطأ عام: {e}")
-        time.sleep(300)  # 5 دقائق بين كل دورة
+        time.sleep(300)  # كل 5 دقائق
