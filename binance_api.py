@@ -3,17 +3,24 @@ import time
 import hmac
 import hashlib
 
-# مفاتيح API الخاصة بك
 API_KEY = "kLUkQ10bjOQkAD9I2xNIUOxLRiBWFRDmw2RJXHMb6sodChOTEfCmaBg77jpBUCG4"
 API_SECRET = "TuVFC67mDsRoVRmVE9rPb0qfCEdMinnKjRrYZO3pkXVk7m12ZjDvNvXKYKgQgPVo"
 
 BASE_URL = "https://api.binance.com"
 
+def get_server_time():
+    try:
+        response = requests.get(BASE_URL + "/api/v3/time")
+        response.raise_for_status()
+        return response.json()['serverTime']
+    except Exception as e:
+        print(f"❌ خطأ في جلب توقيت السيرفر: {e}")
+        return int(time.time() * 1000)  # fallback للتوقيت المحلي
+
 def get_timestamp():
-    return int(time.time() * 1000)
+    return get_server_time()
 
 def get_balance(symbol="USDT"):
-    """جلب رصيد العملة المطلوبة"""
     endpoint = "/api/v3/account"
     url = BASE_URL + endpoint
 
