@@ -22,9 +22,17 @@ def get_top_50_symbols():
     url = f"{BASE_URL}/v5/market/tickers?category=spot"
     try:
         response = requests.get(url)
-        if response.status_code != 200:
-            print("Error fetching tickers:", response.status_code, response.text)
-            return []
+        data = response.json()
+        print("🧪 DEBUG - Tick Data:", data)  # ✅ ستطبع البيانات القادمة من Bybit
+
+        tickers = data.get("result", {}).get("list", [])
+        sorted_tickers = sorted(tickers, key=lambda x: float(x["volume24h"]), reverse=True)
+        return [t["symbol"] for t in sorted_tickers[:TOP_COINS] if "USDT" in t["symbol"]]
+
+    except Exception as e:
+        print("❌ Error fetching tickers:", e)
+        return []
+
         data = response.json()
         tickers = data.get("result", {}).get("list", [])
         sorted_tickers = sorted(tickers, key=lambda x: float(x["volume24h"]), reverse=True)
@@ -101,16 +109,19 @@ def get_balance():
         "timestamp": timestamp,
     }
     params["sign"] = generate_signature(params, BYBIT_API_SECRET)
+
     try:
         response = requests.get(url, params=params)
-        if response.status_code != 200:
-            print("Balance error:", response.status_code, response.text)
-            return 0.0
-        balance = float(response.json()["result"]["list"][0]["coin"][0]["walletBalance"])
+        data = response.json()
+        print("💰 DEBUG - Balance Response:", data)  # ✅ ستطبع البيانات الخاصة برصيد الحساب
+
+        balance = float(data["result"]["list"][0]["coin"][0]["walletBalance"])
         return balance
+
     except Exception as e:
-        print("Exception in get_balance:", e)
+        print("❌ Error getting balance:", e)
         return 0.0
+
 
 async def trading_loop():
     while True:
