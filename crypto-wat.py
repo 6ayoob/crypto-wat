@@ -1,112 +1,176 @@
+import asyncio
+import random
 import time
-import requests
 import hmac
 import hashlib
-import json
-from datetime import datetime
+import requests
 from config import *
+
+BASE_URL = "https://api.bybit.com"
 
 def send_telegram(msg):
     url = f"https://api.telegram.org/bot{TELEGRAM_TOKEN}/sendMessage"
     payload = {"chat_id": TELEGRAM_CHAT_ID, "text": msg}
     try:
-        requests.post(url, data=payload)
-    except:
-        pass
-
-def get_klines(symbol):
-    url = f"https://api.binance.com/api/v3/klines"
-    params = {"symbol": symbol, "interval": "15m", "limit": 50}
-    try:
-        response = requests.get(url, params=params)
-        return response.json()
+        response = requests.post(url, data=payload)
+        if response.status_code != 200:
+            print("Telegram Error:", response.status_code, response.text)
     except Exception as e:
-        print(f"Error fetching {symbol}: {e}")
+        print("Telegram Exception:", e)
+
+def generate_signature(params, secret):
+    sorted_params = sorted(params.items())
+    query_string = "&".join([f"{k}={v}" for k, v in sorted_params])
+    return hmac.new(secret.encode(), query_string.encode(), hashlib.sha256).hexdigest()
+
+def read_symbols(filename="coins.txt"):
+    try:
+        with open(filename, "r") as file:
+            symbols = [line.strip() for line in file if line.strip()]
+        return symbols
+    except FileNotFoundError:
+        print("coins.txt غير موجود، سيتم جلب الرموز من Bybit.")
         return []
 
-def calculate_ema(prices, length):
-    weights = [2 / (length + 1) * (1 - 2 / (length + 1)) ** i for i in range(len(prices))]
-    weights.reverse()
-    ema = sum(p * w for p, w in zip(prices, weights)) / sum(weights)
-    return ema
+def get_top_50_symbols():
+    url = f"{BASE_URL}/v5/market/tickers?category=spot"
+    try:
+        response = requests.get(url)
+        data = response.json()
+        tickers = data.get("result", {}).get("list", [])
+        sorted_tickers = sorted(tickers, key=lambda x: float(x["volume24h"]), reverse=True)
+        return [t["symbol"] for t in sorted_tickers[:50] if "USDT" in t["symbol"]]
+    except Exception as e:
+        print("❌ Error fetching tickers:", e)
+        return []
 
-def place_order(symbol, side, quantity):
-    timestamp = int(time.time() * 1000)
+def get_klines(symbol, interval="60", limit=200):
+    url = f"{BASE_URL}/v5/market/kline?category=spot&symbol={symbol}&interval={interval}&limit={limit}"
+    try:
+        response = requests.get(url)
+        if response.status_code != 200:
+            print(f"Error fetching klines for {symbol}:", response.status_code, response.text)
+            return []
+        data = response.json()
+        klines = data.get("result", {}).get("list", [])
+        if not klines:
+            print(f"Warning: No klines data for {symbol}")
+        return klines
+    except Exception as e:
+        print(f"Exception in get_klines for {symbol}:", e)
+        return []
+
+def get_price(symbol):
+    url = f"{BASE_URL}/v2/public/tickers?symbol={symbol}"
+    try:
+        response = requests.get(url)
+        if response.status_code != 200:
+            print(f"Error fetching price for {symbol}:", response.status_code, response.text)
+            return 0.0
+        return float(response.json()["result"][0]["last_price"])
+    except Exception as e:
+        print(f"Exception in get_price for {symbol}:", e)
+        return 0.0
+
+def place_order(symbol, side, qty):
+    url = f"{BASE_URL}/v5/order/create"
+    timestamp = str(int(time.time() * 1000))
     params = {
+        "api_key": BYBIT_API_KEY,
+        "timestamp": timestamp,
         "symbol": symbol,
         "side": side,
-        "type": "MARKET",
-        "quantity": quantity,
-        "timestamp": timestamp
+        "orderType": "Market",
+        "qty": qty,
+        "category": "spot"
     }
-    query_string = '&'.join([f"{k}={v}" for k, v in params.items()])
-    signature = hmac.new(BINANCE_SECRET.encode(), query_string.encode(), hashlib.sha256).hexdigest()
-    headers = {"X-MBX-APIKEY": BINANCE_API}
-    url = f"https://api.binance.com/api/v3/order?{query_string}&signature={signature}"
-    response = requests.post(url, headers=headers)
-    return response.json()
-
-def get_balance(asset="USDT"):
-    url = f"https://api.binance.com/api/v3/account"
-    timestamp = int(time.time() * 1000)
-    query_string = f"timestamp={timestamp}"
-    signature = hmac.new(BINANCE_SECRET.encode(), query_string.encode(), hashlib.sha256).hexdigest()
-    headers = {"X-MBX-APIKEY": BINANCE_API}
-    url = f"{url}?{query_string}&signature={signature}"
-    response = requests.get(url, headers=headers)
-    balances = response.json().get("balances", [])
-    for b in balances:
-        if b["asset"] == asset:
-            return float(b["free"])
-    return 0.0
-
-def trade_logic():
-    with open("coins.txt", "r") as f:
-        symbols = [line.strip().upper() for line in f.readlines()]
-    usdt_balance = get_balance()
-    send_telegram(f"📈 فحص السوق بدأ لـ {len(symbols)} عملة، الرصيد: {usdt_balance:.2f} USDT")
-
-    for symbol in symbols:
-        try:
-            symbol_pair = symbol + "USDT"
-            klines = get_klines(symbol_pair)
-            closes = [float(k[4]) for k in klines]
-            ema9 = calculate_ema(closes[-20:], 9)
-            ema21 = calculate_ema(closes[-20:], 21)
-
-            if ema9 > ema21:
-                price = closes[-1]
-                qty = round(30 / price, 5)
-                order = place_order(symbol_pair, "BUY", qty)
-                send_telegram(f"✅ تم شراء {symbol} بسعر {price:.4f}, كمية: {qty}")
-
-                target1 = price * 1.05
-                target2 = price * 1.10
-                stop_loss = price * 0.98
-                holding = True
-                while holding:
-                    current_price = float(get_klines(symbol_pair)[-1][4])
-                    if current_price >= target1:
-                        place_order(symbol_pair, "SELL", round(qty / 2, 5))
-                        send_telegram(f"🎯 بيع 50% من {symbol} عند +5% بسعر {current_price:.4f}")
-                        target1 = 999999  # تعطيل البيع الأول
-                    if current_price >= target2:
-                        place_order(symbol_pair, "SELL", round(qty / 2, 5))
-                        send_telegram(f"🏁 بيع 100% من {symbol} عند +10% بسعر {current_price:.4f}")
-                        holding = False
-                    if current_price <= stop_loss:
-                        place_order(symbol_pair, "SELL", qty)
-                        send_telegram(f"🚨 وقف خسارة {symbol} عند {current_price:.4f}")
-                        holding = False
-                    time.sleep(30)
-        except Exception as e:
-            send_telegram(f"❌ خطأ في {symbol}: {str(e)}")
-
-    send_telegram("✅ فحص السوق اكتمل، سيتم التكرار بعد 5 دقائق.")
-
-while True:
+    params["sign"] = generate_signature(params, BYBIT_API_SECRET)
     try:
-        trade_logic()
+        response = requests.post(url, data=params)
+        if response.status_code != 200:
+            print(f"Order error for {symbol}:", response.status_code, response.text)
+        return response.json()
     except Exception as e:
-        send_telegram(f"❌ خطأ عام: {e}")
-    time.sleep(300)  # كل 5 دقائق
+        print(f"Exception in place_order for {symbol}:", e)
+        return {}
+
+def calculate_signals(klines):
+    if not klines or len(klines) < 200:
+        return False
+    try:
+        closes = [float(k[4]) for k in klines]
+    except (IndexError, ValueError) as e:
+        print("Error parsing klines:", e)
+        return False
+    ma20 = sum(closes[-20:]) / 20
+    ma50 = sum(closes[-50:]) / 50
+    ma200 = sum(closes[-200:]) / 200
+    return ma20 > ma50 > ma200
+
+def get_balance():
+    url = f"{BASE_URL}/v5/account/wallet-balance?accountType=SPOT"
+    timestamp = str(int(time.time() * 1000))
+    params = {
+        "api_key": BYBIT_API_KEY,
+        "timestamp": timestamp,
+    }
+    params["sign"] = generate_signature(params, BYBIT_API_SECRET)
+
+    try:
+        response = requests.get(url, params=params)
+        data = response.json()
+        coins = data.get("result", {}).get("list", [])
+        usdt_balance = 0.0
+        for coin_info in coins:
+            if coin_info.get("coin") == "USDT":
+                usdt_balance = float(coin_info.get("walletBalance", 0))
+                break
+        return usdt_balance
+    except Exception as e:
+        print("❌ Error getting balance:", e)
+        return 0.0
+
+async def trading_loop():
+    while True:
+        try:
+            symbols = read_symbols()
+            if not symbols:
+                symbols = get_top_50_symbols()
+
+            balance = get_balance()
+            usdt_to_trade = 30  # شراء دائم بـ 30 دولار كما طلبت
+
+            send_telegram(f"📈 فحص السوق بدأ لـ {len(symbols)} عملة، الرصيد: {balance:.2f} USDT")
+
+            for symbol in symbols:
+                klines = get_klines(symbol)
+                if not klines:
+                    continue
+                signal = calculate_signals(klines)
+                if signal:
+                    price = float(klines[-1][4])
+                    qty = round(usdt_to_trade / price, 4)
+                    place_order(symbol, "Buy", qty)
+
+                    sl_price = price * (1 - 0.02)  # وقف خسارة 2%
+                    tp1_price = price * (1 + 0.05)  # جني ربح 5%
+                    tp2_price = price * (1 + 0.10)  # جني ربح 10%
+
+                    send_telegram(
+                        f"✅ إشارة شراء {symbol}\n"
+                        f"السعر: {price:.4f}\n"
+                        f"الكمية: {qty}\n"
+                        f"🚫 وقف خسارة: {sl_price:.4f}\n"
+                        f"🎯 جني ربح 1: {tp1_price:.4f}\n"
+                        f"🎯 جني ربح 2: {tp2_price:.4f}"
+                    )
+                    await asyncio.sleep(1.5)
+
+            send_telegram("✅ فحص السوق اكتمل، سيتم التكرار خلال 25 دقيقة.")
+        except Exception as e:
+            send_telegram(f"❌ حدث خطأ في الدورة: {str(e)}")
+
+        await asyncio.sleep(25 * 60)  # 25 دقيقة
+
+if __name__ == "__main__":
+    asyncio.run(trading_loop())
