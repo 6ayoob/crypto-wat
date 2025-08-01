@@ -7,8 +7,8 @@ TELEGRAM_TOKEN = "8300868885:AAEx8Zxdkz9CRUHmjJ0vvn6L3kC2kOPCHuk"
 TELEGRAM_CHAT_ID = "658712542"
 
 # مفاتيح API الخاصة بمنصة Bybit (مفتاح API والسر السري)
-BYBIT_API_KEY = "RL1vDDShwTgdlCdleD"
-BYBIT_API_SECRET = "3MyYwolwVyiHU3hN06jTR3VxWplUJe8rgRSY"
+BYBIT_API_KEY = "kLUkQ10bjOQkAD9I2xNIUOxLRiBWFRDmw2RJXHMb6sodChOTEfCmaBg77jpBUCG4"
+BYBIT_API_SECRET = "TuVFC67mDsRoVRmVE9rPb0qfCEdMinnKjRrYZO3pkXVk7m12ZjDvNvXKYKgQgPVo"
 
 # عدد العملات التي سيتم فحصها من الأعلى حجم تداول (مثلاً 50)
 TOP_COINS = 50
