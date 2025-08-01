@@ -8,7 +8,6 @@ from datetime import datetime, timezone, timedelta
 logging.basicConfig(level=logging.INFO)
 
 COINGECKO_API = "https://api.coingecko.com/api/v3"
-
 bot = Bot(token=TELEGRAM_TOKEN)
 dp = Dispatcher(bot)
 
@@ -17,10 +16,8 @@ cg_cache = {
     "timestamp": None
 }
 
-
 async def fetch_top_100(retries=3):
     now = datetime.now(timezone.utc)
-
     if cg_cache["data"] and cg_cache["timestamp"]:
         if (now - cg_cache["timestamp"]).total_seconds() < 60:
             return cg_cache["data"]
@@ -58,70 +55,71 @@ async def fetch_top_100(retries=3):
                 await asyncio.sleep(5)
     return []
 
-
 async def scan_strategy_1():
-    """
-    الاستراتيجية 1: ارتفاع مفاجئ في السعر (+2% خلال 15 دقيقة) وحجم تداول عالي (>5M).
-    """
-    logging.info("🔍 تنفيذ الاستراتيجية 1: ارتفاع السعر المفاجئ والحجم العالي...")
+    logging.info("🔍 تنفيذ الاستراتيجية 1...")
     coins = await fetch_top_100()
     movers = []
-
     for coin in coins:
         price = coin.get("current_price", 0)
         volume = coin.get("total_volume", 0)
         change_15m = coin.get("price_change_percentage_15m_in_currency", 0)
-
         if price > 0 and volume > 5_000_000 and change_15m and change_15m > 2:
             movers.append(f"{coin['symbol'].upper()} ⏫ {change_15m:.2f}% (حجم: {volume})")
-
-    if movers:
-        return "📈 [استراتيجية 1] العملات النشطة:\n" + "\n".join(movers)
-    else:
-        return "🔎 [استراتيجية 1] لا توجد حركات بارزة حاليًا."
-
+    return "📈 [استراتيجية 1] العملات النشطة:\n" + "\n".join(movers) if movers else "🔎 [استراتيجية 1] لا توجد حركات بارزة حاليًا."
 
 async def scan_strategy_2():
-    """
-    الاستراتيجية 2: ارتفاع مفاجئ في حجم التداول (+50% عن المتوسط) مع تغير بسيط في السعر (±1%).
-    """
-    logging.info("🔍 تنفيذ الاستراتيجية 2: ارتفاع حجم التداول المفاجئ وتغير بسيط في السعر...")
+    logging.info("🔍 تنفيذ الاستراتيجية 2...")
     coins = await fetch_top_100()
     movers = []
-
     for coin in coins:
         price = coin.get("current_price", 0)
         volume = coin.get("total_volume", 0)
         change_15m = coin.get("price_change_percentage_15m_in_currency", 0)
-        # للحصول على المتوسط، نفترض أن لدينا متوسط حجم التداول محفوظ في coin.get("average_volume_50d")
-        # لكن CoinGecko لا يعطي هذا، لذلك هذه نقطة لتحسين لاحقًا.
-        # الآن نستخدم قيمة ثابتة تقريبية 3,000,000 كمتوسط افتراضي (يمكن تعديلها حسب الحاجة).
         average_volume = 3_000_000
-
         if price > 0 and volume > average_volume * 1.5 and change_15m is not None and -1 <= change_15m <= 1:
             movers.append(f"{coin['symbol'].upper()} 🔄 حجم تداول مرتفع مع تغير سعر بسيط ({change_15m:.2f}%)")
+    return "📊 [استراتيجية 2] العملات ذات حجم تداول مرتفع:\n" + "\n".join(movers) if movers else "🔎 [استراتيجية 2] لا توجد حركات بارزة حاليًا."
 
-    if movers:
-        return "📊 [استراتيجية 2] العملات ذات حجم تداول مرتفع:\n" + "\n".join(movers)
-    else:
-        return "🔎 [استراتيجية 2] لا توجد حركات بارزة حاليًا."
-
+async def scan_strategy_3():
+    logging.info("🔍 تنفيذ الاستراتيجية 3 (الربح التراكمي)...")
+    coins = await fetch_top_100()
+    movers = []
+    for coin in coins:
+        symbol = coin.get("symbol", "").upper()
+        price = coin.get("current_price", 0)
+        volume = coin.get("total_volume", 0)
+        change_5m = coin.get("price_change_percentage_5m_in_currency", 0)
+        change_15m = coin.get("price_change_percentage_15m_in_currency", 0)
+        change_1h = coin.get("price_change_percentage_1h_in_currency", 0)
+        if all([
+            price > 0,
+            volume > 3_000_000,
+            change_5m and change_5m > 0.3,
+            change_15m and change_15m > 0.5,
+            change_1h and change_1h > 1.0,
+        ]):
+            movers.append(f"{symbol} 🚀 +{change_5m:.2f}% / +{change_15m:.2f}% / +{change_1h:.2f}% (حجم: {volume})")
+    return "📈 [استراتيجية 3] الربح التراكمي:\n" + "\n".join(movers) if movers else "🔎 [استراتيجية 3] لا توجد فرص حالياً."
 
 @dp.message_handler(commands=["start", "help"])
 async def send_welcome(message: types.Message):
     if str(message.from_user.id) not in ALLOWED_USER_IDS:
         return
-    await message.answer("🤖 أهلاً بك! أرسل /scan لعرض العملات النشطة حالياً.")
-
+    await message.answer("🤖 أهلاً بك! أرسل /scan أو /strategy3 لعرض العملات النشطة حالياً.")
 
 @dp.message_handler(commands=["scan"])
 async def handle_scan(message: types.Message):
     if str(message.from_user.id) not in ALLOWED_USER_IDS:
         return
-    # نفحص باستخدام الاستراتيجية 1 عند الطلب كافتراض
     report = await scan_strategy_1()
     await message.answer(report)
 
+@dp.message_handler(commands=["strategy3"])
+async def handle_strategy3(message: types.Message):
+    if str(message.from_user.id) not in ALLOWED_USER_IDS:
+        return
+    report = await scan_strategy_3()
+    await message.answer(report)
 
 async def main_loop():
     strategy_duration = timedelta(hours=3)
@@ -133,30 +131,28 @@ async def main_loop():
         elapsed = now - strategy_start_time
 
         if elapsed > strategy_duration:
-            # نبدل الاستراتيجية
-            current_strategy = 2 if current_strategy == 1 else 1
+            current_strategy = current_strategy + 1 if current_strategy < 3 else 1
             strategy_start_time = now
             logging.info(f"🔄 تبديل إلى الاستراتيجية {current_strategy}")
 
         if current_strategy == 1:
             report = await scan_strategy_1()
-        else:
+        elif current_strategy == 2:
             report = await scan_strategy_2()
+        else:
+            report = await scan_strategy_3()
 
         for user_id in ALLOWED_USER_IDS:
             try:
                 await bot.send_message(chat_id=user_id, text=report)
-                await asyncio.sleep(1)  # تأخير بسيط بين الرسائل
+                await asyncio.sleep(1)
             except Exception as e:
                 logging.warning(f"❗ خطأ في الإرسال للمستخدم {user_id}: {e}")
-
-        await asyncio.sleep(30)  # تحقق كل 30 ثانية هل الوقت لتبديل الاستراتيجية وتنفيذها مرة أخرى
-
+        await asyncio.sleep(60)
 
 async def main():
     asyncio.create_task(main_loop())
     await dp.start_polling()
-
 
 if __name__ == "__main__":
     asyncio.run(main())
