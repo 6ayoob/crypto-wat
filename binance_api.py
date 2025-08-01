@@ -32,7 +32,7 @@ def get_klines(symbol, interval="1h", limit=200):
     url = f"{BASE_URL}/api/v3/klines"
     params = {"symbol": symbol, "interval": interval, "limit": limit}
     response = requests.get(url, params=params)
-    return response.json()  # كل عنصر: [ openTime, open, high, low, close, volume, ...]
+    return response.json()
 
 def get_balance(asset="USDT"):
     data = send_signed_request("GET", "/api/v3/account")
@@ -47,8 +47,5 @@ def place_order(symbol, side, quantity):
         "side": side,
         "type": "MARKET",
         "quantity": quantity,
-        "timestamp": int(time.time() * 1000)
     }
-    # signature مضافة في send_signed_request
-    response = send_signed_request("POST", "/api/v3/order", params)
-    return response
+    return send_signed_request("POST", "/api/v3/order", params)
