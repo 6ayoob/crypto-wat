@@ -14,6 +14,15 @@ def send_telegram(msg):
     except Exception as e:
         print(f"Telegram send error: {e}")
 
+def get_binance_server_time():
+    try:
+        response = requests.get("https://api.binance.com/api/v3/time", timeout=10)
+        response.raise_for_status()
+        return response.json()['serverTime']
+    except Exception as e:
+        send_telegram(f"❌ خطأ في جلب توقيت السيرفر: {e}")
+        return int(time.time() * 1000)  # fallback للوقت المحلي
+
 def get_klines(symbol):
     url = "https://api.binance.com/api/v3/klines"
     params = {"symbol": symbol, "interval": "15m", "limit": 50}
@@ -35,7 +44,7 @@ def calculate_ema(prices, length):
     return ema
 
 def place_order(symbol, side, quantity):
-timestamp = get_binance_server_time()
+    timestamp = get_binance_server_time()
     params = {
         "symbol": symbol,
         "side": side,
@@ -57,7 +66,7 @@ timestamp = get_binance_server_time()
 
 def get_balance(asset="USDT"):
     url = "https://api.binance.com/api/v3/account"
-timestamp = get_binance_server_time()
+    timestamp = get_binance_server_time()
     query_string = f"timestamp={timestamp}"
     signature = hmac.new(BINANCE_SECRET.encode(), query_string.encode(), hashlib.sha256).hexdigest()
     headers = {"X-MBX-APIKEY": BINANCE_API}
