@@ -4,8 +4,8 @@ import hmac
 import hashlib
 
 # مفاتيح API الخاصة بك
-API_KEY = "ضع مفتاح API هنا"
-API_SECRET = "ضع السر هنا"
+API_KEY = "kLUkQ10bjOQkAD9I2xNIUOxLRiBWFRDmw2RJXHMb6sodChOTEfCmaBg77jpBUCG4"
+API_SECRET = "TuVFC67mDsRoVRmVE9rPb0qfCEdMinnKjRrYZO3pkXVk7m12ZjDvNvXKYKgQgPVo"
 
 BASE_URL = "https://api.binance.com"
 
