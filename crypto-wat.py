@@ -149,8 +149,8 @@ def trade_logic():
         send_telegram(f"⚠️ رصيد USDT غير كافي: {balance:.2f}")
         return
 
-    # نحدد حجم الصفقة: 2% من الرصيد
-   trade_size_usdt = balance * 0.30
+    # نحدد حجم الصفقة: 30% من الرصيد
+    trade_size_usdt = balance * 0.30
 
     for instId in SYMBOLS:
         if any(t["instId"] == instId for t in open_trades):
