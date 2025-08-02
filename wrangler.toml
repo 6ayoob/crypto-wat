@@ -1,0 +1,7 @@
+name = "d1-worker"
+compatibility_date = "2025-08-02"
+type = "javascript"
+
+d1_databases = [
+  { binding = "DB", database_name = "MY_D1_DATABASE" }
+]
