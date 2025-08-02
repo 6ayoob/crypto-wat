@@ -9,7 +9,12 @@ from config import OKX_API_KEY, OKX_SECRET_KEY, OKX_PASSPHRASE, TELEGRAM_TOKEN, 
 
 BASE_URL = "https://www.okx.com"
 
-# قائمة العملات الثابتة (يمكنك تعديلها)
+# ✅ فحص القيم عند بدء التشغيل
+if not OKX_API_KEY or not OKX_SECRET_KEY or not OKX_PASSPHRASE:
+    raise ValueError("❌ مفاتيح OKX API غير موجودة! تحقق من ملف config.py")
+
+print(f"✅ DEBUG: تم تحميل مفاتيح OKX (API_KEY يبدأ بـ {OKX_API_KEY[:6]})")
+
 SYMBOLS = [
     "BTC-USDT", "ETH-USDT", "SOL-USDT", "AVAX-USDT", "XRP-USDT",
     "LTC-USDT", "BCH-USDT", "DOT-USDT", "MATIC-USDT", "ATOM-USDT",
@@ -24,6 +29,8 @@ SYMBOLS = [
 ]
 
 open_trades = []
+
+# -------------------- [ أدوات المساعدة ] --------------------
 
 def send_telegram(msg):
     url = f"https://api.telegram.org/bot{TELEGRAM_TOKEN}/sendMessage"
@@ -43,14 +50,15 @@ def sign_okx(ts, method, path, body=""):
 def okx_headers(method, path, body=""):
     ts = iso_timestamp()
     sign = sign_okx(ts, method, path, body)
-    headers = {
+    return {
         "Content-Type": "application/json",
         "OK-ACCESS-KEY": OKX_API_KEY,
         "OK-ACCESS-SIGN": sign,
         "OK-ACCESS-TIMESTAMP": ts,
-        "OK-ACCESS-PASSPHRASE": OKX_PASSPHRASE,
+        "OK-ACCESS-PASSPHRASE": OKX_PASSPHRASE
     }
-    return headers
+
+# -------------------- [ وظائف API ] --------------------
 
 def get_klines(instId):
     url = f"/api/v5/market/candles?instId={instId}&bar=15m&limit=50"
@@ -62,54 +70,17 @@ def get_klines(instId):
         send_telegram(f"❌ خطأ في جلب الشموع لـ {instId}: {e}")
         return []
 
-def calculate_ema(prices, length):
-    if len(prices) < length:
-        return None
-    k = 2 / (length + 1)
-    ema = prices[0]
-    for p in prices[1:]:
-        ema = p * k + ema * (1 - k)
-    return ema
-
-def calculate_rsi(prices, period=14):
-    if len(prices) < period + 1:
-        return None
-    gains = []
-    losses = []
-    for i in range(1, period+1):
-        delta = prices[i] - prices[i-1]
-        if delta > 0:
-            gains.append(delta)
-            losses.append(0)
-        else:
-            gains.append(0)
-            losses.append(abs(delta))
-    average_gain = sum(gains) / period
-    average_loss = sum(losses) / period
-    if average_loss == 0:
-        return 100
-    rs = average_gain / average_loss
-    rsi = 100 - (100 / (1 + rs))
-    return rsi
-
 def get_balance(ccy="USDT"):
     path = f"/api/v5/account/balance?ccy={ccy}"
-    ts = iso_timestamp()
-    sign = sign_okx(ts, "GET", path, "")
-    headers = {
-        "Content-Type": "application/json",
-        "OK-ACCESS-KEY": OKX_API_KEY,
-        "OK-ACCESS-SIGN": sign,
-        "OK-ACCESS-TIMESTAMP": ts,
-        "OK-ACCESS-PASSPHRASE": OKX_PASSPHRASE,
-    }
+    headers = okx_headers("GET", path)
     try:
         r = requests.get(BASE_URL + path, headers=headers, timeout=10)
+        if r.status_code == 401:
+            send_telegram("❌ مصادقة فاشلة: تحقق من API Key وPassphrase")
         r.raise_for_status()
         data = r.json()
         for item in data.get("data", []):
-            details = item.get("details", [])
-            for d in details:
+            for d in item.get("details", []):
                 if d.get("ccy") == ccy:
                     return float(d.get("availBal", "0"))
     except Exception as e:
@@ -125,22 +96,45 @@ def place_order(instId, side, sz):
         "ordType": "market",
         "sz": str(sz)
     }
-    ts = iso_timestamp()
-    sign = sign_okx(ts, "POST", path, json.dumps(body))
-    headers = {
-        "Content-Type": "application/json",
-        "OK-ACCESS-KEY": OKX_API_KEY,
-        "OK-ACCESS-SIGN": sign,
-        "OK-ACCESS-TIMESTAMP": ts,
-        "OK-ACCESS-PASSPHRASE": OKX_PASSPHRASE,
-    }
+    json_body = json.dumps(body, separators=(',', ':'))
+    headers = okx_headers("POST", path, json_body)
     try:
-        r = requests.post(BASE_URL + path, headers=headers, data=json.dumps(body), timeout=10)
+        r = requests.post(BASE_URL + path, headers=headers, data=json_body, timeout=10)
+        if r.status_code == 401:
+            send_telegram("❌ مصادقة فاشلة عند تنفيذ أمر: تحقق من API Key")
         r.raise_for_status()
         return r.json()
     except Exception as e:
         send_telegram(f"❌ خطأ تنفيذ أمر {side} لـ {instId}: {e}")
         return None
+
+# -------------------- [ المؤشرات ] --------------------
+
+def calculate_ema(prices, length):
+    if len(prices) < length:
+        return None
+    k = 2 / (length + 1)
+    ema = prices[0]
+    for p in prices[1:]:
+        ema = p * k + ema * (1 - k)
+    return ema
+
+def calculate_rsi(prices, period=14):
+    if len(prices) < period + 1:
+        return None
+    gains, losses = [], []
+    for i in range(1, period + 1):
+        delta = prices[i] - prices[i - 1]
+        gains.append(max(delta, 0))
+        losses.append(max(-delta, 0))
+    avg_gain = sum(gains) / period
+    avg_loss = sum(losses) / period
+    if avg_loss == 0:
+        return 100
+    rs = avg_gain / avg_loss
+    return 100 - (100 / (1 + rs))
+
+# -------------------- [ منطق التداول ] --------------------
 
 def trade_logic():
     global open_trades
@@ -149,19 +143,17 @@ def trade_logic():
         send_telegram(f"⚠️ رصيد USDT غير كافي: {balance:.2f}")
         return
 
-    # نحدد حجم الصفقة: 30% من الرصيد
     trade_size_usdt = balance * 0.30
 
     for instId in SYMBOLS:
         if any(t["instId"] == instId for t in open_trades):
-            continue  # هناك صفقة مفتوحة
+            continue
 
         data = get_klines(instId)
         if not data or len(data) < 21:
-            send_telegram(f"⚠️ بيانات غير كافية لـ {instId}")
             continue
 
-        closes = [float(candle[4]) for candle in data]
+        closes = [float(c[4]) for c in data]
         ema9 = calculate_ema(closes[-20:], 9)
         ema21 = calculate_ema(closes[-20:], 21)
         rsi = calculate_rsi(closes[-20:])
@@ -169,57 +161,48 @@ def trade_logic():
         if ema9 is None or ema21 is None or rsi is None:
             continue
 
-        # شرط الدخول
         if ema9 > ema21 and rsi < 70:
             qty = round(trade_size_usdt / closes[-1], 6)
             order = place_order(instId, "buy", qty)
             if order:
-                open_trades.append({
-                    "instId": instId,
-                    "entry_price": closes[-1],
-                    "qty": qty,
-                    "sold": False
-                })
+                open_trades.append({"instId": instId, "entry_price": closes[-1], "qty": qty, "sold": False})
                 send_telegram(f"✅ شراء {instId} بسعر {closes[-1]:.4f} كمية: {qty}")
-        time.sleep(1)  # احترام حدود API
+        time.sleep(1)
 
 def follow_trades():
     global open_trades
-    updated_trades = []
+    updated = []
     for trade in open_trades:
         data = get_klines(trade["instId"])
-        if not data or len(data) == 0:
-            updated_trades.append(trade)
+        if not data:
+            updated.append(trade)
             continue
+
         current_price = float(data[-1][4])
         entry_price = trade["entry_price"]
         qty = trade["qty"]
-
-        # حساب الربح/الخسارة بالنسبة المئوية
         change_pct = (current_price - entry_price) / entry_price * 100
 
-        # حساب EMA9 و EMA21 لتحديد تقاطع خروج
-        closes = [float(candle[4]) for candle in data]
+        closes = [float(c[4]) for c in data]
         ema9 = calculate_ema(closes[-20:], 9)
         ema21 = calculate_ema(closes[-20:], 21)
 
-        # شروط الخروج
-        if ema9 is not None and ema21 is not None:
+        if ema9 and ema21:
             if ema9 < ema21 or change_pct <= -2 or change_pct >= 5:
                 order = place_order(trade["instId"], "sell", qty)
                 if order:
                     send_telegram(f"🏁 بيع {trade['instId']} بسعر {current_price:.4f} تغير %{change_pct:.2f}")
             else:
-                updated_trades.append(trade)
+                updated.append(trade)
         else:
-            updated_trades.append(trade)
-
+            updated.append(trade)
         time.sleep(1)
+    open_trades = updated
 
-    open_trades = updated_trades
+# -------------------- [ التشغيل ] --------------------
 
 if __name__ == "__main__":
-    send_telegram("🤖 بدأ تشغيل بوت التداول على OKX")
+    send_telegram("🤖 بدأ تشغيل بوت التداول على OKX (الإصدار المصحح)")
 
     while True:
         try:
@@ -227,4 +210,4 @@ if __name__ == "__main__":
             follow_trades()
         except Exception as e:
             send_telegram(f"❌ خطأ عام: {e}")
-        time.sleep(300)  # كل 5 دقائق
+        time.sleep(300)
