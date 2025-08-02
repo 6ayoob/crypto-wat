@@ -150,7 +150,7 @@ def trade_logic():
         return
 
     # نحدد حجم الصفقة: 2% من الرصيد
-    trade_size_usdt = balance * 0.02
+   trade_size_usdt = balance * 0.30
 
     for instId in SYMBOLS:
         if any(t["instId"] == instId for t in open_trades):
