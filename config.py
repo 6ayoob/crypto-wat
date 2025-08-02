@@ -6,9 +6,10 @@ TELEGRAM_TOKEN = "8300868885:AAEx8Zxdkz9CRUHmjJ0vvn6L3kC2kOPCHuk"
 # معرف المحادثة (chat_id) الذي سيرسل إليه البوت الرسائل
 TELEGRAM_CHAT_ID = "658712542"
 
-# مفاتيح API الخاصة بمنصة Bybit (مفتاح API والسر السري)
-BINANCE_API = "kLUkQ10bjOQkAD9I2xNIUOxLRiBWFRDmw2RJXHMb6sodChOTEfCmaBg77jpBUCG4"
-BINANCE_SECRET = "TuVFC67mDsRoVRmVE9rPb0qfCEdMinnKjRrYZO3pkXVk7m12ZjDvNvXKYKgQgPVo"
+# مفاتيح API الخاصة بمنصة okx (مفتاح API والسر السري)
+OKX_API_KEY = "5df74c21-ab87-4bef-8125-80e07eba1f5b"
+OKX_SECRET_KEY = "AB05EDC855495411BF66A5597FFB23B7"
+OKX_PASSPHRASE = "Ta123456&"
 
 # عدد العملات التي سيتم فحصها من الأعلى حجم تداول (مثلاً 50)
 TOP_COINS = 50
@@ -27,10 +28,3 @@ TAKE_PROFIT_MAX = 8
 CHECK_INTERVAL_MINUTES = 25
 
 ALLOWED_USER_IDS = [658712542]
-
-OKX_API_KEY = "ضع_مفتاحك"
-OKX_SECRET_KEY = "ضع_سرك"
-OKX_PASSPHRASE = "ضع_رمزك_السري"
-TELEGRAM_TOKEN = "توكن_تيليجرام"
-TELEGRAM_CHAT_ID = "معرفك_في_تيليجرام"
-
