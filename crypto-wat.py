@@ -5,9 +5,13 @@ import base64
 import datetime
 import json
 import requests
+import logging
 from config import OKX_API_KEY, OKX_SECRET_KEY, OKX_PASSPHRASE, TELEGRAM_TOKEN, TELEGRAM_CHAT_ID
 
 BASE_URL = "https://www.okx.com"
+
+# 🔹 إعداد اللوج
+logging.basicConfig(filename="trading.log", level=logging.INFO, format="%(asctime)s - %(levelname)s - %(message)s")
 
 # ✅ فحص القيم عند بدء التشغيل
 if not OKX_API_KEY or not OKX_SECRET_KEY or not OKX_PASSPHRASE:
@@ -33,11 +37,11 @@ open_trades = []
 # -------------------- [ أدوات المساعدة ] --------------------
 
 def send_telegram(msg):
-    url = f"https://api.telegram.org/bot{TELEGRAM_TOKEN}/sendMessage"
     try:
+        url = f"https://api.telegram.org/bot{TELEGRAM_TOKEN}/sendMessage"
         requests.post(url, data={"chat_id": TELEGRAM_CHAT_ID, "text": msg}, timeout=5)
     except Exception as e:
-        print(f"Telegram Error: {e}")
+        logging.error(f"Telegram Error: {e}")
 
 def iso_timestamp():
     return datetime.datetime.utcnow().replace(microsecond=0).isoformat() + 'Z'
@@ -67,6 +71,7 @@ def get_klines(instId):
         r.raise_for_status()
         return r.json().get("data", [])[::-1]
     except Exception as e:
+        logging.error(f"خطأ جلب الشموع {instId}: {e}")
         send_telegram(f"❌ خطأ في جلب الشموع لـ {instId}: {e}")
         return []
 
@@ -76,7 +81,7 @@ def get_balance(ccy="USDT"):
     try:
         r = requests.get(BASE_URL + path, headers=headers, timeout=10)
         if r.status_code == 401:
-            send_telegram("❌ مصادقة فاشلة: تحقق من API Key وPassphrase")
+            raise Exception("401 Unauthorized: تحقق من API Key/Passphrase")
         r.raise_for_status()
         data = r.json()
         for item in data.get("data", []):
@@ -84,6 +89,7 @@ def get_balance(ccy="USDT"):
                 if d.get("ccy") == ccy:
                     return float(d.get("availBal", "0"))
     except Exception as e:
+        logging.error(f"خطأ جلب الرصيد: {e}")
         send_telegram(f"❌ خطأ في جلب الرصيد: {e}")
     return 0.0
 
@@ -101,10 +107,11 @@ def place_order(instId, side, sz):
     try:
         r = requests.post(BASE_URL + path, headers=headers, data=json_body, timeout=10)
         if r.status_code == 401:
-            send_telegram("❌ مصادقة فاشلة عند تنفيذ أمر: تحقق من API Key")
+            raise Exception("401 Unauthorized عند تنفيذ أمر")
         r.raise_for_status()
         return r.json()
     except Exception as e:
+        logging.error(f"خطأ تنفيذ أمر {side} لـ {instId}: {e}")
         send_telegram(f"❌ خطأ تنفيذ أمر {side} لـ {instId}: {e}")
         return None
 
@@ -158,15 +165,13 @@ def trade_logic():
         ema21 = calculate_ema(closes[-20:], 21)
         rsi = calculate_rsi(closes[-20:])
 
-        if ema9 is None or ema21 is None or rsi is None:
-            continue
-
-        if ema9 > ema21 and rsi < 70:
-            qty = round(trade_size_usdt / closes[-1], 6)
-            order = place_order(instId, "buy", qty)
-            if order:
-                open_trades.append({"instId": instId, "entry_price": closes[-1], "qty": qty, "sold": False})
-                send_telegram(f"✅ شراء {instId} بسعر {closes[-1]:.4f} كمية: {qty}")
+        if ema9 and ema21 and rsi:
+            if ema9 > ema21 and rsi < 70:
+                qty = round(trade_size_usdt / closes[-1], 6)
+                order = place_order(instId, "buy", qty)
+                if order:
+                    open_trades.append({"instId": instId, "entry_price": closes[-1], "qty": qty, "sold": False})
+                    send_telegram(f"✅ شراء {instId} بسعر {closes[-1]:.4f} كمية: {qty}")
         time.sleep(1)
 
 def follow_trades():
@@ -199,15 +204,35 @@ def follow_trades():
         time.sleep(1)
     open_trades = updated
 
-# -------------------- [ التشغيل ] --------------------
+# -------------------- [ اختبار المصادقة قبل التشغيل ] --------------------
+
+def test_okx_auth():
+    try:
+        balance = get_balance()
+        if balance == 0:
+            raise Exception("لم يتمكن من جلب الرصيد")
+        send_telegram(f"✅ اختبار المصادقة ناجح! الرصيد: {balance} USDT")
+        return True
+    except Exception as e:
+        send_telegram(f"❌ فشل اختبار المصادقة: {e}")
+        logging.error(f"فشل اختبار المصادقة: {e}")
+        return False
+
+# -------------------- [ التشغيل الرئيسي ] --------------------
 
 if __name__ == "__main__":
-    send_telegram("🤖 بدأ تشغيل بوت التداول على OKX (الإصدار المصحح)")
+    send_telegram("🤖 بدء اختبار اتصال OKX...")
+    if not test_okx_auth():
+        send_telegram("⛔️ تم إيقاف البوت لعدم نجاح الاتصال بالمفاتيح!")
+        exit()
+
+    send_telegram("🤖 بدأ تشغيل بوت التداول على OKX (الإصدار الآمن)")
 
     while True:
         try:
             trade_logic()
             follow_trades()
         except Exception as e:
+            logging.error(f"خطأ عام: {e}")
             send_telegram(f"❌ خطأ عام: {e}")
         time.sleep(300)
