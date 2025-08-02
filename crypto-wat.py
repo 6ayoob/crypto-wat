@@ -1,5 +1,8 @@
 import time
 import requests
+ip = requests.get("https://api.ipify.org").text
+print(f"📡 IP العام الخاص بـ Render هو: {ip}")
+
 import hmac
 import hashlib
 import base64
