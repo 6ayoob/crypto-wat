@@ -1,8 +1,5 @@
 import time
 import requests
-ip = requests.get("https://api.ipify.org").text
-print(f"📡 IP العام الخاص بـ Render هو: {ip}")
-
 import hmac
 import hashlib
 import base64
@@ -11,7 +8,6 @@ import json
 from config import OKX_API_KEY, OKX_SECRET_KEY, OKX_PASSPHRASE, TELEGRAM_TOKEN, TELEGRAM_CHAT_ID
 
 BASE_URL = "https://www.okx.com"
-
 open_trades = []
 
 def send_telegram(msg):
@@ -38,7 +34,7 @@ def okx_headers(method, path, body=""):
         "OK-ACCESS-SIGN": sign,
         "OK-ACCESS-TIMESTAMP": ts,
         "OK-ACCESS-PASSPHRASE": OKX_PASSPHRASE,
-        "x-simulated-trading": "1",  # احذف هذا السطر لو تستخدم حساب حقيقي
+        # لا تضع x-simulated-trading هنا لأنك تستخدم حساب حقيقي
     }
 
 def get_klines(instId):
@@ -52,7 +48,8 @@ def get_klines(instId):
         return []
 
 def calculate_ema(prices, length):
-    if len(prices) < length: return None
+    if len(prices) < length:
+        return None
     k = 2 / (length + 1)
     ema = prices[0]
     for p in prices[1:]:
@@ -104,7 +101,7 @@ def trade_logic():
         send_telegram(f"⚠️ الرصيد غير كافي: {balance:.2f} USDT")
         return
 
-    send_telegram(f"📈 بدء الفحص لـ {len(symbols)} عملة. الرصيد: {balance:.2f} USDT")
+    send_telegram(f"📊 بدء المسح لـ {len(symbols)} عملة. الرصيد الحالي: {balance:.2f} USDT")
 
     for s in symbols:
         instId = f"{s}-USDT"
@@ -126,7 +123,7 @@ def trade_logic():
                     "target1": price * 1.05, "target2": price * 1.10, "stop_loss": price * 0.98,
                     "sold_target1": False
                 })
-                send_telegram(f"✅ شراء {s} بسعر {price:.4f} كمية: {qty}")
+                send_telegram(f"✅ شراء {s} بسعر {price:.4f} | كمية: {qty}")
         time.sleep(1)
 
 def follow_trades():
@@ -134,32 +131,33 @@ def follow_trades():
     updated = []
     for t in open_trades:
         data = get_klines(t["instId"])
-        if not data: updated.append(t); continue
+        if not data:
+            updated.append(t)
+            continue
         current_price = float(data[-1][4])
         if not t["sold_target1"] and current_price >= t["target1"]:
             half_qty = round(t["qty"] / 2, 4)
             if place_order(t["instId"], "sell", half_qty):
-                send_telegram(f"🎯 بيع 50% من {t['symbol']} عند +5% بسعر {current_price:.4f}")
+                send_telegram(f"🎯 بيع 50% من {t['symbol']} عند +5% | السعر: {current_price:.4f}")
                 t["sold_target1"] = True
                 t["qty"] -= half_qty
             updated.append(t)
         elif current_price >= t["target2"]:
             if place_order(t["instId"], "sell", t["qty"]):
-                send_telegram(f"🏁 بيع الباقي من {t['symbol']} عند +10% بسعر {current_price:.4f}")
+                send_telegram(f"🏁 بيع باقي {t['symbol']} عند +10% | السعر: {current_price:.4f}")
         elif current_price <= t["stop_loss"]:
             if place_order(t["instId"], "sell", t["qty"]):
-                send_telegram(f"🚨 وقف خسارة {t['symbol']} عند {current_price:.4f}")
+                send_telegram(f"🚨 وقف خسارة {t['symbol']} | السعر: {current_price:.4f}")
         else:
             updated.append(t)
     open_trades = updated
 
 if __name__ == "__main__":
-    ip = "غير معروف"
     try:
-        ip = requests.get("https://api.ipify.org?format=json", timeout=5).json().get("ip", ip)
+        ip = requests.get("https://api.ipify.org?format=json", timeout=5).json().get("ip", "غير معروف")
+        send_telegram(f"🤖 بدأ تشغيل البوت على IP: {ip}")
     except:
-        pass
-    send_telegram(f"🤖 بدأ تشغيل البوت على IP: {ip}")
+        send_telegram("🤖 بدأ تشغيل البوت (تعذر جلب IP)")
 
     while True:
         try:
