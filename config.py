@@ -28,3 +28,9 @@ CHECK_INTERVAL_MINUTES = 25
 
 ALLOWED_USER_IDS = [658712542]
 
+OKX_API_KEY = "ضع_مفتاحك"
+OKX_SECRET_KEY = "ضع_سرك"
+OKX_PASSPHRASE = "ضع_رمزك_السري"
+TELEGRAM_TOKEN = "توكن_تيليجرام"
+TELEGRAM_CHAT_ID = "معرفك_في_تيليجرام"
+
