@@ -1,238 +1,148 @@
 import time
 import hmac
 import hashlib
-import base64
-import datetime
-import json
 import requests
-import logging
-from config import OKX_API_KEY, OKX_SECRET_KEY, OKX_PASSPHRASE, TELEGRAM_TOKEN, TELEGRAM_CHAT_ID
+import base64
+import json
+from datetime import datetime
+from config import *
+
+# قائمة العملات التي سيتم فحصها (مثال لـ 50 عملة)
+SYMBOLS = [
+    "BTC-USDT", "ETH-USDT", "SOL-USDT", "XRP-USDT", "DOGE-USDT",
+    "ADA-USDT", "AVAX-USDT", "DOT-USDT", "TRX-USDT", "LINK-USDT",
+    "MATIC-USDT", "LTC-USDT", "NEAR-USDT", "UNI-USDT", "ATOM-USDT",
+    "OP-USDT", "ETC-USDT", "XLM-USDT", "INJ-USDT", "RNDR-USDT",
+    "SUI-USDT", "PEPE-USDT", "TIA-USDT", "SEI-USDT", "BCH-USDT",
+    "CRO-USDT", "RUNE-USDT", "APT-USDT", "MKR-USDT", "FTM-USDT",
+    "THETA-USDT", "AAVE-USDT", "GALA-USDT", "AR-USDT", "CRV-USDT",
+    "KAVA-USDT", "GMX-USDT", "FET-USDT", "1INCH-USDT", "ENJ-USDT",
+    "DYDX-USDT", "ZIL-USDT", "CELO-USDT", "ANKR-USDT", "YFI-USDT",
+    "WAVES-USDT", "CHZ-USDT", "ALGO-USDT", "CAKE-USDT", "BAND-USDT"
+]
 
 BASE_URL = "https://www.okx.com"
 
-# 🔹 إعداد اللوج
-logging.basicConfig(filename="trading.log", level=logging.INFO, format="%(asctime)s - %(levelname)s - %(message)s")
-
-# ✅ فحص القيم عند بدء التشغيل
-if not OKX_API_KEY or not OKX_SECRET_KEY or not OKX_PASSPHRASE:
-    raise ValueError("❌ مفاتيح OKX API غير موجودة! تحقق من ملف config.py")
-
-print(f"✅ DEBUG: تم تحميل مفاتيح OKX (API_KEY يبدأ بـ {OKX_API_KEY[:6]})")
-
-SYMBOLS = [
-    "BTC-USDT", "ETH-USDT", "SOL-USDT", "AVAX-USDT", "XRP-USDT",
-    "LTC-USDT", "BCH-USDT", "DOT-USDT", "MATIC-USDT", "ATOM-USDT",
-    "LINK-USDT", "ALGO-USDT", "VET-USDT", "EOS-USDT", "FIL-USDT",
-    "TRX-USDT", "XLM-USDT", "NEAR-USDT", "AAVE-USDT", "UNI-USDT",
-    "CAKE-USDT", "FTM-USDT", "GRT-USDT", "SUSHI-USDT", "YFI-USDT",
-    "COMP-USDT", "MKR-USDT", "ZRX-USDT", "SNX-USDT", "BAT-USDT",
-    "CRV-USDT", "ENJ-USDT", "1INCH-USDT", "KNC-USDT", "REN-USDT",
-    "BAL-USDT", "NKN-USDT", "STORJ-USDT", "CHZ-USDT", "RUNE-USDT",
-    "DASH-USDT", "ZEN-USDT", "ZEC-USDT", "OMG-USDT", "LRC-USDT",
-    "CEL-USDT", "KSM-USDT", "BTG-USDT", "QTUM-USDT", "WAVES-USDT"
-]
-
-open_trades = []
-
-# -------------------- [ أدوات المساعدة ] --------------------
-
+# دالة إرسال رسالة إلى تيليجرام
 def send_telegram(msg):
+    url = f"https://api.telegram.org/bot{TELEGRAM_TOKEN}/sendMessage"
+    payload = {"chat_id": TELEGRAM_CHAT_ID, "text": msg}
     try:
-        url = f"https://api.telegram.org/bot{TELEGRAM_TOKEN}/sendMessage"
-        requests.post(url, data={"chat_id": TELEGRAM_CHAT_ID, "text": msg}, timeout=5)
+        requests.post(url, data=payload)
     except Exception as e:
-        logging.error(f"Telegram Error: {e}")
+        print(f"❌ Telegram Error: {e}")
 
-def iso_timestamp():
-    return datetime.datetime.utcnow().replace(microsecond=0).isoformat() + 'Z'
+# دالة إنشاء التوقيع للتوثيق
 
-def sign_okx(ts, method, path, body=""):
-    pre_hash = f"{ts}{method.upper()}{path}{body}"
-    hmac_key = hmac.new(OKX_SECRET_KEY.encode(), pre_hash.encode(), hashlib.sha256)
-    return base64.b64encode(hmac_key.digest()).decode()
+def get_okx_signature(timestamp, method, request_path, body, secret_key):
+    message = f"{timestamp}{method}{request_path}{body}"
+    mac = hmac.new(secret_key.encode(), message.encode(), hashlib.sha256)
+    d = mac.digest()
+    return base64.b64encode(d).decode()
 
-def okx_headers(method, path, body=""):
-    ts = iso_timestamp()
-    sign = sign_okx(ts, method, path, body)
+# دالة إنشاء الهيدر للمصادقة
+
+def get_okx_headers(endpoint, method="GET", body=""):
+    timestamp = datetime.utcnow().isoformat("T", "milliseconds") + "Z"
+    sign = get_okx_signature(timestamp, method, endpoint, body, OKX_SECRET_KEY)
     return {
-        "Content-Type": "application/json",
         "OK-ACCESS-KEY": OKX_API_KEY,
         "OK-ACCESS-SIGN": sign,
-        "OK-ACCESS-TIMESTAMP": ts,
-        "OK-ACCESS-PASSPHRASE": OKX_PASSPHRASE
+        "OK-ACCESS-TIMESTAMP": timestamp,
+        "OK-ACCESS-PASSPHRASE": OKX_PASSPHRASE,
+        "Content-Type": "application/json"
     }
 
-# -------------------- [ وظائف API ] --------------------
+# دالة جلب الرصيد
 
-def get_klines(instId):
-    url = f"/api/v5/market/candles?instId={instId}&bar=15m&limit=50"
+def get_usdt_balance():
+    endpoint = "/api/v5/account/balance?ccy=USDT"
+    url = BASE_URL + endpoint
     try:
-        r = requests.get(BASE_URL + url, timeout=10)
-        r.raise_for_status()
-        return r.json().get("data", [])[::-1]
+        res = requests.get(url, headers=get_okx_headers(endpoint))
+        res.raise_for_status()
+        data = res.json()
+        balance = float(data["data"][0]["details"][0]["cashBal"])
+        print(f"✅ الرصيد: {balance} USDT")
+        return balance
     except Exception as e:
-        logging.error(f"خطأ جلب الشموع {instId}: {e}")
-        send_telegram(f"❌ خطأ في جلب الشموع لـ {instId}: {e}")
+        send_telegram(f"❌ خطأ في جلب الرصيد: {e}")
+        return 0.0
+
+# دالة جلب بيانات الشموع لكل عملة
+
+def get_candles(symbol, limit=50):
+    endpoint = f"/api/v5/market/candles?instId={symbol}&bar=1h&limit={limit}"
+    url = BASE_URL + endpoint
+    try:
+        res = requests.get(url)
+        res.raise_for_status()
+        candles = res.json()["data"]
+        closes = [float(c[4]) for c in reversed(candles)]
+        return closes
+    except Exception as e:
+        print(f"⚠️ فشل في جلب بيانات {symbol}: {e}")
         return []
 
-def get_balance(ccy="USDT"):
-    path = f"/api/v5/account/balance?ccy={ccy}"
-    headers = okx_headers("GET", path)
-    try:
-        r = requests.get(BASE_URL + path, headers=headers, timeout=10)
-        if r.status_code == 401:
-            raise Exception("401 Unauthorized: تحقق من API Key/Passphrase")
-        r.raise_for_status()
-        data = r.json()
-        for item in data.get("data", []):
-            for d in item.get("details", []):
-                if d.get("ccy") == ccy:
-                    return float(d.get("availBal", "0"))
-    except Exception as e:
-        logging.error(f"خطأ جلب الرصيد: {e}")
-        send_telegram(f"❌ خطأ في جلب الرصيد: {e}")
-    return 0.0
+# حساب متوسط متحرك بسيط
 
-def place_order(instId, side, sz):
-    path = "/api/v5/trade/order"
-    body = {
-        "instId": instId,
+def sma(values, period):
+    if len(values) < period:
+        return None
+    return sum(values[-period:]) / period
+
+# دالة تنفيذ صفقة شراء
+
+def place_market_order(symbol, size):
+    endpoint = "/api/v5/trade/order"
+    url = BASE_URL + endpoint
+    body = json.dumps({
+        "instId": symbol,
         "tdMode": "cash",
-        "side": side.lower(),
+        "side": "buy",
         "ordType": "market",
-        "sz": str(sz)
-    }
-    json_body = json.dumps(body, separators=(',', ':'))
-    headers = okx_headers("POST", path, json_body)
+        "sz": str(size)
+    })
     try:
-        r = requests.post(BASE_URL + path, headers=headers, data=json_body, timeout=10)
-        if r.status_code == 401:
-            raise Exception("401 Unauthorized عند تنفيذ أمر")
-        r.raise_for_status()
-        return r.json()
+        res = requests.post(url, headers=get_okx_headers(endpoint, "POST", body), data=body)
+        res.raise_for_status()
+        print(f"✅ تم شراء {symbol}")
+        send_telegram(f"✅ تم شراء {symbol} بقيمة {size} USDT")
     except Exception as e:
-        logging.error(f"خطأ تنفيذ أمر {side} لـ {instId}: {e}")
-        send_telegram(f"❌ خطأ تنفيذ أمر {side} لـ {instId}: {e}")
-        return None
+        send_telegram(f"❌ فشل شراء {symbol}: {e}")
 
-# -------------------- [ المؤشرات ] --------------------
+# دالة رئيسية للبحث عن فرص تداول
 
-def calculate_ema(prices, length):
-    if len(prices) < length:
-        return None
-    k = 2 / (length + 1)
-    ema = prices[0]
-    for p in prices[1:]:
-        ema = p * k + ema * (1 - k)
-    return ema
-
-def calculate_rsi(prices, period=14):
-    if len(prices) < period + 1:
-        return None
-    gains, losses = [], []
-    for i in range(1, period + 1):
-        delta = prices[i] - prices[i - 1]
-        gains.append(max(delta, 0))
-        losses.append(max(-delta, 0))
-    avg_gain = sum(gains) / period
-    avg_loss = sum(losses) / period
-    if avg_loss == 0:
-        return 100
-    rs = avg_gain / avg_loss
-    return 100 - (100 / (1 + rs))
-
-# -------------------- [ منطق التداول ] --------------------
-
-def trade_logic():
-    global open_trades
-    balance = get_balance()
-    if balance < 30:
-        send_telegram(f"⚠️ رصيد USDT غير كافي: {balance:.2f}")
+def scan_and_trade():
+    balance = get_usdt_balance()
+    if balance < 10:
+        send_telegram(f"⚠️ الرصيد غير كافٍ: {balance:.2f} USDT")
         return
 
-    trade_size_usdt = balance * 0.30
+    trade_size = balance * 0.30  # 30٪ من الرصيد
+    opportunities = []
 
-    for instId in SYMBOLS:
-        if any(t["instId"] == instId for t in open_trades):
+    for symbol in SYMBOLS:
+        closes = get_candles(symbol)
+        if len(closes) < 50:
             continue
+        sma9 = sma(closes, 9)
+        sma21 = sma(closes, 21)
 
-        data = get_klines(instId)
-        if not data or len(data) < 21:
-            continue
+        if sma9 and sma21 and closes[-1] > sma9 > sma21:
+            opportunities.append(symbol)
+            place_market_order(symbol, trade_size / closes[-1])
+        time.sleep(0.2)
 
-        closes = [float(c[4]) for c in data]
-        ema9 = calculate_ema(closes[-20:], 9)
-        ema21 = calculate_ema(closes[-20:], 21)
-        rsi = calculate_rsi(closes[-20:])
+    if not opportunities:
+        send_telegram("📉 لا توجد فرص تداول حالياً")
+    else:
+        send_telegram(f"🚀 فرص تداول مكتشفة:
+" + "\n".join(opportunities))
 
-        if ema9 and ema21 and rsi:
-            if ema9 > ema21 and rsi < 70:
-                qty = round(trade_size_usdt / closes[-1], 6)
-                order = place_order(instId, "buy", qty)
-                if order:
-                    open_trades.append({"instId": instId, "entry_price": closes[-1], "qty": qty, "sold": False})
-                    send_telegram(f"✅ شراء {instId} بسعر {closes[-1]:.4f} كمية: {qty}")
-        time.sleep(1)
-
-def follow_trades():
-    global open_trades
-    updated = []
-    for trade in open_trades:
-        data = get_klines(trade["instId"])
-        if not data:
-            updated.append(trade)
-            continue
-
-        current_price = float(data[-1][4])
-        entry_price = trade["entry_price"]
-        qty = trade["qty"]
-        change_pct = (current_price - entry_price) / entry_price * 100
-
-        closes = [float(c[4]) for c in data]
-        ema9 = calculate_ema(closes[-20:], 9)
-        ema21 = calculate_ema(closes[-20:], 21)
-
-        if ema9 and ema21:
-            if ema9 < ema21 or change_pct <= -2 or change_pct >= 5:
-                order = place_order(trade["instId"], "sell", qty)
-                if order:
-                    send_telegram(f"🏁 بيع {trade['instId']} بسعر {current_price:.4f} تغير %{change_pct:.2f}")
-            else:
-                updated.append(trade)
-        else:
-            updated.append(trade)
-        time.sleep(1)
-    open_trades = updated
-
-# -------------------- [ اختبار المصادقة قبل التشغيل ] --------------------
-
-def test_okx_auth():
-    try:
-        balance = get_balance()
-        if balance == 0:
-            raise Exception("لم يتمكن من جلب الرصيد")
-        send_telegram(f"✅ اختبار المصادقة ناجح! الرصيد: {balance} USDT")
-        return True
-    except Exception as e:
-        send_telegram(f"❌ فشل اختبار المصادقة: {e}")
-        logging.error(f"فشل اختبار المصادقة: {e}")
-        return False
-
-# -------------------- [ التشغيل الرئيسي ] --------------------
-
+# بدء البوت
 if __name__ == "__main__":
-    send_telegram("🤖 بدء اختبار اتصال OKX...")
-    if not test_okx_auth():
-        send_telegram("⛔️ تم إيقاف البوت لعدم نجاح الاتصال بالمفاتيح!")
-        exit()
-
-    send_telegram("🤖 بدأ تشغيل بوت التداول على OKX (الإصدار الآمن)")
-
+    send_telegram(f"🤖 تم تشغيل البوت بنجاح! عدد العملات التي سيتم فحصها: {len(SYMBOLS)}")
     while True:
-        try:
-            trade_logic()
-            follow_trades()
-        except Exception as e:
-            logging.error(f"خطأ عام: {e}")
-            send_telegram(f"❌ خطأ عام: {e}")
-        time.sleep(300)
+        scan_and_trade()
+        time.sleep(60 * 60)  # كل ساعة
