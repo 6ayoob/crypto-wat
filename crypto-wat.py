@@ -22,8 +22,10 @@ def send_telegram(msg):
     except Exception as e:
         print(f"❌ Telegram Error: {e}")
 
-# توقيع طلبات OKX
+# توقيع طلبات OKX مع معالجة body للطلبات GET
 def get_okx_signature(timestamp, method, request_path, body, secret_key):
+    if method == "GET" or not body:
+        body = ""
     message = f"{timestamp}{method}{request_path}{body}"
     mac = hmac.new(secret_key.encode(), message.encode(), hashlib.sha256)
     d = mac.digest()
@@ -41,19 +43,21 @@ def get_okx_headers(endpoint, method="GET", body=""):
         "Content-Type": "application/json"
     }
 
-# جلب رصيد USDT
+# جلب رصيد USDT مع طباعة الرد الكامل للتشخيص
 def get_usdt_balance():
     endpoint = "/api/v5/account/balance?ccy=USDT"
     url = BASE_URL + endpoint
     try:
         res = requests.get(url, headers=get_okx_headers(endpoint))
+        print(f"Status Code: {res.status_code}")
+        print(f"Response: {res.text}")
         res.raise_for_status()
         data = res.json()
         balance = float(data["data"][0]["details"][0]["cashBal"])
         print(f"✅ الرصيد: {balance} USDT")
         return balance
     except Exception as e:
-        send_telegram(f"❌ خطأ في جلب الرصيد: {e}")
+        send_telegram(f"❌ خطأ في جلب الرصيد: {e}\nResponse: {res.text if 'res' in locals() else 'No response'}")
         return 0.0
 
 # جلب بيانات الشموع (أسعار الإغلاق)
@@ -76,7 +80,7 @@ def sma(values, period):
         return None
     return sum(values[-period:]) / period
 
-# تنفيذ أمر شراء بالسوق
+# تنفيذ أمر شراء/بيع بالسوق مع طباعة الرد للتشخيص
 def place_market_order(symbol, side, size):
     endpoint = "/api/v5/trade/order"
     url = BASE_URL + endpoint
@@ -89,12 +93,14 @@ def place_market_order(symbol, side, size):
     })
     try:
         res = requests.post(url, headers=get_okx_headers(endpoint, "POST", body), data=body)
+        print(f"Order Status Code: {res.status_code}")
+        print(f"Order Response: {res.text}")
         res.raise_for_status()
         print(f"✅ تم تنفيذ أمر {side} على {symbol} بحجم {size} USDT")
         send_telegram(f"✅ تم تنفيذ أمر {side} على {symbol} بحجم {size} USDT")
         return res.json()
     except Exception as e:
-        send_telegram(f"❌ فشل تنفيذ أمر {side} على {symbol}: {e}")
+        send_telegram(f"❌ فشل تنفيذ أمر {side} على {symbol}: {e}\nResponse: {res.text if 'res' in locals() else 'No response'}")
         return None
 
 # منطق التداول: فتح صفقات جديدة بناءً على SMA مع الحد الأقصى للصفقات المفتوحة
