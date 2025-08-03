@@ -7,23 +7,12 @@ import json
 from datetime import datetime
 from config import *
 
-# قائمة العملات التي سيتم فحصها (مثال لـ 50 عملة)
-SYMBOLS = [
-    "BTC-USDT", "ETH-USDT", "SOL-USDT", "XRP-USDT", "DOGE-USDT",
-    "ADA-USDT", "AVAX-USDT", "DOT-USDT", "TRX-USDT", "LINK-USDT",
-    "MATIC-USDT", "LTC-USDT", "NEAR-USDT", "UNI-USDT", "ATOM-USDT",
-    "OP-USDT", "ETC-USDT", "XLM-USDT", "INJ-USDT", "RNDR-USDT",
-    "SUI-USDT", "PEPE-USDT", "TIA-USDT", "SEI-USDT", "BCH-USDT",
-    "CRO-USDT", "RUNE-USDT", "APT-USDT", "MKR-USDT", "FTM-USDT",
-    "THETA-USDT", "AAVE-USDT", "GALA-USDT", "AR-USDT", "CRV-USDT",
-    "KAVA-USDT", "GMX-USDT", "FET-USDT", "1INCH-USDT", "ENJ-USDT",
-    "DYDX-USDT", "ZIL-USDT", "CELO-USDT", "ANKR-USDT", "YFI-USDT",
-    "WAVES-USDT", "CHZ-USDT", "ALGO-USDT", "CAKE-USDT", "BAND-USDT"
-]
-
 BASE_URL = "https://www.okx.com"
 
-# دالة إرسال رسالة إلى تيليجرام
+# قائمة العملات للتداول (50 عملة)
+SYMBOLS = TRADING_SYMBOLS  # استيراد من config.py
+
+# إرسال رسالة تيليجرام مع معالجة الأخطاء
 def send_telegram(msg):
     url = f"https://api.telegram.org/bot{TELEGRAM_TOKEN}/sendMessage"
     payload = {"chat_id": TELEGRAM_CHAT_ID, "text": msg}
@@ -32,14 +21,14 @@ def send_telegram(msg):
     except Exception as e:
         print(f"❌ Telegram Error: {e}")
 
-# دالة إنشاء التوقيع للتوثيق
+# توقيع طلبات OKX
 def get_okx_signature(timestamp, method, request_path, body, secret_key):
     message = f"{timestamp}{method}{request_path}{body}"
     mac = hmac.new(secret_key.encode(), message.encode(), hashlib.sha256)
     d = mac.digest()
     return base64.b64encode(d).decode()
 
-# دالة إنشاء الهيدر للمصادقة
+# تجهيز الهيدر لكل طلب
 def get_okx_headers(endpoint, method="GET", body=""):
     timestamp = datetime.utcnow().isoformat("T", "milliseconds") + "Z"
     sign = get_okx_signature(timestamp, method, endpoint, body, OKX_SECRET_KEY)
@@ -51,12 +40,14 @@ def get_okx_headers(endpoint, method="GET", body=""):
         "Content-Type": "application/json"
     }
 
-# دالة جلب الرصيد
+# جلب رصيد USDT مع طباعة الرد الكامل للتشخيص
 def get_usdt_balance():
     endpoint = "/api/v5/account/balance?ccy=USDT"
     url = BASE_URL + endpoint
     try:
         res = requests.get(url, headers=get_okx_headers(endpoint))
+        print(f"Status Code: {res.status_code}")
+        print(f"Response: {res.text}")
         res.raise_for_status()
         data = res.json()
         balance = float(data["data"][0]["details"][0]["cashBal"])
@@ -66,7 +57,7 @@ def get_usdt_balance():
         send_telegram(f"❌ خطأ في جلب الرصيد: {e}")
         return 0.0
 
-# دالة جلب بيانات الشموع لكل عملة
+# جلب بيانات الشموع (أسعار الإغلاق)
 def get_candles(symbol, limit=50):
     endpoint = f"/api/v5/market/candles?instId={symbol}&bar=1h&limit={limit}"
     url = BASE_URL + endpoint
@@ -80,13 +71,13 @@ def get_candles(symbol, limit=50):
         print(f"⚠️ فشل في جلب بيانات {symbol}: {e}")
         return []
 
-# حساب متوسط متحرك بسيط
+# حساب المتوسط المتحرك البسيط (SMA)
 def sma(values, period):
     if len(values) < period:
         return None
     return sum(values[-period:]) / period
 
-# دالة تنفيذ صفقة شراء
+# تنفيذ أمر شراء بالسوق
 def place_market_order(symbol, size):
     endpoint = "/api/v5/trade/order"
     url = BASE_URL + endpoint
@@ -100,29 +91,20 @@ def place_market_order(symbol, size):
     try:
         res = requests.post(url, headers=get_okx_headers(endpoint, "POST", body), data=body)
         res.raise_for_status()
-        resp = res.json()
-        if resp.get("code") != "0":
-            send_telegram(f"❌ فشل شراء {symbol}: {resp}")
-            return False
-        price = size  # يمكنك تعديل هذه القيمة لو تحب تستخرج السعر الفعلي من البيانات
-        print(f"✅ تم شراء {symbol}")
-        send_telegram(f"✅ تم شراء {symbol} بقيمة {size:.4f} USDT")
-        # حفظ الصفقة في ملف لوج
-        with open("trades.log", "a") as f:
-            f.write(f"{datetime.now()}: Bought {symbol} with {size:.4f} USDT\n")
-        return True
+        print(f"✅ تم شراء {symbol} بحجم {size} USDT")
+        send_telegram(f"✅ تم شراء {symbol} بقيمة {size} USDT")
     except Exception as e:
         send_telegram(f"❌ فشل شراء {symbol}: {e}")
-        return False
 
-# دالة رئيسية للبحث عن فرص تداول
+# البحث والتنفيذ بناءً على SMA 9 و21 وتجاوز السعر الحالي المتوسطين
 def scan_and_trade():
     balance = get_usdt_balance()
     if balance < 10:
         send_telegram(f"⚠️ الرصيد غير كافٍ: {balance:.2f} USDT")
         return
 
-    trade_size = balance * 0.30  # 30٪ من الرصيد
+    trade_size = balance * 0.30  # 30% من الرصيد للتداول
+
     opportunities = []
 
     for symbol in SYMBOLS:
@@ -132,24 +114,25 @@ def scan_and_trade():
         sma9 = sma(closes, 9)
         sma21 = sma(closes, 21)
 
-        # شرط دخول: سعر الإغلاق الحالي > sma9 > sma21 (تقاطع إيجابي)
+        # شرط الدخول: السعر الحالي أكبر من المتوسطين sma9 > sma21
         if sma9 and sma21 and closes[-1] > sma9 > sma21:
             opportunities.append(symbol)
-            qty = trade_size / closes[-1]
-            place_market_order(symbol, qty)
-        time.sleep(0.2)
+            size_in_coins = trade_size / closes[-1]
+            place_market_order(symbol, size_in_coins)
+        time.sleep(0.2)  # لتفادي حظر API
 
     if not opportunities:
         send_telegram("📉 لا توجد فرص تداول حالياً")
     else:
-        send_telegram("🚀 فرص تداول مكتشفة:\n" + "\n".join(opportunities))
+        msg = "🚀 فرص تداول مكتشفة:\n" + "\n".join(opportunities)
+        send_telegram(msg)
 
-# بدء البوت
+# نقطة البداية
 if __name__ == "__main__":
     send_telegram(f"🤖 تم تشغيل البوت بنجاح! عدد العملات التي سيتم فحصها: {len(SYMBOLS)}")
     while True:
         try:
             scan_and_trade()
         except Exception as e:
-            send_telegram(f"❌ خطأ عام في البوت: {e}")
-        time.sleep(60 * 60)  # كل ساعة
+            send_telegram(f"❌ خطأ عام: {e}")
+        time.sleep(3600)  # كل ساعة
