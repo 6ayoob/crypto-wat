@@ -7,9 +7,9 @@ import json
 from datetime import datetime, timezone
 
 # ===================== إعدادات OKX =====================
-API_KEY = "ضع_مفتاحك_الجديد_هنا"
-SECRET_KEY = "ضع_السر_الجديد_هنا"
-PASSPHRASE = "ضع_كلمة_المرور_الجديدة"
+API_KEY = "6e2d2b3f-636a-424a-a97e-5154e39e525a"
+SECRET_KEY = "D4B9966385BEE5A7B7D8791BA5C0539F"
+PASSPHRASE = "Ta123456&"
 
 # ===================== إعدادات Telegram =====================
 TELEGRAM_TOKEN = "ضع_توكن_تيلجرام_الخاص_بك"
