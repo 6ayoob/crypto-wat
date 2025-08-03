@@ -7,8 +7,8 @@ import json
 from datetime import datetime, timezone
 
 # إعدادات OKX
-API_KEY = "22a91dd1-4c62-4f0b-bd80-cda7abc31824"
-SECRET_KEY = "3EBFAC5036B54B4EE77C369F2C5E66EE"
+API_KEY = "6e2d2b3f-636a-424a-a97e-5154e39e525a"
+SECRET_KEY = "D4B9966385BEE5A7B7D8791BA5C0539F"
 PASSPHRASE = "Ta123456&"  # تأكد من أنها مطابقة تمامًا
 
 # إعدادات Telegram
