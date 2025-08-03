@@ -1,0 +1,2 @@
+with open("trades.log", "a") as f:
+    f.write(f"{datetime.now()}: Bought {symbol} at {price}\n")
