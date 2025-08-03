@@ -1,0 +1,11 @@
+services:
+  - type: worker
+    name: crypto-wat
+    env: python
+    plan: starter
+    buildCommand: pip install -r requirements.txt
+    startCommand: python crypto-wat.py
+    autoDeploy: true
+    envVars:
+      - key: PYTHON_VERSION
+        value: 3.10
