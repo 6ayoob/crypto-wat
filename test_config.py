@@ -16,3 +16,17 @@ def test_config():
 
 if __name__ == "__main__":
     test_config()
+def get_okx_headers(endpoint, method="GET", body=""):
+    from datetime import datetime
+    timestamp = datetime.utcnow().isoformat("T", "milliseconds") + "Z"
+    print(f"DEBUG: OKX_API_KEY = {OKX_API_KEY}")
+    sign = get_okx_signature(timestamp, method, endpoint, body, OKX_SECRET_KEY)
+    headers = {
+        "OK-ACCESS-KEY": OKX_API_KEY,
+        "OK-ACCESS-SIGN": sign,
+        "OK-ACCESS-TIMESTAMP": timestamp,
+        "OK-ACCESS-PASSPHRASE": OKX_PASSPHRASE,
+        "Content-Type": "application/json"
+    }
+    print(f"DEBUG: Headers = {headers}")
+    return headers
