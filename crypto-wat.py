@@ -2,6 +2,7 @@ import requests
 import time
 import hmac
 import hashlib
+import base64
 import json
 from datetime import datetime, timezone
 
@@ -43,22 +44,19 @@ def send_telegram_message(message):
     except Exception as e:
         print(f"❌ Telegram Exception: {e}")
 
-# توقيع الطلبات لـ OKX مع تنسيق التوقيت ISO 8601 (UTC) مع ملي ثانية
+# توقيع الطلبات لـ OKX
 def generate_signature(timestamp, method, request_path, body=""):
     message = f"{timestamp}{method.upper()}{request_path}{body}"
     mac = hmac.new(SECRET_KEY.encode(), message.encode(), hashlib.sha256)
-    return mac.digest().hex()
+    return base64.b64encode(mac.digest()).decode()
 
 # إرسال طلب إلى OKX
 def okx_request(method, endpoint, body=None, params=None):
     url = f"https://www.okx.com{endpoint}"
-
-    # تصحيح توقيت التوقيع ليكون ISO 8601 UTC مع ملي ثانية
+    # توقيت بصيغة ISO 8601 مع UTC ومللي ثانية
     timestamp = datetime.now(timezone.utc).isoformat(timespec='milliseconds').replace('+00:00', 'Z')
-
     body_str = json.dumps(body) if body else ""
-    mac = hmac.new(SECRET_KEY.encode(), f"{timestamp}{method.upper()}{endpoint}{body_str}".encode(), hashlib.sha256)
-    sign = base64.b64encode(mac.digest()).decode()
+    sign = generate_signature(timestamp, method, endpoint, body_str)
 
     headers = {
         "OK-ACCESS-KEY": API_KEY,
@@ -132,10 +130,10 @@ def run_strategy():
     trades_executed = 0
     for symbol in TRADE_SYMBOLS:
         if symbol in open_positions:
-            continue
+            continue  # نتخطى العملات المفتوحة
 
         if trades_executed >= (MAX_POSITIONS - len(open_positions)):
-            break
+            break  # وصلنا للحد الأقصى
 
         price_data = okx_request("GET", "/api/v5/market/ticker", params={"instId": symbol})
         if price_data and "data" in price_data and len(price_data["data"]) > 0:
@@ -144,9 +142,10 @@ def run_strategy():
             success = place_order(symbol, "buy", quantity)
             if success:
                 trades_executed += 1
-                time.sleep(1)
+                time.sleep(1)  # تأخير بسيط لتفادي حظر API
         else:
             print(f"❌ تعذر الحصول على سعر العملة: {symbol}")
 
+# بدء البوت
 if __name__ == "__main__":
     run_strategy()
