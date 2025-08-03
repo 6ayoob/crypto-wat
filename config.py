@@ -1,5 +1,5 @@
-OKX_API_KEY = "22a91dd1-4c62-4f0b-bd80-cda7abc31824"   # مفتاح API
-OKX_SECRET_KEY = "3EBFAC5036B54B4EE77C369F2C5E66EE"  # المفتاح السري
+OKX_API_KEY = "6e2d2b3f-636a-424a-a97e-5154e39e525a"   # مفتاح API
+OKX_SECRET_KEY = "D4B9966385BEE5A7B7D8791BA5C0539F"  # المفتاح السري
 OKX_PASSPHRASE = "Ta123456&"                         # كلمة المرور (Passphrase)
 
 TELEGRAM_TOKEN = "8300868885:AAEx8Zxdkz9CRUHmjJ0vvn6L3kC2kOPCHuk"
