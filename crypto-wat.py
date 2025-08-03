@@ -3,6 +3,7 @@ import time
 import hmac
 import hashlib
 import json
+from datetime import datetime, timezone
 
 # إعدادات OKX
 API_KEY = "22a91dd1-4c62-4f0b-bd80-cda7abc31824"
@@ -42,17 +43,22 @@ def send_telegram_message(message):
     except Exception as e:
         print(f"❌ Telegram Exception: {e}")
 
-# توقيع الطلبات لـ OKX
+# توقيع الطلبات لـ OKX مع تنسيق التوقيت ISO 8601 (UTC) مع ملي ثانية
 def generate_signature(timestamp, method, request_path, body=""):
     message = f"{timestamp}{method.upper()}{request_path}{body}"
-    return hmac.new(SECRET_KEY.encode(), message.encode(), hashlib.sha256).hexdigest()
+    mac = hmac.new(SECRET_KEY.encode(), message.encode(), hashlib.sha256)
+    return mac.digest().hex()
 
 # إرسال طلب إلى OKX
 def okx_request(method, endpoint, body=None, params=None):
     url = f"https://www.okx.com{endpoint}"
-    timestamp = str(time.time())
+
+    # تصحيح توقيت التوقيع ليكون ISO 8601 UTC مع ملي ثانية
+    timestamp = datetime.now(timezone.utc).isoformat(timespec='milliseconds').replace('+00:00', 'Z')
+
     body_str = json.dumps(body) if body else ""
-    sign = generate_signature(timestamp, method, endpoint, body_str)
+    mac = hmac.new(SECRET_KEY.encode(), f"{timestamp}{method.upper()}{endpoint}{body_str}".encode(), hashlib.sha256)
+    sign = base64.b64encode(mac.digest()).decode()
 
     headers = {
         "OK-ACCESS-KEY": API_KEY,
@@ -123,16 +129,14 @@ def run_strategy():
 
     amount_to_trade = (balance * TRADE_PERCENT)
 
-    # نفحص العملات واحدة تلو الأخرى ونشتري أول عملتين (حتى حد الصفقات المفتوحة)
     trades_executed = 0
     for symbol in TRADE_SYMBOLS:
         if symbol in open_positions:
-            continue  # نتخطى العملات المفتوحة
+            continue
 
         if trades_executed >= (MAX_POSITIONS - len(open_positions)):
-            break  # وصلنا للحد الأقصى
+            break
 
-        # جلب آخر سعر العملة
         price_data = okx_request("GET", "/api/v5/market/ticker", params={"instId": symbol})
         if price_data and "data" in price_data and len(price_data["data"]) > 0:
             last_price = float(price_data["data"][0]["last"])
@@ -140,10 +144,9 @@ def run_strategy():
             success = place_order(symbol, "buy", quantity)
             if success:
                 trades_executed += 1
-                time.sleep(1)  # تأخير بسيط لتفادي حظر API
+                time.sleep(1)
         else:
             print(f"❌ تعذر الحصول على سعر العملة: {symbol}")
 
-# بدء البوت
 if __name__ == "__main__":
     run_strategy()
