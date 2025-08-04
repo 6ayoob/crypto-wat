@@ -14,7 +14,9 @@ OKX_PASSPHRASE = "Ta123456&"
 BASE_URL = "https://www.okx.com"
 
 def okx_request(method, endpoint, params=None, data=None):
-    timestamp = str(time.time())
+from datetime import datetime
+
+timestamp = datetime.utcnow().isoformat(timespec='milliseconds') + 'Z'
     request_path = endpoint
 
     if params:
