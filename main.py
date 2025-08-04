@@ -1,5 +1,5 @@
 import time
-import json  # <- اضف هذا السطر
+import json
 from strategy import enter_trade, check_positions
 
 TRADE_SYMBOLS = [
@@ -12,30 +12,32 @@ TRADE_SYMBOLS = [
 ]
 
 MAX_POSITIONS = 5  # عدد الصفقات المفتوحة القصوى
-CHECK_INTERVAL = 60 * 60  # ساعة
+CHECK_INTERVAL = 60 * 60  # التحقق كل ساعة
 
 def run_bot():
     while True:
-        print("🚀 تشغيل التحقق من الصفقات وتنفيذ الصفقات الجديدة")
+        print("🚀 بدء التحقق من الصفقات وتنفيذ الاستراتيجية")
 
-        # تحقق من الصفقات المفتوحة
+        # تحقق من الصفقات المفتوحة وبيع عند وقف الخسارة/جني الربح
         check_positions()
 
         # جلب الصفقات المفتوحة من الملف
-        with open("positions.json", "r") as f:
-            positions = json.load(f)
+        try:
+            with open("positions.json", "r") as f:
+                positions = json.load(f)
+        except Exception:
+            positions = {}
 
-        # كم صفقة مفتوحة؟
         open_count = len(positions)
 
-        # فتح صفقات جديدة إذا لم نصل للحد الأقصى
+        # افتح صفقات جديدة إذا لم نصل للحد الأقصى
         if open_count < MAX_POSITIONS:
             for symbol in TRADE_SYMBOLS:
                 if symbol not in positions:
                     enter_trade(symbol)
-                    break  # افتح صفقة واحدة فقط في كل دورة
+                    break  # صفقة واحدة فقط في كل دورة
 
-        print(f"⏳ انتظار {CHECK_INTERVAL} ثانية قبل التحقق التالي...\n")
+        print(f"⏳ الانتظار لمدة {CHECK_INTERVAL} ثانية قبل التحقق التالي...\n")
         time.sleep(CHECK_INTERVAL)
 
 if __name__ == "__main__":
