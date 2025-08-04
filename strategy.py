@@ -1,50 +1,40 @@
 import pandas as pd
 import numpy as np
-from okx_api import get_historical_candles, get_last_price
+from okx_api import get_historical_candles
 
-def calculate_rsi(data, period=14):
-    if len(data) < period:
-        return 50  # محايد إذا البيانات قليلة
-    delta = data['close'].diff()
-    gain = delta.where(delta > 0, 0)
-    loss = -delta.where(delta < 0, 0)
-    avg_gain = gain.rolling(period).mean()
-    avg_loss = loss.rolling(period).mean()
-    rs = avg_gain / avg_loss
-    rsi = 100 - (100 / (1 + rs))
-    return rsi.iloc[-1]
+def analyze_trend(instId):
+    candles = get_historical_candles(instId, bar="1D", limit=30)
+    if not candles:
+        return None
 
-def analyze_symbol(symbol):
-    raw_data = get_historical_candles(symbol, bar="1D", limit=50)
-    if not raw_data or len(raw_data) < 20:
-        return None  # لا يوجد بيانات كافية
+    # تحويل البيانات إلى DataFrame وتحديد الأعمدة التسعة حسب OKX
+    df = pd.DataFrame(candles, columns=[
+        "timestamp", "open", "high", "low", "close", "volume",
+        "volCcy", "volCcyQuote", "confirm"
+    ])
 
-    # التأكد من الأعمدة
-    df = pd.DataFrame(raw_data, columns=["timestamp", "open", "high", "low", "close", "volume"])
-    df = df.astype(float)
-    df['close'] = df['close']
-    df['volume'] = df['volume']
+    # تحويل الأعمدة الرقمية إلى float
+    for col in ["open", "high", "low", "close", "volume"]:
+        df[col] = df[col].astype(float)
 
-    # RSI
-    rsi = calculate_rsi(df)
+    # حساب متوسط الحركة البسيط لـ 20 يوم
+    df["sma20"] = df["close"].rolling(window=20).mean()
 
-    # متوسط حجم التداول
-    avg_volume = df['volume'].rolling(window=20).mean().iloc[-1]
-    current_volume = df['volume'].iloc[-1]
+    # إشارة دخول: السعر الحالي أكبر من متوسط 20 يوم ودخول في ترند صاعد
+    last_close = df["close"].iloc[-1]
+    last_sma20 = df["sma20"].iloc[-1]
 
-    # اتجاه السعر (مقارنة الإغلاق الحالي بمتوسط 20 يوم)
-    ma20 = df['close'].rolling(window=20).mean().iloc[-1]
-    last_price = df['close'].iloc[-1]
-    price_trend = last_price > ma20
-
-    # شرط دخول
-    if rsi < 70 and rsi > 30 and current_volume > avg_volume and price_trend:
+    if last_close > last_sma20:
         return {
-            "symbol": symbol,
-            "rsi": round(rsi, 2),
-            "volume": round(current_volume, 2),
-            "price_trend": "UP",
-            "score": 1  # تم اجتياز جميع الشروط
+            "trend": "up",
+            "last_close": last_close,
+            "sma20": last_sma20,
+            "recommendation": "buy"
         }
-
-    return None
+    else:
+        return {
+            "trend": "down",
+            "last_close": last_close,
+            "sma20": last_sma20,
+            "recommendation": "wait"
+        }
