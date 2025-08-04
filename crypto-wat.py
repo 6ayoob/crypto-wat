@@ -12,8 +12,8 @@ SECRET_KEY = "D4B9966385BEE5A7B7D8791BA5C0539F"
 PASSPHRASE = "Ta123456&"
 
 # ===================== إعدادات Telegram =====================
-TELEGRAM_TOKEN = "ضع_توكن_تيلجرام_الخاص_بك"
-TELEGRAM_CHAT_ID = "ضع_ChatID_هنا"
+TELEGRAM_TOKEN = "8300868885:AAEx8Zxdkz9CRUHmjJ0vvn6L3kC2kOPCHuk"
+TELEGRAM_CHAT_ID = "658712542"
 
 # ===================== إعدادات التداول =====================
 MAX_POSITIONS = 2
