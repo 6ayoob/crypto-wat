@@ -1,73 +1,75 @@
 import time
 import hmac
 import hashlib
-import base64
-import json
 import requests
-from urllib.parse import urlencode
+import json
+from datetime import datetime
 
-# بيانات OKX الحقيقية
+# مفاتيح حساب OKX (حقيقية حسب ما زودتني)
 OKX_API_KEY = "6e2d2b3f-636a-424a-a97e-5154e39e525a"
 OKX_SECRET_KEY = "D4B9966385BEE5A7B7D8791BA5C0539F"
 OKX_PASSPHRASE = "Ta123456&"
 
 BASE_URL = "https://www.okx.com"
 
+# إرسال طلب موقع لـ OKX
 def okx_request(method, endpoint, params=None, data=None):
-from datetime import datetime
+    timestamp = datetime.utcnow().isoformat(timespec='milliseconds') + 'Z'
+    if params is None:
+        params = {}
+    if data is None:
+        data = {}
 
-timestamp = datetime.utcnow().isoformat(timespec='milliseconds') + 'Z'
     request_path = endpoint
-
-    if params:
-        query_string = urlencode(params)
+    if method == "GET" and params:
+        query_string = '&'.join([f"{k}={v}" for k, v in params.items()])
         request_path += '?' + query_string
-    body = json.dumps(data) if data else ""
 
-    prehash = f"{timestamp}{method}{request_path}{body}"
-    mac = hmac.new(OKX_SECRET_KEY.encode(), prehash.encode(), hashlib.sha256)
-    sign = base64.b64encode(mac.digest()).decode()
+    body = json.dumps(data) if data else ""
+    message = f"{timestamp}{method}{request_path}{body}"
+    sign = hmac.new(
+        OKX_SECRET_KEY.encode('utf-8'),
+        message.encode('utf-8'),
+        hashlib.sha256
+    ).digest().hex()
 
     headers = {
-        "Content-Type": "application/json",
         "OK-ACCESS-KEY": OKX_API_KEY,
         "OK-ACCESS-SIGN": sign,
         "OK-ACCESS-TIMESTAMP": timestamp,
         "OK-ACCESS-PASSPHRASE": OKX_PASSPHRASE,
-        "x-simulated-trading": "0"
+        "Content-Type": "application/json"
     }
 
+    url = BASE_URL + endpoint
     try:
-        response = requests.request(method, BASE_URL + endpoint, headers=headers, params=params, data=body)
-        result = response.json()
-        if result.get("code") != "0":
-            print(f"❌ OKX Error: {result}")
-        return result
+        response = requests.request(method, url, headers=headers, params=params, data=body)
+        response.raise_for_status()
+        return response.json()
+    except requests.exceptions.RequestException as e:
+        print(f"❌ HTTP Error: {e}")
+        return None
     except Exception as e:
-        print(f"❌ Request failed: {e}")
+        print(f"❌ Unexpected Error: {e}")
         return None
 
-# مثال: جلب رصيد USDT
-def get_usdt_balance():
-    result = okx_request("GET", "/api/v5/account/balance", params={"ccy": "USDT"})
-    try:
-        if result and result.get("code") == "0":
-            balance = result["data"][0]["details"][0]["cashBal"]
-            print(f"✅ USDT Balance: {balance}")
-            return float(balance)
-    except Exception as e:
-        print(f"❌ Balance error: {e}")
-    return 0.0
-
-# استراتيجية بسيطة للتشغيل
+# استراتيجية بسيطة لعرض الرصيد
 def run_strategy():
     print("🚀 Running strategy...")
-    balance = get_usdt_balance()
-    if balance > 0:
-        print(f"🎯 لديك {balance} USDT متاحة.")
+    balance_data = okx_request("GET", "/api/v5/account/balance")
+    if balance_data and "data" in balance_data:
+        currencies = balance_data["data"][0].get("details", [])
+        if currencies:
+            for asset in currencies:
+                ccy = asset.get("ccy")
+                avail = asset.get("availBal")
+                if float(avail) > 0:
+                    print(f"💰 {ccy}: {avail}")
+        else:
+            print("⚠️ لا يوجد رصيد.")
     else:
-        print("⚠️ لا يوجد رصيد أو يوجد خطأ.")
+        print(f"❌ OKX Error: {balance_data if balance_data else 'No response'}")
 
-# بدء التنفيذ
+# تنفيذ الاستراتيجية
 if __name__ == "__main__":
     run_strategy()
