@@ -73,6 +73,13 @@ def get_last_price(instId):
     except Exception:
         return None
 
+def get_historical_candles(instId, bar="1D", limit=30):
+    # جلب شموع تاريخية (1 يوم - 30 يوم بشكل افتراضي)
+    data = okx_request("GET", "/api/v5/market/candles", params={"instId": instId, "bar": bar, "limit": limit})
+    if data and "data" in data:
+        return data["data"]  # كل شمعة: [timestamp, open, high, low, close, volume, ...]
+    return None
+
 def place_limit_order(instId, side, price, size):
     body = {
         "instId": instId,
