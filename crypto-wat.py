@@ -7,8 +7,8 @@ import json
 from datetime import datetime
 
 # مفاتيح حساب OKX (حقيقية حسب ما زودتني)
-OKX_API_KEY = "f267dba2-ece2-4a9a-aa11-f7a10579be44"
-OKX_SECRET_KEY = "022CBE3D1590783852B64002F97FD9BD"
+OKX_API_KEY = "6e2d2b3f-636a-424a-a97e-5154e39e525a"
+OKX_SECRET_KEY = "D4B9966385BEE5A7B7D8791BA5C0539F"
 OKX_PASSPHRASE = "Ta123456&"
 
 BASE_URL = "https://www.okx.com"
