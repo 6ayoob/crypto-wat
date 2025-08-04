@@ -84,3 +84,14 @@ def place_limit_order(instId, side, price, size):
         "sz": str(size)
     }
     return okx_request("POST", "/api/v5/trade/order", data=body)
+
+def place_market_order(instId, side, size):
+    # side = "buy" or "sell"
+    body = {
+        "instId": instId,
+        "tdMode": "cash",
+        "side": side,
+        "ordType": "market",
+        "sz": str(size)
+    }
+    return okx_request("POST", "/api/v5/trade/order", data=body)
