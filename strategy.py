@@ -1,14 +1,17 @@
 import json
 import os
-from okx_api import get_balance, get_last_price, place_limit_order, place_market_order
 import requests
+from okx_api import get_last_price, place_limit_order, place_market_order, get_historical_candles
+from datetime import datetime
+import pandas as pd
+import numpy as np
 
 POSITIONS_FILE = "positions.json"
 TRADING_AMOUNT = 10  # دولار لكل صفقة
-STOP_LOSS_PERCENT = 3  # 3%
-TAKE_PROFIT_PERCENT = 5  # 5%
+STOP_LOSS_PERCENT = 3
+TAKE_PROFIT_PERCENT = 5
 
-# إعدادات Telegram
+# Telegram إعدادات
 TELEGRAM_TOKEN = "8300868885:AAEx8Zxdkz9CRUHmjJ0vvn6L3kC2kOPCHuk"
 TELEGRAM_CHAT_ID = "658712542"
 
@@ -29,7 +32,48 @@ def save_positions(data):
     with open(POSITIONS_FILE, "w") as f:
         json.dump(data, f, indent=2)
 
+def calculate_rsi(prices, period=14):
+    delta = prices.diff()
+    gain = delta.clip(lower=0)
+    loss = -delta.clip(upper=0)
+    avg_gain = gain.rolling(window=period).mean()
+    avg_loss = loss.rolling(window=period).mean()
+    rs = avg_gain / avg_loss
+    rsi = 100 - (100 / (1 + rs))
+    return rsi
+
+def analyze_symbol(symbol):
+    # جلب بيانات الشموع اليومية
+    candles = get_historical_candles(symbol, bar="1D", limit=30)
+    if not candles:
+        print(f"❌ لا يمكن جلب الشموع لـ {symbol}")
+        return False
+
+    df = pd.DataFrame(candles, columns=["timestamp", "open", "high", "low", "close", "volume", "ignore1", "ignore2", "ignore3", "ignore4", "ignore5"])
+    df["close"] = pd.to_numeric(df["close"])
+    df["volume"] = pd.to_numeric(df["volume"])
+
+    # RSI
+    df["rsi"] = calculate_rsi(df["close"])
+
+    # حجم التداول المتوسط
+    avg_volume = df["volume"].rolling(window=14).mean().iloc[-1]
+    current_volume = df["volume"].iloc[-1]
+
+    # اتجاه السوق: مقارنة سعر الإغلاق اليوم مع أمس
+    today_close = df["close"].iloc[-1]
+    yesterday_close = df["close"].iloc[-2]
+
+    # شروط للدخول: RSI أقل من 30، وحجم التداول أعلى من المتوسط، واتجاه صعودي
+    if df["rsi"].iloc[-1] < 30 and current_volume > avg_volume and today_close > yesterday_close:
+        return True
+    return False
+
 def enter_trade(symbol):
+    if not analyze_symbol(symbol):
+        print(f"⚠️ {symbol} لا تحقق شروط الدخول.")
+        return False
+
     price = get_last_price(symbol)
     if price is None:
         print(f"❌ لم أتمكن من جلب سعر {symbol}")
@@ -64,6 +108,11 @@ def check_positions():
         if current_price is None:
             continue
 
+        # وقف خسارة متحرك (Trail Stop Loss)
+        new_stop_loss = max(pos["stop_loss"], round(current_price * (1 - STOP_LOSS_PERCENT / 100), 6))
+        if new_stop_loss > pos["stop_loss"]:
+            pos["stop_loss"] = new_stop_loss  # تحديث وقف الخسارة في الملف
+
         # تحقق وقف خسارة
         if current_price <= pos["stop_loss"]:
             print(f"⚠️ وقف خسارة مفعل على {symbol} عند السعر {current_price}")
@@ -88,7 +137,46 @@ def check_positions():
                 print(f"❌ فشل بيع {symbol} عند هدف الربح: {sell_result}")
                 send_telegram_message(f"❌ فشل بيع {symbol} عند هدف الربح: {sell_result}")
 
+    # حفظ التحديثات على وقف الخسارة
+    save_positions(positions)
+
     # إزالة الصفقات التي انتهت
     for sym in to_remove:
         positions.pop(sym, None)
     save_positions(positions)
+
+def is_market_bearish(symbols):
+    # تحقق هل السوق هابط: أكثر من 70% من العملات هبطت خلال 24 ساعة
+    down_count = 0
+    total = len(symbols)
+
+    for symbol in symbols:
+        candles = get_historical_candles(symbol, bar="1D", limit=2)
+        if not candles or len(candles) < 2:
+            continue
+        close_yesterday = float(candles[-2][4])
+        close_today = float(candles[-1][4])
+        if close_today < close_yesterday:
+            down_count += 1
+
+    if total == 0:
+        return False
+    percent_down = down_count / total * 100
+    print(f"📉 نسبة العملات الهابطة اليوم: {percent_down:.2f}%")
+    return percent_down >= 70
+
+def generate_daily_report():
+    positions = load_positions()
+    lines = [f"📊 تقرير التداول اليومي - {datetime.now().strftime('%Y-%m-%d')}"]
+    lines.append(f"عدد الصفقات المفتوحة: {len(positions)}")
+
+    for symbol, pos in positions.items():
+        current_price = get_last_price(symbol)
+        if current_price:
+            pnl = (current_price - pos["entry_price"]) * pos["size"]
+            lines.append(f"{symbol}: الدخول عند {pos['entry_price']}, السعر الحالي {current_price}, الربح/الخسارة التقريبية: {pnl:.2f} USDT")
+        else:
+            lines.append(f"{symbol}: بيانات السعر غير متوفرة")
+
+    report = "\n".join(lines)
+    send_telegram_message(report)
