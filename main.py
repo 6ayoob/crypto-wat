@@ -1,4 +1,5 @@
 import time
+import json  # <- اضف هذا السطر
 from strategy import enter_trade, check_positions
 
 TRADE_SYMBOLS = [
