@@ -74,7 +74,6 @@ def get_last_price(instId):
         return None
 
 def place_limit_order(instId, side, price, size):
-    # side = "buy" or "sell"
     body = {
         "instId": instId,
         "tdMode": "cash",
@@ -86,7 +85,6 @@ def place_limit_order(instId, side, price, size):
     return okx_request("POST", "/api/v5/trade/order", data=body)
 
 def place_market_order(instId, side, size):
-    # side = "buy" or "sell"
     body = {
         "instId": instId,
         "tdMode": "cash",
