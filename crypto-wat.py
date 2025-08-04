@@ -6,14 +6,16 @@ import requests
 import json
 from datetime import datetime
 
-# مفاتيح حساب OKX (حقيقية حسب ما زودتني)
 OKX_API_KEY = "6e2d2b3f-636a-424a-a97e-5154e39e525a"
 OKX_SECRET_KEY = "D4B9966385BEE5A7B7D8791BA5C0539F"
 OKX_PASSPHRASE = "Ta123456&"
-
 BASE_URL = "https://www.okx.com"
 
-# إرسال طلب موقع لـ OKX
+def generate_signature(timestamp, method, request_path, body=""):
+    message = f"{timestamp}{method}{request_path}{body}"
+    mac = hmac.new(OKX_SECRET_KEY.encode('utf-8'), message.encode('utf-8'), hashlib.sha256)
+    return base64.b64encode(mac.digest()).decode()
+
 def okx_request(method, endpoint, params=None, data=None):
     timestamp = datetime.utcnow().isoformat(timespec='milliseconds') + 'Z'
     if params is None:
@@ -26,16 +28,10 @@ def okx_request(method, endpoint, params=None, data=None):
         query_string = '&'.join([f"{k}={v}" for k, v in params.items()])
         request_path += '?' + query_string
 
-    body = json.dumps(data) if data and method != "GET" else ""
-    message = f"{timestamp}{method}{request_path}{body}"
-    
-    sign = base64.b64encode(
-        hmac.new(
-            OKX_SECRET_KEY.encode('utf-8'),
-            message.encode('utf-8'),
-            hashlib.sha256
-        ).digest()
-    ).decode()
+    body_str = ""
+    if method != "GET" and data:
+        body_str = json.dumps(data)
+    sign = generate_signature(timestamp, method, request_path, body_str)
 
     headers = {
         "OK-ACCESS-KEY": OKX_API_KEY,
@@ -47,33 +43,44 @@ def okx_request(method, endpoint, params=None, data=None):
 
     url = BASE_URL + endpoint
     try:
-        response = requests.request(method, url, headers=headers, params=params if method=="GET" else None, data=body if method!="GET" else None)
-        response.raise_for_status()
-        return response.json()
-    except requests.exceptions.RequestException as e:
-        print(f"❌ HTTP Error: {e}")
-        return None
-    except Exception as e:
-        print(f"❌ Unexpected Error: {e}")
-        return None
-
-# استراتيجية بسيطة لعرض الرصيد
-def run_strategy():
-    print("🚀 Running strategy...")
-    balance_data = okx_request("GET", "/api/v5/account/balance")
-    if balance_data and "data" in balance_data:
-        currencies = balance_data["data"][0].get("details", [])
-        if currencies:
-            for asset in currencies:
-                ccy = asset.get("ccy")
-                avail = asset.get("availBal")
-                if float(avail) > 0:
-                    print(f"💰 {ccy}: {avail}")
+        if method == "GET":
+            resp = requests.get(url, headers=headers, params=params)
         else:
-            print("⚠️ لا يوجد رصيد.")
-    else:
-        print(f"❌ OKX Error: {balance_data if balance_data else 'No response'}")
+            resp = requests.post(url, headers=headers, json=data)
+        resp.raise_for_status()
+        return resp.json()
+    except Exception as e:
+        print(f"❌ OKX API error: {e}")
+        return None
 
-# تنفيذ الاستراتيجية
-if __name__ == "__main__":
-    run_strategy()
+def get_balance(ccy="USDT"):
+    data = okx_request("GET", "/api/v5/account/balance", params={"ccy": ccy})
+    try:
+        if data and "data" in data:
+            for item in data["data"]:
+                if item["ccy"] == ccy:
+                    return float(item["details"][0]["availBal"])
+        return 0.0
+    except Exception:
+        return 0.0
+
+def get_last_price(instId):
+    data = okx_request("GET", "/api/v5/market/ticker", params={"instId": instId})
+    try:
+        if data and "data" in data:
+            return float(data["data"][0]["last"])
+        return None
+    except Exception:
+        return None
+
+def place_limit_order(instId, side, price, size):
+    # side = "buy" or "sell"
+    body = {
+        "instId": instId,
+        "tdMode": "cash",
+        "side": side,
+        "ordType": "limit",
+        "px": str(price),
+        "sz": str(size)
+    }
+    return okx_request("POST", "/api/v5/trade/order", data=body)
