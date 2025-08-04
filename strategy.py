@@ -7,7 +7,7 @@ import pandas as pd
 import numpy as np
 
 POSITIONS_FILE = "positions.json"
-TRADING_AMOUNT = 10  # دولار لكل صفقة
+TRADING_AMOUNT = 25  # دولار لكل صفقة
 STOP_LOSS_PERCENT = 3
 TAKE_PROFIT_PERCENT = 5
 
