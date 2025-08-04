@@ -1,6 +1,7 @@
 import time
 import hmac
 import hashlib
+import base64
 import requests
 import json
 from datetime import datetime
@@ -25,13 +26,16 @@ def okx_request(method, endpoint, params=None, data=None):
         query_string = '&'.join([f"{k}={v}" for k, v in params.items()])
         request_path += '?' + query_string
 
-    body = json.dumps(data) if data else ""
+    body = json.dumps(data) if data and method != "GET" else ""
     message = f"{timestamp}{method}{request_path}{body}"
-    sign = hmac.new(
-        OKX_SECRET_KEY.encode('utf-8'),
-        message.encode('utf-8'),
-        hashlib.sha256
-    ).digest().hex()
+    
+    sign = base64.b64encode(
+        hmac.new(
+            OKX_SECRET_KEY.encode('utf-8'),
+            message.encode('utf-8'),
+            hashlib.sha256
+        ).digest()
+    ).decode()
 
     headers = {
         "OK-ACCESS-KEY": OKX_API_KEY,
@@ -43,7 +47,7 @@ def okx_request(method, endpoint, params=None, data=None):
 
     url = BASE_URL + endpoint
     try:
-        response = requests.request(method, url, headers=headers, params=params, data=body)
+        response = requests.request(method, url, headers=headers, params=params if method=="GET" else None, data=body if method!="GET" else None)
         response.raise_for_status()
         return response.json()
     except requests.exceptions.RequestException as e:
