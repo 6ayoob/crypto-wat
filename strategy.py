@@ -1,11 +1,13 @@
 import json
 import os
-from okx_api import get_balance, get_last_price, place_limit_order
+from okx_api import get_balance, get_last_price, place_limit_order, place_market_order
 
 POSITIONS_FILE = "positions.json"
 TRADING_AMOUNT = 10  # دولار لكل صفقة
-STOP_LOSS_PERCENT = 3  # 3%
-TAKE_PROFIT_PERCENT = 5  # 5%
+STOP_LOSS_PERCENT = 3  # وقف خسارة ثابت أولي %
+TAKE_PROFIT_PERCENT = 5  # هدف ربح %
+TRAILING_START_PERCENT = 1  # بعد الربح 1% يبدأ وقف الخسارة بالتحرك
+TRAILING_STEP_PERCENT = 0.5  # وقف الخسارة يتحرك ليصبح أقل من السعر الأعلى بـ 0.5%
 
 def load_positions():
     if os.path.exists(POSITIONS_FILE):
@@ -34,13 +36,26 @@ def enter_trade(symbol):
             "entry_price": price,
             "size": size,
             "stop_loss": round(price * (1 - STOP_LOSS_PERCENT / 100), 6),
-            "take_profit": round(price * (1 + TAKE_PROFIT_PERCENT / 100), 6)
+            "take_profit": round(price * (1 + TAKE_PROFIT_PERCENT / 100), 6),
+            "highest_price": price  # لتتبع أعلى سعر للوقف المتحرك
         }
         save_positions(positions)
         return True
     else:
         print(f"❌ فشل في دخول الصفقة: {result}")
         return False
+
+def place_market_order(instId, side, size):
+    # تنفيذ أمر سوقي Market order
+    from okx_api import okx_request
+    body = {
+        "instId": instId,
+        "tdMode": "cash",
+        "side": side,
+        "ordType": "market",
+        "sz": str(size)
+    }
+    return okx_request("POST", "/api/v5/trade/order", data=body)
 
 def check_positions():
     positions = load_positions()
@@ -50,17 +65,40 @@ def check_positions():
         if current_price is None:
             continue
 
-        # تحقق وقف خسارة
-        if current_price <= pos["stop_loss"]:
+        # تحديث أعلى سعر وصل له
+        if current_price > pos["highest_price"]:
+            positions[symbol]["highest_price"] = current_price
+
+        # حساب وقف خسارة متحرك
+        trailing_stop = round(
+            positions[symbol]["highest_price"] * (1 - TRAILING_STEP_PERCENT / 100), 6
+        )
+
+        # إذا الربح الحالي تجاوز نقطة البداية للتحرك
+        profit_percent = (current_price - pos["entry_price"]) / pos["entry_price"] * 100
+
+        if profit_percent > TRAILING_START_PERCENT and trailing_stop > pos["stop_loss"]:
+            positions[symbol]["stop_loss"] = trailing_stop
+
+        # تحقق وقف خسارة (بما فيه المتحرك)
+        if current_price <= positions[symbol]["stop_loss"]:
             print(f"⚠️ وقف خسارة مفعل على {symbol} عند السعر {current_price}")
-            # هنا يمكنك تنفيذ أمر بيع Market للخروج (تطوير لاحق)
-            to_remove.append(symbol)
+            res = place_market_order(symbol, "sell", pos["size"])
+            if res and res.get("code") == "0":
+                print(f"✅ بيع {symbol} بنجاح عند وقف الخسارة")
+                to_remove.append(symbol)
+            else:
+                print(f"❌ فشل بيع {symbol} عند وقف الخسارة: {res}")
 
         # تحقق هدف ربح
         elif current_price >= pos["take_profit"]:
             print(f"🎯 تم الوصول لهدف ربح على {symbol} عند السعر {current_price}")
-            # هنا يمكنك تنفيذ أمر بيع Market للخروج (تطوير لاحق)
-            to_remove.append(symbol)
+            res = place_market_order(symbol, "sell", pos["size"])
+            if res and res.get("code") == "0":
+                print(f"✅ بيع {symbol} بنجاح عند هدف الربح")
+                to_remove.append(symbol)
+            else:
+                print(f"❌ فشل بيع {symbol} عند هدف الربح: {res}")
 
     # إزالة الصفقات التي انتهت
     for sym in to_remove:
