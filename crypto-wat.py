@@ -1,145 +1,71 @@
-import requests
 import time
 import hmac
 import hashlib
 import base64
 import json
-from datetime import datetime, timezone
+import requests
+from urllib.parse import urlencode
 
-# ===================== إعدادات OKX =====================
-API_KEY = "6e2d2b3f-636a-424a-a97e-5154e39e525a"
-SECRET_KEY = "D4B9966385BEE5A7B7D8791BA5C0539F"
-PASSPHRASE = "Ta123456&"
+# بيانات OKX الحقيقية
+OKX_API_KEY = "6e2d2b3f-636a-424a-a97e-5154e39e525a"
+OKX_SECRET_KEY = "D4B9966385BEE5A7B7D8791BA5C0539F"
+OKX_PASSPHRASE = "Ta123456&"
 
-# ===================== إعدادات Telegram =====================
-TELEGRAM_TOKEN = "8300868885:AAEx8Zxdkz9CRUHmjJ0vvn6L3kC2kOPCHuk"
-TELEGRAM_CHAT_ID = "658712542"
+BASE_URL = "https://www.okx.com"
 
-# ===================== إعدادات التداول =====================
-MAX_POSITIONS = 2
-TRADE_PERCENT = 0.5  # 50%
-TRADE_SYMBOLS = ["BTC-USDT", "ETH-USDT", "SOL-USDT", "ADA-USDT", "XRP-USDT"]
+def okx_request(method, endpoint, params=None, data=None):
+    timestamp = str(time.time())
+    request_path = endpoint
 
-# ============================================================
-# 📌 إرسال رسالة إلى Telegram
-def send_telegram_message(message):
-    url = f"https://api.telegram.org/bot{TELEGRAM_TOKEN}/sendMessage"
-    try:
-        requests.post(url, data={"chat_id": TELEGRAM_CHAT_ID, "text": message})
-    except Exception as e:
-        print(f"❌ Telegram Error: {e}")
+    if params:
+        query_string = urlencode(params)
+        request_path += '?' + query_string
+    body = json.dumps(data) if data else ""
 
-# ============================================================
-# 📌 إنشاء التوقيع الصحيح OKX
-def generate_signature(timestamp, method, request_path, body=""):
-    if body is None:
-        body = ""
-    message = f"{timestamp}{method.upper()}{request_path}{body}"
-    mac = hmac.new(SECRET_KEY.encode('utf-8'), message.encode('utf-8'), hashlib.sha256)
-    return base64.b64encode(mac.digest()).decode()
-
-# ============================================================
-# 📌 إرسال طلب إلى OKX API
-def okx_request(method, endpoint, body=None, params=None):
-    url = f"https://www.okx.com{endpoint}"
-    timestamp = datetime.utcnow().isoformat(timespec='milliseconds') + 'Z'
-    body_str = "" if method.upper() == "GET" else json.dumps(body) if body else ""
-    sign = generate_signature(timestamp, method, endpoint, body_str)
+    prehash = f"{timestamp}{method}{request_path}{body}"
+    mac = hmac.new(OKX_SECRET_KEY.encode(), prehash.encode(), hashlib.sha256)
+    sign = base64.b64encode(mac.digest()).decode()
 
     headers = {
-        "OK-ACCESS-KEY": API_KEY,
+        "Content-Type": "application/json",
+        "OK-ACCESS-KEY": OKX_API_KEY,
         "OK-ACCESS-SIGN": sign,
         "OK-ACCESS-TIMESTAMP": timestamp,
-        "OK-ACCESS-PASSPHRASE": PASSPHRASE,
-        "Content-Type": "application/json"
+        "OK-ACCESS-PASSPHRASE": OKX_PASSPHRASE,
+        "x-simulated-trading": "0"
     }
 
     try:
-        response = requests.request(
-            method, url, headers=headers,
-            json=body if method.upper() == "POST" else None,
-            params=params
-        )
-        data = response.json()
-        if data.get("code") != "0":
-            print(f"❌ OKX Error: {data}")
-        return data
+        response = requests.request(method, BASE_URL + endpoint, headers=headers, params=params, data=body)
+        result = response.json()
+        if result.get("code") != "0":
+            print(f"❌ OKX Error: {result}")
+        return result
     except Exception as e:
-        print(f"❌ Exception: {e}")
+        print(f"❌ Request failed: {e}")
         return None
 
-# ============================================================
-# 📌 فحص الرصيد
+# مثال: جلب رصيد USDT
 def get_usdt_balance():
     result = okx_request("GET", "/api/v5/account/balance", params={"ccy": "USDT"})
-    if result and result.get("data"):
-        try:
-            balance = float(result["data"][0]["details"][0]["availBal"])
-            print(f"✅ الرصيد الحالي: {balance} USDT")
-            return balance
-        except:
-            print("❌ فشل قراءة الرصيد")
-    return 0
+    try:
+        if result and result.get("code") == "0":
+            balance = result["data"][0]["details"][0]["cashBal"]
+            print(f"✅ USDT Balance: {balance}")
+            return float(balance)
+    except Exception as e:
+        print(f"❌ Balance error: {e}")
+    return 0.0
 
-# ============================================================
-# 📌 تنفيذ أمر شراء/بيع
-def place_order(symbol, side, amount):
-    body = {
-        "instId": symbol,
-        "tdMode": "cash",
-        "side": side,
-        "ordType": "market",
-        "sz": str(amount)
-    }
-    result = okx_request("POST", "/api/v5/trade/order", body=body)
-    if result and result.get("code") == "0":
-        send_telegram_message(f"✅ تم تنفيذ أمر {side.upper()} لـ {symbol} بنجاح!")
-        return True
-    else:
-        send_telegram_message(f"❌ فشل تنفيذ أمر {side.upper()} لـ {symbol}: {result}")
-        return False
-
-# ============================================================
-# 📌 جلب الصفقات المفتوحة
-def get_open_positions():
-    result = okx_request("GET", "/api/v5/account/positions", params={"instType": "SPOT"})
-    if result and result.get("data"):
-        return [p["instId"] for p in result["data"] if float(p.get("pos", 0)) > 0]
-    return []
-
-# ============================================================
-# 📌 تنفيذ الإستراتيجية
+# استراتيجية بسيطة للتشغيل
 def run_strategy():
-    send_telegram_message("🤖 تم تشغيل بوت OKX بنجاح!")
+    print("🚀 Running strategy...")
     balance = get_usdt_balance()
-    if balance < 10:
-        send_telegram_message(f"⚠️ الرصيد غير كافٍ للتداول: {balance:.2f} USDT")
-        return
+    if balance > 0:
+        print(f"🎯 لديك {balance} USDT متاحة.")
+    else:
+        print("⚠️ لا يوجد رصيد أو يوجد خطأ.")
 
-    open_positions = get_open_positions()
-    if len(open_positions) >= MAX_POSITIONS:
-        send_telegram_message("⚠️ الحد الأقصى من الصفقات المفتوحة تم الوصول إليه.")
-        return
-
-    amount_to_trade = balance * TRADE_PERCENT
-    trades_executed = 0
-
-    for symbol in TRADE_SYMBOLS:
-        if symbol in open_positions:
-            continue
-        if trades_executed >= (MAX_POSITIONS - len(open_positions)):
-            break
-
-        price_data = okx_request("GET", "/api/v5/market/ticker", params={"instId": symbol})
-        if price_data and price_data.get("data"):
-            last_price = float(price_data["data"][0]["last"])
-            qty = round(amount_to_trade / last_price, 6)
-            if place_order(symbol, "buy", qty):
-                trades_executed += 1
-                time.sleep(1)
-
-# ============================================================
-# 🚀 بدء التشغيل
+# بدء التنفيذ
 if __name__ == "__main__":
-    send_telegram_message("🚀 بدء التشغيل...")
     run_strategy()
