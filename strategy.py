@@ -32,18 +32,9 @@ def save_positions(data):
     with open(POSITIONS_FILE, "w") as f:
         json.dump(data, f, indent=2)
 
-def calculate_rsi(prices, period=14):
-    delta = prices.diff()
-    gain = delta.clip(lower=0)
-    loss = -delta.clip(upper=0)
-    avg_gain = gain.rolling(window=period).mean()
-    avg_loss = loss.rolling(window=period).mean()
-    rs = avg_gain / avg_loss
-    rsi = 100 - (100 / (1 + rs))
-    return rsi
-
 def analyze_symbol(symbol):
-    candles = get_historical_candles(symbol, bar="1D", limit=30)
+    # جلب بيانات الشموع ساعة (1H)
+    candles = get_historical_candles(symbol, bar="1H", limit=100)
     if not candles:
         print(f"❌ لا يمكن جلب الشموع لـ {symbol}")
         return False
@@ -52,19 +43,24 @@ def analyze_symbol(symbol):
         "timestamp", "open", "high", "low", "close", "volume",
         "volCcy", "volCcyQuote", "confirm"
     ])
-    for col in ["open", "high", "low", "close", "volume"]:
-        df[col] = pd.to_numeric(df[col])
+    df["close"] = pd.to_numeric(df["close"])
 
-    df["rsi"] = calculate_rsi(df["close"])
+    # حساب المتوسطات المتحركة 20 و 50 فترة على شمعات الساعة
+    df["MA_fast"] = df["close"].rolling(window=20).mean()
+    df["MA_slow"] = df["close"].rolling(window=50).mean()
 
-    avg_volume = df["volume"].rolling(window=14).mean().iloc[-1]
-    current_volume = df["volume"].iloc[-1]
+    if len(df) < 51 or pd.isna(df["MA_fast"].iloc[-1]) or pd.isna(df["MA_slow"].iloc[-1]):
+        return False
 
-    today_close = df["close"].iloc[-1]
-    yesterday_close = df["close"].iloc[-2]
+    ma_fast_current = df["MA_fast"].iloc[-1]
+    ma_slow_current = df["MA_slow"].iloc[-1]
+    ma_fast_prev = df["MA_fast"].iloc[-2]
+    ma_slow_prev = df["MA_slow"].iloc[-2]
 
-    if df["rsi"].iloc[-1] < 30 and current_volume > avg_volume and today_close > yesterday_close:
+    # تحقق من التقاطع الصعودي
+    if ma_fast_prev <= ma_slow_prev and ma_fast_current > ma_slow_current:
         return True
+
     return False
 
 def enter_trade(symbol):
