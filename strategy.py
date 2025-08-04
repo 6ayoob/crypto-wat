@@ -18,14 +18,20 @@ TELEGRAM_CHAT_ID = "658712542"
 def send_telegram_message(message):
     url = f"https://api.telegram.org/bot{TELEGRAM_TOKEN}/sendMessage"
     try:
-        requests.post(url, data={"chat_id": TELEGRAM_CHAT_ID, "text": message})
+        response = requests.post(url, data={"chat_id": TELEGRAM_CHAT_ID, "text": message})
+        if not response.ok:
+            print(f"❌ خطأ في إرسال رسالة تيليجرام: {response.status_code} - {response.text}")
     except Exception as e:
-        print(f"❌ Telegram Error: {e}")
+        print(f"❌ Telegram Exception: {e}")
 
 def load_positions():
     if os.path.exists(POSITIONS_FILE):
-        with open(POSITIONS_FILE, "r") as f:
-            return json.load(f)
+        try:
+            with open(POSITIONS_FILE, "r") as f:
+                return json.load(f)
+        except json.JSONDecodeError:
+            print("⚠️ ملف المراكز معطوب، سيتم إنشاء ملف جديد.")
+            return {}
     return {}
 
 def save_positions(data):
@@ -33,7 +39,6 @@ def save_positions(data):
         json.dump(data, f, indent=2)
 
 def analyze_symbol(symbol):
-    # جلب بيانات الشموع ساعة (1H)
     candles = get_historical_candles(symbol, bar="1H", limit=100)
     if not candles:
         print(f"❌ لا يمكن جلب الشموع لـ {symbol}")
@@ -45,7 +50,6 @@ def analyze_symbol(symbol):
     ])
     df["close"] = pd.to_numeric(df["close"])
 
-    # حساب المتوسطات المتحركة 20 و 50 فترة على شمعات الساعة
     df["MA_fast"] = df["close"].rolling(window=20).mean()
     df["MA_slow"] = df["close"].rolling(window=50).mean()
 
@@ -57,7 +61,6 @@ def analyze_symbol(symbol):
     ma_fast_prev = df["MA_fast"].iloc[-2]
     ma_slow_prev = df["MA_slow"].iloc[-2]
 
-    # تحقق من التقاطع الصعودي
     if ma_fast_prev <= ma_slow_prev and ma_fast_current > ma_slow_current:
         return True
 
@@ -96,6 +99,10 @@ def enter_trade(symbol):
 
 def check_positions():
     positions = load_positions()
+    if not positions:
+        print("⚠️ لا توجد صفقات مفتوحة حالياً.")
+        return
+
     to_remove = []
     for symbol, pos in positions.items():
         current_price = get_last_price(symbol)
@@ -128,7 +135,6 @@ def check_positions():
                 print(f"❌ فشل بيع {symbol} عند هدف الربح: {sell_result}")
                 send_telegram_message(f"❌ فشل بيع {symbol} عند هدف الربح: {sell_result}")
 
-    save_positions(positions)
     for sym in to_remove:
         positions.pop(sym, None)
     save_positions(positions)
@@ -152,14 +158,14 @@ def is_market_bearish(symbols):
 
 def generate_daily_report():
     positions = load_positions()
-    lines = [f"📊 تقرير التداول اليومي - {datetime.now().strftime('%Y-%m-%d')}"]
+    lines = [f"📊 تقرير التداول اليومي - {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}"]
     lines.append(f"عدد الصفقات المفتوحة: {len(positions)}")
 
     for symbol, pos in positions.items():
         current_price = get_last_price(symbol)
         if current_price:
             pnl = (current_price - pos["entry_price"]) * pos["size"]
-            lines.append(f"{symbol}: الدخول عند {pos['entry_price']}, السعر الحالي {current_price}, الربح/الخسارة التقريبية: {pnl:.2f} USDT")
+            lines.append(f"{symbol}: الدخول عند {pos['entry_price']:.6f}, السعر الحالي {current_price:.6f}, الربح/الخسارة التقريبية: {pnl:.2f} USDT")
         else:
             lines.append(f"{symbol}: بيانات السعر غير متوفرة")
 
