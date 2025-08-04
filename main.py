@@ -19,19 +19,24 @@ def run_bot():
     last_report_day = None
     while True:
         now = time.localtime()
+        print(f"🕒 بدء الفحص عند: {time.strftime('%Y-%m-%d %H:%M:%S', now)}")
         print("🚀 بدء التحقق من الصفقات وتنفيذ الاستراتيجية")
 
+        # إرسال التقرير اليومي مرة واحدة كل يوم
         if now.tm_hour == DAILY_REPORT_HOUR and (last_report_day != now.tm_yday):
             generate_daily_report()
             last_report_day = now.tm_yday
 
+        # التحقق إذا السوق هابط
         if is_market_bearish(TRADE_SYMBOLS):
             print("⚠️ السوق في حالة هبوط، إيقاف التداول اليوم.")
             time.sleep(CHECK_INTERVAL)
             continue
 
+        # مراقبة الصفقات المفتوحة
         check_positions()
 
+        # تحميل الصفقات المفتوحة
         try:
             with open("positions.json", "r") as f:
                 positions = json.load(f)
@@ -39,12 +44,16 @@ def run_bot():
             positions = {}
 
         open_count = len(positions)
+        print(f"⚙️ صفقات مفتوحة حالياً: {open_count}, الحد الأقصى: {MAX_POSITIONS}")
 
+        # فتح صفقات جديدة حتى نصل الحد الأقصى
         if open_count < MAX_POSITIONS:
             for symbol in TRADE_SYMBOLS:
                 if symbol not in positions:
-                    enter_trade(symbol)
-                    break
+                    if enter_trade(symbol):
+                        open_count += 1
+                    if open_count >= MAX_POSITIONS:
+                        break
 
         print(f"⏳ الانتظار لمدة {CHECK_INTERVAL} ثانية قبل التحقق التالي...\n")
         time.sleep(CHECK_INTERVAL)
