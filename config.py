@@ -1,4 +1,4 @@
-OKX_API_KEY = "f267dba2-ece2-4a9a-aa11-f7a10579be44"   # مفتاح API
+OKX_API_KEY = "6e2d2b3f-636a-424a-a97e-5154e39e525a"   # مفتاح API
 OKX_SECRET_KEY = "022CBE3D1590783852B64002F97FD9BD"  # المفتاح السري
 OKX_PASSPHRASE = "Ta123456&"                         # كلمة المرور (Passphrase)
 
