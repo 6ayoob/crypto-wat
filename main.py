@@ -2,17 +2,38 @@
 
 import time
 from strategy import check_signal, execute_buy, manage_position, load_position
-from okx_api import get_all_symbols
 from telegram_bot import send_message
 
-WATCHED_SYMBOLS = ["BTC/USDT", "ETH/USDT", "SOL/USDT", "XRP/USDT", "DOGE/USDT"]
+# ✅ رموز OKX بصيغة صحيحة
+SYMBOLS = [
+    "CRV-USDT",    # Store of Value
+    "GALA-USDT",   # Gaming
+    "BNB-USDT",    # Exchange Chain
+    "SOL-USDT",    # Layer 1
+    "ADA-USDT",    # Layer 1
+    "AVAX-USDT",   # Layer 1
+    "ATOM-USDT",   # Interoperability
+    "DOT-USDT",    # Parachains
+    "PEPE-USDT",
+    "LINK-USDT",   # Oracle
+    "UNI-USDT",    # DeFi
+    "AAVE-USDT",   # DeFi Lending
+    "SUSHI-USDT",  # DEX
+    "LDO-USDT",    # Staking
+    "INJ-USDT",    # DeFi Trading
+    "XRP-USDT",   
+    "FET-USDT",    # AI
+    "APE-USDT",    # Metaverse
+    "TIA-USDT",    # Modular Blockchain
+    "OP-USDT",     # Optimism (L2)
+]
 
 def run_bot():
     send_message("🤖 بدأ تشغيل بوت التداول اللحظي!")
 
     while True:
         try:
-            for symbol in WATCHED_SYMBOLS:
+            for symbol in SYMBOLS:
                 # إدارة الصفقة إذا كانت موجودة
                 if load_position(symbol):
                     manage_position(symbol, send_message)
