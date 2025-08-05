@@ -1,57 +1,28 @@
 # main.py
 
 import time
-from strategy import check_signal, execute_buy, manage_position, load_position
-from telegram_bot import send_message
+import requests
+from config import TELEGRAM_TOKEN, TELEGRAM_CHAT_ID, SYMBOLS
+from strategy import check_signal, execute_buy, manage_position
 
-# ✅ رموز OKX بصيغة صحيحة
-SYMBOLS = [
-    "CRV-USDT",    # Store of Value
-    "GALA-USDT",   # Gaming
-    "BNB-USDT",    # Exchange Chain
-    "SOL-USDT",    # Layer 1
-    "ADA-USDT",    # Layer 1
-    "AVAX-USDT",   # Layer 1
-    "ATOM-USDT",   # Interoperability
-    "DOT-USDT",    # Parachains
-    "PEPE-USDT",
-    "LINK-USDT",   # Oracle
-    "UNI-USDT",    # DeFi
-    "AAVE-USDT",   # DeFi Lending
-    "SUSHI-USDT",  # DEX
-    "LDO-USDT",    # Staking
-    "INJ-USDT",    # DeFi Trading
-    "XRP-USDT",   
-    "FET-USDT",    # AI
-    "APE-USDT",    # Metaverse
-    "TIA-USDT",    # Modular Blockchain
-    "OP-USDT",     # Optimism (L2)
-]
+def send_telegram_message(text):
+    url = f"https://api.telegram.org/bot{TELEGRAM_TOKEN}/sendMessage"
+    requests.post(url, data={"chat_id": TELEGRAM_CHAT_ID, "text": text})
 
-def run_bot():
-    send_message("🤖 بدأ تشغيل بوت التداول اللحظي!")
+if __name__ == "__main__":
+    send_telegram_message("🤖 بدأ البوت في مراقبة الأسواق!")
 
     while True:
         try:
             for symbol in SYMBOLS:
-                # إدارة الصفقة إذا كانت موجودة
-                if load_position(symbol):
-                    manage_position(symbol, send_message)
-                    continue
-
-                # إذا لا يوجد صفقة، افحص للإشارة
                 signal = check_signal(symbol)
-
                 if signal == "buy":
-                    order, msg = execute_buy(symbol)
-                    if order:
-                        send_message(msg)
+                    order, message = execute_buy(symbol)
+                    send_telegram_message(message)
 
-            time.sleep(60)  # انتظر دقيقة واحدة قبل الجولة التالية
+                manage_position(symbol, send_telegram_message)
 
         except Exception as e:
-            send_message(f"❌ حدث خطأ: {e}")
-            time.sleep(30)
+            send_telegram_message(f"⚠️ خطأ:\n{str(e)}")
 
-if __name__ == "__main__":
-    run_bot()
+        time.sleep(30)
