@@ -1,71 +1,27 @@
-from aiogram import Bot, Dispatcher, types
-import asyncio
-from strategy import enter_trade, check_positions, load_positions
+# main.py
 
-API_TOKEN = "8300868885:AAEx8Zxdkz9CRUHmjJ0vvn6L3kC2kOPCHuk"
-ALLOWED_USER_IDS = [658712542]
+import time
+import requests
+from config import TELEGRAM_TOKEN, TELEGRAM_CHAT_ID
+from strategy import check_signal, execute_buy, manage_position
 
-bot = Bot(token=API_TOKEN)
-dp = Dispatcher(bot)
-
-symbols_to_check = [
-    "XRP/USDT", "DOGE/USDT", "MATIC/USDT", "LTC/USDT", "ADA/USDT",
-    "TRX/USDT", "ETC/USDT", "FIL/USDT", "EOS/USDT", "NEAR/USDT",
-    "VET/USDT", "THETA/USDT", "ZRX/USDT", "CHZ/USDT", "CRO/USDT",
-    "BAT/USDT", "SAND/USDT", "MANA/USDT", "KAVA/USDT", "ALGO/USDT"
-]
-
-@dp.message_handler(commands=["start"])
-async def cmd_start(message: types.Message):
-    if message.from_user.id not in ALLOWED_USER_IDS:
-        await message.answer("❌ غير مسموح لك باستخدام هذا البوت.")
-        return
-    await message.answer("مرحباً! استخدم /scan لفحص العملات، و /positions لعرض الصفقات المفتوحة.")
-
-@dp.message_handler(commands=["scan"])
-async def cmd_scan(message: types.Message):
-    if message.from_user.id not in ALLOWED_USER_IDS:
-        await message.answer("❌ غير مسموح لك باستخدام هذا البوت.")
-        return
-
-    await message.answer("⏳ جار فحص العملات وتنفيذ الصفقات...")
-    count = 0
-    for symbol in symbols_to_check:
-        entered = enter_trade(symbol)
-        if entered:
-            count += 1
-    await message.answer(f"✅ انتهى الفحص. تم فتح {count} صفقة جديدة.")
-
-@dp.message_handler(commands=["positions"])
-async def cmd_positions(message: types.Message):
-    if message.from_user.id not in ALLOWED_USER_IDS:
-        await message.answer("❌ غير مسموح لك باستخدام هذا البوت.")
-        return
-
-    positions = load_positions()
-    if not positions:
-        await message.answer("⚠️ لا توجد صفقات مفتوحة حالياً.")
-        return
-
-    msg_lines = ["📋 الصفقات المفتوحة:"]
-    for sym, pos in positions.items():
-        msg_lines.append(f"{sym}: الدخول عند {pos['entry_price']}, حجم {pos['size']}, وقف خسارة {pos['stop_loss']}, هدف ربح {pos['take_profit']}")
-    await message.answer("\n".join(msg_lines))
-
-async def periodic_check():
-    while True:
-        check_positions()
-        await asyncio.sleep(300)  # تحقق كل 5 دقائق
-
-async def main():
-    from aiogram import executor
-    import logging
-    logging.basicConfig(level=logging.INFO)
-
-    # Start periodic check in background
-    asyncio.create_task(periodic_check())
-    # Start bot
-    await dp.start_polling()
+def send_telegram_message(text):
+    url = f"https://api.telegram.org/bot{TELEGRAM_TOKEN}/sendMessage"
+    requests.post(url, data={"chat_id": TELEGRAM_CHAT_ID, "text": text})
 
 if __name__ == "__main__":
-    asyncio.run(main())
+    send_telegram_message("🤖 بدأ البوت في العمل!")
+
+    while True:
+        try:
+            signal = check_signal()
+            if signal == "buy":
+                order, message = execute_buy()
+                send_telegram_message(message)
+
+            manage_position(send_telegram_message)
+
+        except Exception as e:
+            send_telegram_message(f"⚠️ خطأ في النظام:\n{str(e)}")
+
+        time.sleep(30)
