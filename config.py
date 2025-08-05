@@ -7,7 +7,7 @@ PASSPHRASE = "Ta123456&"
 TELEGRAM_TOKEN = "8300868885:AAEx8Zxdkz9CRUHmjJ0vvn6L3kC2kOPCHuk"
 TELEGRAM_CHAT_ID = "658712542"
 
-# ✅ رموز OKX بصيغة صحيحة
+# ✅ رموز OKX بصيغة صحيحة - 40 عملة متنوعة
 SYMBOLS = [
     "CRV-USDT",    # Store of Value
     "GALA-USDT",   # Gaming
@@ -24,11 +24,32 @@ SYMBOLS = [
     "SUSHI-USDT",  # DEX
     "LDO-USDT",    # Staking
     "INJ-USDT",    # DeFi Trading
-    "XRP-USDT",   
+    "XRP-USDT",
     "FET-USDT",    # AI
     "APE-USDT",    # Metaverse
     "TIA-USDT",    # Modular Blockchain
     "OP-USDT",     # Optimism (L2)
+    "MANA-USDT",   # Metaverse
+    "THETA-USDT",  # Video Streaming
+    "CHZ-USDT",    # Fan Engagement
+    "ENJ-USDT",    # Gaming NFT
+    "AXS-USDT",    # Gaming NFT
+    "GRT-USDT",    # Indexing
+    "MKR-USDT",    # DeFi
+    "COMP-USDT",   # DeFi
+    "ZRX-USDT",    # DEX
+    "SNX-USDT",    # Synthetic Assets
+    "ALGO-USDT",   # Layer 1
+    "FTM-USDT",    # Layer 1
+    "NEAR-USDT",   # Layer 1
+    "CRO-USDT",    # Exchange Chain
+    "KSM-USDT",    # Parachains
+    "ONE-USDT",    # Layer 1
+    "SAND-USDT",   # Metaverse
+    "RUNE-USDT",   # DeFi
+    "BAT-USDT",    # Advertising Token
+    "DASH-USDT",   # Privacy Coin
+    "ZEC-USDT",    # Privacy Coin
 ]
 
 # الإطار الزمني للشموع
