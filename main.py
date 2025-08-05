@@ -1,66 +1,81 @@
-import time
-import json
-from telegram_bot import send_telegram_message
+import asyncio
+from aiogram import Bot, Dispatcher, executor, types
+from config import TELEGRAM_TOKEN, ALLOWED_USER_IDS
+import strategy
 
-send_telegram_message("🚀 البوت بدأ العمل بنجاح!")
+bot = Bot(token=TELEGRAM_TOKEN)
+dp = Dispatcher(bot)
 
-from strategy import enter_trade, check_positions, is_market_bearish, generate_daily_report
+# السماح فقط لمستخدمين محددين باستخدام البوت
+ALLOWED_USER_IDS = [658712542]  # عدل حسب معرفك
 
-TRADE_SYMBOLS = [
-    "ATOM-USDT", "CFX-USDT", "ILV-USDT", "ADA-USDT", "XRP-USDT",
-    "DOT-USDT", "MATIC-USDT", "LTC-USDT", "LINK-USDT", "PEPE-USDT",
-    "XLM-USDT", "VET-USDT", "FIL-USDT", "ICP-USDT", "ALGO-USDT",
-    "MANA-USDT", "SAND-USDT", "EOS-USDT", "CHZ-USDT", "XTZ-USDT",
-    "NEAR-USDT", "AAVE-USDT", "KSM-USDT", "RUNE-USDT", "ENJ-USDT",
-    "ZIL-USDT", "BAT-USDT", "CRV-USDT", "GRT-USDT", "STX-USDT"
-]
+async def restricted_access(message: types.Message):
+    if message.from_user.id not in ALLOWED_USER_IDS:
+        await message.reply("❌ ليس لديك صلاحية استخدام هذا البوت.")
+        return False
+    return True
 
-MAX_POSITIONS = 5
-CHECK_INTERVAL = 60 * 60
-DAILY_REPORT_HOUR = 15  # 3 عصراً
+@dp.message_handler(commands=['start'])
+async def start_handler(message: types.Message):
+    if not await restricted_access(message):
+        return
+    await message.reply("أهلاً! استخدم /scan لفحص السوق، /status لعرض الصفقات المفتوحة، /set_tp و /set_sl لتعديل نسب جني الأرباح ووقف الخسارة.")
 
-def run_bot():
-    last_report_day = None
+@dp.message_handler(commands=['scan'])
+async def scan_handler(message: types.Message):
+    if not await restricted_access(message):
+        return
+    await message.reply("🔍 جاري فحص السوق وتنفيذ الصفقات المحتملة...")
+    # مثال: فحص رمز واحد أو أكثر (يمكنك تعديل القائمة)
+    symbols_to_check = ["BTC/USDT", "ETH/USDT", "SOL/USDT"]
+    count = 0
+    for symbol in symbols_to_check:
+        if strategy.enter_trade(symbol):
+            count += 1
+    await message.reply(f"✅ تمت معالجة {count} صفقة.")
+
+@dp.message_handler(commands=['status'])
+async def status_handler(message: types.Message):
+    if not await restricted_access(message):
+        return
+    summary = strategy.get_positions_summary()
+    await message.reply(summary)
+
+@dp.message_handler(commands=['set_tp'])
+async def set_tp_handler(message: types.Message):
+    if not await restricted_access(message):
+        return
+    try:
+        percent = float(message.get_args())
+        if 1 <= percent <= 10:
+            strategy.TAKE_PROFIT_PERCENT = percent
+            await message.reply(f"✅ تم تعديل نسبة جني الأرباح إلى {percent}%")
+        else:
+            await message.reply("❌ أدخل نسبة بين 1 و 10")
+    except Exception:
+        await message.reply("❌ استخدم الأمر بشكل صحيح: /set_tp 4")
+
+@dp.message_handler(commands=['set_sl'])
+async def set_sl_handler(message: types.Message):
+    if not await restricted_access(message):
+        return
+    try:
+        percent = float(message.get_args())
+        if 0.1 <= percent <= 5:
+            strategy.STOP_LOSS_PERCENT = percent
+            await message.reply(f"✅ تم تعديل نسبة وقف الخسارة إلى {percent}%")
+        else:
+            await message.reply("❌ أدخل نسبة بين 0.1 و 5")
+    except Exception:
+        await message.reply("❌ استخدم الأمر بشكل صحيح: /set_sl 1")
+
+async def periodic_check():
     while True:
-        now = time.localtime()
-        print(f"🕒 بدء الفحص عند: {time.strftime('%Y-%m-%d %H:%M:%S', now)}")
-        print("🚀 بدء التحقق من الصفقات وتنفيذ الاستراتيجية")
-
-        # إرسال التقرير اليومي مرة واحدة كل يوم
-        if now.tm_hour == DAILY_REPORT_HOUR and (last_report_day != now.tm_yday):
-            generate_daily_report()
-            last_report_day = now.tm_yday
-
-        # التحقق إذا السوق هابط
-        if is_market_bearish(TRADE_SYMBOLS):
-            print("⚠️ السوق في حالة هبوط، إيقاف التداول اليوم.")
-            time.sleep(CHECK_INTERVAL)
-            continue
-
-        # مراقبة الصفقات المفتوحة
-        check_positions()
-
-        # تحميل الصفقات المفتوحة
-        try:
-            with open("positions.json", "r") as f:
-                positions = json.load(f)
-        except Exception:
-            positions = {}
-
-        open_count = len(positions)
-        print(f"⚙️ صفقات مفتوحة حالياً: {open_count}, الحد الأقصى: {MAX_POSITIONS}")
-
-        # فتح صفقات جديدة حتى نصل الحد الأقصى
-        if open_count < MAX_POSITIONS:
-            for symbol in TRADE_SYMBOLS:
-                if symbol not in positions:
-                    if enter_trade(symbol):
-                        open_count += 1
-                    if open_count >= MAX_POSITIONS:
-                        break
-
-        print(f"⏳ الانتظار لمدة {CHECK_INTERVAL} ثانية قبل التحقق التالي...\n")
-        time.sleep(CHECK_INTERVAL)
+        print("🔄 فحص المراكز المفتوحة...")
+        strategy.check_positions()
+        await asyncio.sleep(300)  # كل 5 دقائق
 
 if __name__ == "__main__":
-    run_bot()
+    loop = asyncio.get_event_loop()
+    loop.create_task(periodic_check())
+    executor.start_polling(dp)
