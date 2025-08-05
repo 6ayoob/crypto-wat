@@ -26,7 +26,7 @@ SYMBOLS = [
     "AVAX-USDT",   # Layer 1
     "ATOM-USDT",   # Interoperability
     "DOT-USDT",    # Parachains
-    "PEPE-USDT",
+    "PORTAL-USDT",
     "LINK-USDT",   # Oracle
     "UNI-USDT",    # DeFi
     "AAVE-USDT",   # DeFi Lending
@@ -49,16 +49,16 @@ SYMBOLS = [
     "ZRX-USDT",    # DEX
     "SNX-USDT",    # Synthetic Assets
     "ALGO-USDT",   # Layer 1
-    "FTM-USDT",    # Layer 1
+    "PEPE-USDT",    # Layer 1
     "NEAR-USDT",   # Layer 1
     "CRO-USDT",    # Exchange Chain
     "KSM-USDT",    # Parachains
     "ONE-USDT",    # Layer 1
     "SAND-USDT",   # Metaverse
-    "RUNE-USDT",   # DeFi
+    "CFX-USDT",   # DeFi
     "BAT-USDT",    # Advertising Token
-    "DASH-USDT",   # Privacy Coin
-    "ZEC-USDT",    # Privacy Coin
+    "ILV-USDT",   # Privacy Coin
+    "XLM-USDT",    # Privacy Coin
 ]
 
 # الإطار الزمني للشموع
