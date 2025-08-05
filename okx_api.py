@@ -12,6 +12,9 @@ exchange = ccxt.okx({
 })
 
 def get_balance(asset='USDT'):
+    """
+    جلب رصيد العملة المتاحة في الحساب
+    """
     try:
         balances = exchange.fetch_balance()
         return balances.get(asset, {}).get('free', 0)
@@ -20,6 +23,9 @@ def get_balance(asset='USDT'):
         return 0
 
 def fetch_price(symbol):
+    """
+    جلب السعر الحالي لسوق معين
+    """
     try:
         ticker = exchange.fetch_ticker(symbol)
         return ticker['last']
@@ -27,7 +33,10 @@ def fetch_price(symbol):
         print(f"❌ خطأ في جلب السعر الحالي لـ {symbol}: {e}")
         return None
 
-def fetch_ohlcv(symbol, timeframe='5m', limit=100):  # تعديل الإطار الزمني إلى 5 دقائق افتراضياً
+def fetch_ohlcv(symbol, timeframe='5m', limit=100):
+    """
+    جلب بيانات الشموع (OHLCV) لفترة زمنية معينة
+    """
     try:
         data = exchange.fetch_ohlcv(symbol, timeframe=timeframe, limit=limit)
         return data
@@ -36,6 +45,9 @@ def fetch_ohlcv(symbol, timeframe='5m', limit=100):  # تعديل الإطار �
         return []
 
 def place_market_order(symbol, side, amount):
+    """
+    تنفيذ أمر سوق (شراء أو بيع) بمقدار معين
+    """
     try:
         order = exchange.create_market_order(symbol, side, amount)
         return order
@@ -44,6 +56,9 @@ def place_market_order(symbol, side, amount):
         return None
 
 def place_market_buy(symbol, usdt_amount):
+    """
+    تنفيذ أمر شراء بقيمة USDT معينة، بحساب كمية العملة تلقائيًا
+    """
     price = fetch_price(symbol)
     if price is None:
         print(f"❌ لا يمكن تحديد السعر للشراء لـ {symbol}")
@@ -57,6 +72,9 @@ def place_market_buy(symbol, usdt_amount):
         return None
 
 def place_market_sell(symbol, quantity):
+    """
+    تنفيذ أمر بيع لكمية معينة من العملة
+    """
     try:
         order = exchange.create_market_sell_order(symbol, quantity)
         return order
@@ -65,6 +83,9 @@ def place_market_sell(symbol, quantity):
         return None
 
 def get_position_size(symbol):
+    """
+    جلب كمية العملة المتاحة (الرصيد الحر) للمركز المفتوح
+    """
     try:
         balance = exchange.fetch_balance()
         coin = symbol.split("-")[0]
