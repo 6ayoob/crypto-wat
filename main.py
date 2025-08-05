@@ -1,81 +1,71 @@
+from aiogram import Bot, Dispatcher, types
 import asyncio
-from aiogram import Bot, Dispatcher, executor, types
-from config import TELEGRAM_TOKEN, ALLOWED_USER_IDS
-import strategy
+from strategy import enter_trade, check_positions, load_positions
 
-bot = Bot(token=TELEGRAM_TOKEN)
+API_TOKEN = "8300868885:AAEx8Zxdkz9CRUHmjJ0vvn6L3kC2kOPCHuk"
+ALLOWED_USER_IDS = [658712542]
+
+bot = Bot(token=API_TOKEN)
 dp = Dispatcher(bot)
 
-# السماح فقط لمستخدمين محددين باستخدام البوت
-ALLOWED_USER_IDS = [658712542]  # عدل حسب معرفك
+symbols_to_check = [
+    "XRP/USDT", "DOGE/USDT", "MATIC/USDT", "LTC/USDT", "ADA/USDT",
+    "TRX/USDT", "ETC/USDT", "FIL/USDT", "EOS/USDT", "NEAR/USDT",
+    "VET/USDT", "THETA/USDT", "ZRX/USDT", "CHZ/USDT", "CRO/USDT",
+    "BAT/USDT", "SAND/USDT", "MANA/USDT", "KAVA/USDT", "ALGO/USDT"
+]
 
-async def restricted_access(message: types.Message):
+@dp.message_handler(commands=["start"])
+async def cmd_start(message: types.Message):
     if message.from_user.id not in ALLOWED_USER_IDS:
-        await message.reply("❌ ليس لديك صلاحية استخدام هذا البوت.")
-        return False
-    return True
-
-@dp.message_handler(commands=['start'])
-async def start_handler(message: types.Message):
-    if not await restricted_access(message):
+        await message.answer("❌ غير مسموح لك باستخدام هذا البوت.")
         return
-    await message.reply("أهلاً! استخدم /scan لفحص السوق، /status لعرض الصفقات المفتوحة، /set_tp و /set_sl لتعديل نسب جني الأرباح ووقف الخسارة.")
+    await message.answer("مرحباً! استخدم /scan لفحص العملات، و /positions لعرض الصفقات المفتوحة.")
 
-@dp.message_handler(commands=['scan'])
-async def scan_handler(message: types.Message):
-    if not await restricted_access(message):
+@dp.message_handler(commands=["scan"])
+async def cmd_scan(message: types.Message):
+    if message.from_user.id not in ALLOWED_USER_IDS:
+        await message.answer("❌ غير مسموح لك باستخدام هذا البوت.")
         return
-    await message.reply("🔍 جاري فحص السوق وتنفيذ الصفقات المحتملة...")
-    # مثال: فحص رمز واحد أو أكثر (يمكنك تعديل القائمة)
-    symbols_to_check = ["BTC/USDT", "ETH/USDT", "SOL/USDT"]
+
+    await message.answer("⏳ جار فحص العملات وتنفيذ الصفقات...")
     count = 0
     for symbol in symbols_to_check:
-        if strategy.enter_trade(symbol):
+        entered = enter_trade(symbol)
+        if entered:
             count += 1
-    await message.reply(f"✅ تمت معالجة {count} صفقة.")
+    await message.answer(f"✅ انتهى الفحص. تم فتح {count} صفقة جديدة.")
 
-@dp.message_handler(commands=['status'])
-async def status_handler(message: types.Message):
-    if not await restricted_access(message):
+@dp.message_handler(commands=["positions"])
+async def cmd_positions(message: types.Message):
+    if message.from_user.id not in ALLOWED_USER_IDS:
+        await message.answer("❌ غير مسموح لك باستخدام هذا البوت.")
         return
-    summary = strategy.get_positions_summary()
-    await message.reply(summary)
 
-@dp.message_handler(commands=['set_tp'])
-async def set_tp_handler(message: types.Message):
-    if not await restricted_access(message):
+    positions = load_positions()
+    if not positions:
+        await message.answer("⚠️ لا توجد صفقات مفتوحة حالياً.")
         return
-    try:
-        percent = float(message.get_args())
-        if 1 <= percent <= 10:
-            strategy.TAKE_PROFIT_PERCENT = percent
-            await message.reply(f"✅ تم تعديل نسبة جني الأرباح إلى {percent}%")
-        else:
-            await message.reply("❌ أدخل نسبة بين 1 و 10")
-    except Exception:
-        await message.reply("❌ استخدم الأمر بشكل صحيح: /set_tp 4")
 
-@dp.message_handler(commands=['set_sl'])
-async def set_sl_handler(message: types.Message):
-    if not await restricted_access(message):
-        return
-    try:
-        percent = float(message.get_args())
-        if 0.1 <= percent <= 5:
-            strategy.STOP_LOSS_PERCENT = percent
-            await message.reply(f"✅ تم تعديل نسبة وقف الخسارة إلى {percent}%")
-        else:
-            await message.reply("❌ أدخل نسبة بين 0.1 و 5")
-    except Exception:
-        await message.reply("❌ استخدم الأمر بشكل صحيح: /set_sl 1")
+    msg_lines = ["📋 الصفقات المفتوحة:"]
+    for sym, pos in positions.items():
+        msg_lines.append(f"{sym}: الدخول عند {pos['entry_price']}, حجم {pos['size']}, وقف خسارة {pos['stop_loss']}, هدف ربح {pos['take_profit']}")
+    await message.answer("\n".join(msg_lines))
 
 async def periodic_check():
     while True:
-        print("🔄 فحص المراكز المفتوحة...")
-        strategy.check_positions()
-        await asyncio.sleep(300)  # كل 5 دقائق
+        check_positions()
+        await asyncio.sleep(300)  # تحقق كل 5 دقائق
+
+async def main():
+    from aiogram import executor
+    import logging
+    logging.basicConfig(level=logging.INFO)
+
+    # Start periodic check in background
+    asyncio.create_task(periodic_check())
+    # Start bot
+    await dp.start_polling()
 
 if __name__ == "__main__":
-    loop = asyncio.get_event_loop()
-    loop.create_task(periodic_check())
-    executor.start_polling(dp)
+    asyncio.run(main())
