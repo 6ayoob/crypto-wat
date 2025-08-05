@@ -1,4 +1,4 @@
-import config.py
+import config
 import json
 import os
 import requests
