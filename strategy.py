@@ -33,11 +33,14 @@ def count_open_positions():
     return len([f for f in os.listdir("positions") if f.endswith(".json")])
 
 def check_signal(symbol):
-    data = fetch_ohlcv(symbol, '1m', 100)
+    data = fetch_ohlcv(symbol, '5m', 100)  # تعديل الإطار الزمني إلى 5 دقائق
+    if not data:
+        return None
     df = pd.DataFrame(data, columns=['timestamp', 'open', 'high', 'low', 'close', 'volume'])
     df['ma20'] = df['close'].rolling(window=20).mean()
     df['ma50'] = df['close'].rolling(window=50).mean()
 
+    # إشارة شراء: تقاطع الما20 مع الما50 صاعدًا
     if df['ma20'].iloc[-2] < df['ma50'].iloc[-2] and df['ma20'].iloc[-1] > df['ma50'].iloc[-1]:
         return "buy"
     return None
