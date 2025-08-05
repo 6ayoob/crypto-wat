@@ -26,7 +26,7 @@ SYMBOLS = [
     "AVAX-USDT",   # Layer 1
     "ATOM-USDT",   # Interoperability
     "DOT-USDT",    # Parachains
-    "PORTAL-USDT",
+    "TRUMP-USDT",
     "LINK-USDT",   # Oracle
     "UNI-USDT",    # DeFi
     "AAVE-USDT",   # DeFi Lending
