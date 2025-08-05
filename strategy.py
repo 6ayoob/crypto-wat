@@ -7,7 +7,7 @@ from datetime import datetime
 
 POSITIONS_FILE = "positions.json"
 TRADING_AMOUNT = 15  # 15 دولار لكل صفقة
-STOP_LOSS_PERCENT = 1.5
+STOP_LOSS_PERCENT = 3
 TAKE_PROFIT_PERCENT = 4
 
 TELEGRAM_TOKEN = "8300868885:AAEx8Zxdkz9CRUHmjJ0vvn6L3kC2kOPCHuk"
@@ -37,7 +37,7 @@ def save_positions(data):
         json.dump(data, f, indent=2)
 
 def analyze_symbol(symbol):
-    candles = get_historical_candles(symbol, timeframe="1h", limit=100)
+    candles = get_historical_candles(symbol, bar="1H", limit=100)
     if not candles:
         print(f"❌ لا يمكن جلب الشموع لـ {symbol}")
         return False
