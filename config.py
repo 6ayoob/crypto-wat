@@ -17,21 +17,21 @@ SYMBOLS = [
     "AVAX-USDT",   # Layer 1
     "ATOM-USDT",   # Interoperability
     "DOT-USDT",    # Parachains
-    "DOT-USDT",  # Layer 2
+    "PEPE-USDT",
     "LINK-USDT",   # Oracle
     "UNI-USDT",    # DeFi
     "AAVE-USDT",   # DeFi Lending
     "SUSHI-USDT",  # DEX
     "LDO-USDT",    # Staking
     "INJ-USDT",    # DeFi Trading
-    "RNDR-USDT",   # AI/GPU
+    "XRP-USDT",   
     "FET-USDT",    # AI
     "APE-USDT",    # Metaverse
     "TIA-USDT",    # Modular Blockchain
     "OP-USDT",     # Optimism (L2)
 ]
 
-TIMEFRAME = "5m"
+TIMEFRAME = "1m"
 
 TRADE_AMOUNT_USDT = 15
 
