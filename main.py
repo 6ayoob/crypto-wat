@@ -2,7 +2,7 @@
 
 import time
 import requests
-from config import TELEGRAM_TOKEN, TELEGRAM_CHAT_ID
+from config import TELEGRAM_TOKEN, TELEGRAM_CHAT_ID, SYMBOLS
 from strategy import check_signal, execute_buy, manage_position
 
 def send_telegram_message(text):
@@ -10,18 +10,19 @@ def send_telegram_message(text):
     requests.post(url, data={"chat_id": TELEGRAM_CHAT_ID, "text": text})
 
 if __name__ == "__main__":
-    send_telegram_message("🤖 بدأ البوت في العمل!")
+    send_telegram_message("🤖 بدأ البوت في مراقبة الأسواق!")
 
     while True:
         try:
-            signal = check_signal()
-            if signal == "buy":
-                order, message = execute_buy()
-                send_telegram_message(message)
+            for symbol in SYMBOLS:
+                signal = check_signal(symbol)
+                if signal == "buy":
+                    order, message = execute_buy(symbol)
+                    send_telegram_message(message)
 
-            manage_position(send_telegram_message)
+                manage_position(symbol, send_telegram_message)
 
         except Exception as e:
-            send_telegram_message(f"⚠️ خطأ في النظام:\n{str(e)}")
+            send_telegram_message(f"⚠️ خطأ:\n{str(e)}")
 
         time.sleep(30)
