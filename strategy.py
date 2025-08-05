@@ -7,7 +7,7 @@ from datetime import datetime
 
 POSITIONS_FILE = "positions.json"
 TRADING_AMOUNT = 15  # 15 دولار لكل صفقة
-STOP_LOSS_PERCENT = 1.5  # ← تم تعديلها من 3 إلى 1.5
+STOP_LOSS_PERCENT = 1.5
 TAKE_PROFIT_PERCENT = 4
 
 TELEGRAM_TOKEN = "8300868885:AAEx8Zxdkz9CRUHmjJ0vvn6L3kC2kOPCHuk"
