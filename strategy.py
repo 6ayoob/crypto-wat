@@ -37,7 +37,7 @@ def save_positions(data):
         json.dump(data, f, indent=2)
 
 def analyze_symbol(symbol):
-    candles = get_historical_candles(symbol, bar="1H", limit=100)
+  candles = get_historical_candles(symbol, timeframe="1h", limit=100)
     if not candles:
         print(f"❌ لا يمكن جلب الشموع لـ {symbol}")
         return False
