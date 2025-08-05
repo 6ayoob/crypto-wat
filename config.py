@@ -7,31 +7,33 @@ PASSPHRASE = "Ta123456&"
 TELEGRAM_TOKEN = "8300868885:AAEx8Zxdkz9CRUHmjJ0vvn6L3kC2kOPCHuk"
 TELEGRAM_CHAT_ID = "658712542"
 
+# ✅ رموز OKX بصيغة صحيحة
 SYMBOLS = [
-    "CRV/USDT",    # Bitcoin (Store of value)
-    "GALA/USDT",    # Ethereum (Smart Contracts)
-    "BNB/USDT",    # Binance (Exchange Chain)
-    "SOL/USDT",    # Solana (Layer 1)
-    "ADA/USDT",    # Cardano (Layer 1)
-    "AVAX/USDT",   # Avalanche (Layer 1)
-    "ATOM/USDT",   # Cosmos (Interoperability)
-    "DOT/USDT",    # Polkadot (Parachains)
-    "MATIC/USDT",  # Polygon (Scaling/L2)
-    "LINK/USDT",   # Chainlink (Oracle)
-    "UNI/USDT",    # Uniswap (DeFi)
-    "AAVE/USDT",   # Aave (DeFi Lending)
-    "SUSHI/USDT",  # SushiSwap (DEX)
-    "LDO/USDT",    # Lido (Staking)
-    "INJ/USDT",    # Injective (Trading DeFi)
-    "RNDR/USDT",   # Render (AI/GPU)
-    "FET/USDT",    # Fetch.ai (AI)
-    "GALA/USDT",   # Gala Games (Gaming)
-    "APE/USDT",    # ApeCoin (Metaverse)
-    "TIA/USDT",    # Celestia (Modular Blockchain)
+    "CRV-USDT",    # Store of Value
+    "GALA-USDT",   # Gaming
+    "BNB-USDT",    # Exchange Chain
+    "SOL-USDT",    # Layer 1
+    "ADA-USDT",    # Layer 1
+    "AVAX-USDT",   # Layer 1
+    "ATOM-USDT",   # Interoperability
+    "DOT-USDT",    # Parachains
+    "MATIC-USDT",  # Layer 2
+    "LINK-USDT",   # Oracle
+    "UNI-USDT",    # DeFi
+    "AAVE-USDT",   # DeFi Lending
+    "SUSHI-USDT",  # DEX
+    "LDO-USDT",    # Staking
+    "INJ-USDT",    # DeFi Trading
+    "RNDR-USDT",   # AI/GPU
+    "FET-USDT",    # AI
+    "APE-USDT",    # Metaverse
+    "TIA-USDT",    # Modular Blockchain
+    "OP-USDT",     # Optimism (L2)
 ]
 
 TIMEFRAME = "5m"
 
 TRADE_AMOUNT_USDT = 15
-STOP_LOSS_PCT = 0.01     # 1%
-TAKE_PROFIT_PCT = 0.04   # 4%
+
+STOP_LOSS_PCT = 0.015     # ✅ 1.5% وقف خسارة
+TAKE_PROFIT_PCT = 0.04    # 4% جني أرباح
