@@ -12,7 +12,7 @@ TRADE_SYMBOLS = [
 ]
 
 MAX_POSITIONS = 5
-CHECK_INTERVAL = 60 * 60  # ساعة
+CHECK_INTERVAL = 60 * 60
 DAILY_REPORT_HOUR = 15  # 3 عصراً
 
 def run_bot():
