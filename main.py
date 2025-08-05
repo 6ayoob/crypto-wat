@@ -4,7 +4,7 @@ from strategy import enter_trade, check_positions, is_market_bearish, generate_d
 
 TRADE_SYMBOLS = [
     "ATOM-USDT", "CFX-USDT", "ILV-USDT", "ADA-USDT", "XRP-USDT",
-    "DOT-USDT", "MATIC-USDT", "LTC-USDT", "LINK-USDT", "BCH-USDT",
+    "DOT-USDT", "MATIC-USDT", "LTC-USDT", "LINK-USDT", "PEPE-USDT",
     "XLM-USDT", "VET-USDT", "FIL-USDT", "ICP-USDT", "ALGO-USDT",
     "MANA-USDT", "SAND-USDT", "EOS-USDT", "CHZ-USDT", "XTZ-USDT",
     "NEAR-USDT", "AAVE-USDT", "KSM-USDT", "RUNE-USDT", "ENJ-USDT",
@@ -12,7 +12,7 @@ TRADE_SYMBOLS = [
 ]
 
 MAX_POSITIONS = 5
-CHECK_INTERVAL = 60 * 60
+CHECK_INTERVAL = 60 * 60  # ساعة
 DAILY_REPORT_HOUR = 15  # 3 عصراً
 
 def run_bot():
