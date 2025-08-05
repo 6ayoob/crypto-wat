@@ -27,7 +27,7 @@ def fetch_price(symbol):
         print(f"❌ خطأ في جلب السعر الحالي لـ {symbol}: {e}")
         return None
 
-def fetch_ohlcv(symbol, timeframe='1m', limit=100):
+def fetch_ohlcv(symbol, timeframe='5m', limit=100):  # تعديل الإطار الزمني إلى 5 دقائق افتراضياً
     try:
         data = exchange.fetch_ohlcv(symbol, timeframe=timeframe, limit=limit)
         return data
