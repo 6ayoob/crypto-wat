@@ -1,9 +1,9 @@
-from config import TELEGRAM_TOKEN, TELEGRAM_CHAT_ID
 import json
 import os
 import requests
 from okx_api import get_last_price, place_limit_order, place_market_order, get_historical_candles
 import pandas as pd
+import numpy as np
 from datetime import datetime
 
 POSITIONS_FILE = "positions.json"
@@ -11,7 +11,7 @@ TRADING_AMOUNT = 25  # دولار لكل صفقة
 STOP_LOSS_PERCENT = 3
 TAKE_PROFIT_PERCENT = 5
 
-# إعدادات تيليجرام
+# Telegram إعدادات
 TELEGRAM_TOKEN = "8300868885:AAEx8Zxdkz9CRUHmjJ0vvn6L3kC2kOPCHuk"
 TELEGRAM_CHAT_ID = "658712542"
 
