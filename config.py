@@ -31,9 +31,12 @@ SYMBOLS = [
     "OP-USDT",     # Optimism (L2)
 ]
 
-TIMEFRAME = "1m"
+# الإطار الزمني للشموع
+TIMEFRAME = "1m"  # 1 دقيقة (مضاربات سريعة)
 
+# إعدادات التداول
+TRADE_AMOUNT_USDT = 15   # مبلغ التداول لكل صفقة بالدولار
+STOP_LOSS_PCT = 0.02    # وقف خسارة 2%
+TAKE_PROFIT_PCT = 0.04  # جني ربح 4%
 
-TRADE_AMOUNT_USDT = 15
-STOP_LOSS_PCT = 0.02  # 2%
-TAKE_PROFIT_PCT = 0.04  # 4%
+MAX_OPEN_POSITIONS = 4  # الحد الأقصى لعدد الصفقات المفتوحة في نفس الوقت
