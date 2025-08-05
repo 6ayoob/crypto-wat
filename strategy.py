@@ -1,138 +1,127 @@
-import json
-import os
-import requests
-from okx_api import get_last_price, place_limit_order, place_market_order, get_historical_candles
+import ccxt
 import pandas as pd
-from datetime import datetime
+import time
+import requests
 
-POSITIONS_FILE = "positions.json"
-TRADING_AMOUNT = 15  # 15 دولار لكل صفقة
-STOP_LOSS_PERCENT = 3
-TAKE_PROFIT_PERCENT = 4
+# مفاتيح OKX (لا تقم بنشرها أو مشاركتها بشكل عام)
+API_KEY = "6e2d2b3f-636a-424a-a97e-5154e39e525a"
+SECRET_KEY = "D4B9966385BEE5A7B7D8791BA5C0539F"
+PASSPHRASE = "Ta123456&"
 
 TELEGRAM_TOKEN = "8300868885:AAEx8Zxdkz9CRUHmjJ0vvn6L3kC2kOPCHuk"
 TELEGRAM_CHAT_ID = "658712542"
 
-def send_telegram_message(message):
+TRADING_AMOUNT_USDT = 15  # مبلغ الدخول لكل صفقة
+
+exchange = ccxt.okx({
+    'apiKey': API_KEY,
+    'secret': SECRET_KEY,
+    'password': PASSPHRASE,
+    'enableRateLimit': True,
+    'options': {
+        'defaultType': 'spot',
+    }
+})
+
+def send_telegram_message(text):
     url = f"https://api.telegram.org/bot{TELEGRAM_TOKEN}/sendMessage"
+    data = {"chat_id": TELEGRAM_CHAT_ID, "text": text}
     try:
-        response = requests.post(url, data={"chat_id": TELEGRAM_CHAT_ID, "text": message})
-        if not response.ok:
-            print(f"❌ خطأ في إرسال رسالة تيليجرام: {response.status_code} - {response.text}")
+        requests.post(url, data=data)
     except Exception as e:
-        print(f"❌ Telegram Exception: {e}")
+        print("Telegram send error:", e)
 
-def load_positions():
-    if os.path.exists(POSITIONS_FILE):
-        try:
-            with open(POSITIONS_FILE, "r") as f:
-                return json.load(f)
-        except json.JSONDecodeError:
-            print("⚠️ ملف المراكز معطوب، سيتم إنشاء ملف جديد.")
-            return {}
-    return {}
+def fetch_ohlcv(symbol, timeframe='1m', limit=50):
+    try:
+        data = exchange.fetch_ohlcv(symbol, timeframe=timeframe, limit=limit)
+        df = pd.DataFrame(data, columns=['timestamp', 'open', 'high', 'low', 'close', 'volume'])
+        return df
+    except Exception as e:
+        print(f"Error fetching OHLCV: {e}")
+        return None
 
-def save_positions(data):
-    with open(POSITIONS_FILE, "w") as f:
-        json.dump(data, f, indent=2)
+def calculate_ema(df, period):
+    return df['close'].ewm(span=period, adjust=False).mean()
 
-def analyze_symbol(symbol):
-    candles = get_historical_candles(symbol, bar="1H", limit=100)
-    if not candles:
-        print(f"❌ لا يمكن جلب الشموع لـ {symbol}")
-        return False
+def check_trade_signal(symbol):
+    df = fetch_ohlcv(symbol, timeframe='1m', limit=100)
+    if df is None or len(df) < 50:
+        return None
+    
+    ema9 = calculate_ema(df, 9)
+    ema21 = calculate_ema(df, 21)
+    ema50 = calculate_ema(df, 50)
 
-    df = pd.DataFrame(candles, columns=[
-        "timestamp", "open", "high", "low", "close", "volume",
-        "volCcy", "volCcyQuote", "confirm"
-    ])
-    df["close"] = pd.to_numeric(df["close"])
+    last_ema9 = ema9.iloc[-1]
+    last_ema21 = ema21.iloc[-1]
+    prev_ema9 = ema9.iloc[-2]
+    prev_ema21 = ema21.iloc[-2]
+    last_price = df['close'].iloc[-1]
+    last_ema50 = ema50.iloc[-1]
 
-    df["MA_fast"] = df["close"].rolling(window=20).mean()
-    df["MA_slow"] = df["close"].rolling(window=50).mean()
+    # شرط الدخول شراء
+    if prev_ema9 <= prev_ema21 and last_ema9 > last_ema21 and last_price > last_ema50:
+        return 'buy'
+    # شرط الخروج (بيع) يعتمد على وقف الخسارة وجني الربح بشكل منفصل في الكود الأساسي
+    return None
 
-    if len(df) < 51 or pd.isna(df["MA_fast"].iloc[-1]) or pd.isna(df["MA_slow"].iloc[-1]):
-        return False
+def place_order(symbol, side, amount):
+    try:
+        # OKX Spot requires symbol like 'BTC/USDT'
+        order = exchange.create_market_order(symbol, side, amount)
+        send_telegram_message(f"✅ تم تنفيذ أمر {side.upper()} على {symbol}، كمية: {amount}")
+        return order
+    except Exception as e:
+        send_telegram_message(f"❌ خطأ في تنفيذ أمر {side} على {symbol}: {e}")
+        return None
 
-    ma_fast_current = df["MA_fast"].iloc[-1]
-    ma_slow_current = df["MA_slow"].iloc[-1]
-    ma_fast_prev = df["MA_fast"].iloc[-2]
-    ma_slow_prev = df["MA_slow"].iloc[-2]
+def get_balance(asset='USDT'):
+    try:
+        balances = exchange.fetch_balance()
+        free_balance = balances.get(asset, {}).get('free', 0)
+        return free_balance
+    except Exception as e:
+        print("Error fetching balance:", e)
+        return 0
 
-    if ma_fast_prev <= ma_slow_prev and ma_fast_current > ma_slow_current:
-        return True
+def main_loop(symbol='BTC/USDT'):
+    position = None  # لتخزين حالة الصفقة الحالية
+    
+    while True:
+        signal = check_trade_signal(symbol)
+        balance = get_balance('USDT')
+        
+        if signal == 'buy' and position is None and balance >= TRADING_AMOUNT_USDT:
+            price = exchange.fetch_ticker(symbol)['last']
+            amount = TRADING_AMOUNT_USDT / price
+            order = place_order(symbol, 'buy', amount)
+            if order:
+                entry_price = price
+                stop_loss = entry_price * 0.99  # 1% وقف خسارة
+                take_profit = entry_price * 4  # 4% جني ربح
+                position = {
+                    'amount': amount,
+                    'entry_price': entry_price,
+                    'stop_loss': stop_loss,
+                    'take_profit': take_profit
+                }
+                send_telegram_message(f"📈 تم فتح صفقة شراء على {symbol} بسعر {entry_price:.2f}")
+        
+        if position is not None:
+            current_price = exchange.fetch_ticker(symbol)['last']
+            # تحقق وقف الخسارة
+            if current_price <= position['stop_loss']:
+                place_order(symbol, 'sell', position['amount'])
+                send_telegram_message(f"❌ تم تفعيل وقف الخسارة عند {current_price:.2f} على {symbol}")
+                position = None
+            # تحقق جني الربح
+            elif current_price >= position['take_profit']:
+                place_order(symbol, 'sell', position['amount'])
+                send_telegram_message(f"🎯 تم الوصول لهدف الربح عند {current_price:.2f} على {symbol}")
+                position = None
+        
+        time.sleep(30)  # تفادي حظر الطلبات عبر انتظار 30 ثانية
 
-    return False
-
-def enter_trade(symbol):
-    if not analyze_symbol(symbol):
-        print(f"⚠️ {symbol} لا تحقق شروط الدخول.")
-        return False
-
-    price = get_last_price(symbol)
-    if price is None or price > 20:
-        print(f"❌ {symbol} سعره غير مناسب أو غير متوفر.")
-        return False
-
-    size = round(TRADING_AMOUNT / price, 6)
-    print(f"➡️ محاولة دخول صفقة {symbol} بسعر {price} وحجم {size}")
-
-    result = place_limit_order(symbol, "buy", price, size)
-    if result and result.get("code") == "0":
-        print(f"✅ أمر شراء {symbol} تم بنجاح!")
-        send_telegram_message(f"✅ تم شراء {symbol} بسعر {price} وحجم {size}")
-        positions = load_positions()
-        positions[symbol] = {
-            "entry_price": price,
-            "size": size,
-            "stop_loss": round(price * (1 - STOP_LOSS_PERCENT / 100), 6),
-            "take_profit": round(price * (1 + TAKE_PROFIT_PERCENT / 100), 6)
-        }
-        save_positions(positions)
-        return True
-    else:
-        print(f"❌ فشل في دخول الصفقة: {result}")
-        send_telegram_message(f"❌ فشل شراء {symbol}: {result}")
-        return False
-
-def check_positions():
-    positions = load_positions()
-    if not positions:
-        print("⚠️ لا توجد صفقات مفتوحة حالياً.")
-        return
-
-    to_remove = []
-    for symbol, pos in positions.items():
-        current_price = get_last_price(symbol)
-        if current_price is None:
-            continue
-
-        new_stop_loss = max(pos["stop_loss"], round(current_price * (1 - STOP_LOSS_PERCENT / 100), 6))
-        if new_stop_loss > pos["stop_loss"]:
-            pos["stop_loss"] = new_stop_loss
-
-        if current_price <= pos["stop_loss"]:
-            print(f"⚠️ وقف خسارة مفعل على {symbol} عند السعر {current_price}")
-            sell_result = place_market_order(symbol, "sell", pos["size"])
-            if sell_result and sell_result.get("code") == "0":
-                print(f"✅ تم بيع {symbol} عند وقف الخسارة بسعر السوق")
-                send_telegram_message(f"⚠️ تم بيع {symbol} عند وقف الخسارة بسعر السوق: {current_price}")
-                to_remove.append(symbol)
-            else:
-                print(f"❌ فشل بيع {symbol} عند وقف الخسارة: {sell_result}")
-                send_telegram_message(f"❌ فشل بيع {symbol} عند وقف الخسارة: {sell_result}")
-
-        elif current_price >= pos["take_profit"]:
-            print(f"🎯 تم الوصول لهدف ربح على {symbol} عند السعر {current_price}")
-            sell_result = place_market_order(symbol, "sell", pos["size"])
-            if sell_result and sell_result.get("code") == "0":
-                print(f"✅ تم بيع {symbol} عند هدف الربح بسعر السوق")
-                send_telegram_message(f"🎯 تم بيع {symbol} عند هدف الربح بسعر السوق: {current_price}")
-                to_remove.append(symbol)
-            else:
-                print(f"❌ فشل بيع {symbol} عند هدف الربح: {sell_result}")
-                send_telegram_message(f"❌ فشل بيع {symbol} عند هدف الربح: {sell_result}")
-
-    for sym in to_remove:
-        positions.pop(sym, None)
-    save_positions(positions)
+if __name__ == "__main__":
+    send_telegram_message("🤖 بدأ البوت في العمل!")
+    main_loop("BTC/USDT")
