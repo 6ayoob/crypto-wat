@@ -33,7 +33,7 @@ SYMBOLS = [
 
 TIMEFRAME = "1m"
 
-TRADE_AMOUNT_USDT = 15
 
-STOP_LOSS_PCT = 0.015     # ✅ 1.5% وقف خسارة
-TAKE_PROFIT_PCT = 0.04    # 4% جني أرباح
+TRADE_AMOUNT_USDT = 20
+STOP_LOSS_PCT = 0.02  # 2%
+TAKE_PROFIT_PCT = 0.04  # 4%
