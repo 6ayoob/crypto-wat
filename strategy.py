@@ -32,17 +32,27 @@ def count_open_positions():
     os.makedirs("positions", exist_ok=True)
     return len([f for f in os.listdir("positions") if f.endswith(".json")])
 
-def check_signal(symbol):
-    data = fetch_ohlcv(symbol, '5m', 100)  # تعديل الإطار الزمني إلى 5 دقائق
-    if not data:
-        return None
-    df = pd.DataFrame(data, columns=['timestamp', 'open', 'high', 'low', 'close', 'volume'])
+def check_ma_crossover(df):
     df['ma20'] = df['close'].rolling(window=20).mean()
     df['ma50'] = df['close'].rolling(window=50).mean()
+    return df['ma20'].iloc[-2] < df['ma50'].iloc[-2] and df['ma20'].iloc[-1] > df['ma50'].iloc[-1]
 
-    # إشارة شراء: تقاطع الما20 مع الما50 صاعدًا
-    if df['ma20'].iloc[-2] < df['ma50'].iloc[-2] and df['ma20'].iloc[-1] > df['ma50'].iloc[-1]:
+def check_signal(symbol):
+    data_5m = fetch_ohlcv(symbol, '5m', 100)
+    data_15m = fetch_ohlcv(symbol, '15m', 100)
+
+    if not data_5m or not data_15m:
+        return None
+
+    df_5m = pd.DataFrame(data_5m, columns=['timestamp', 'open', 'high', 'low', 'close', 'volume'])
+    df_15m = pd.DataFrame(data_15m, columns=['timestamp', 'open', 'high', 'low', 'close', 'volume'])
+
+    signal_5m = check_ma_crossover(df_5m)
+    signal_15m = check_ma_crossover(df_15m)
+
+    if signal_5m and signal_15m:
         return "buy"
+
     return None
 
 def execute_buy(symbol):
