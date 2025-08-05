@@ -1,10 +1,14 @@
 import time
 import json
+from telegram_bot import send_telegram_message
+
+send_telegram_message("🚀 البوت بدأ العمل بنجاح!")
+
 from strategy import enter_trade, check_positions, is_market_bearish, generate_daily_report
 
 TRADE_SYMBOLS = [
     "ATOM-USDT", "CFX-USDT", "ILV-USDT", "ADA-USDT", "XRP-USDT",
-    "DOT-USDT", "MATIC-USDT", "LTC-USDT", "LINK-USDT", "BCH-USDT",
+    "DOT-USDT", "MATIC-USDT", "LTC-USDT", "LINK-USDT", "PEPE-USDT",
     "XLM-USDT", "VET-USDT", "FIL-USDT", "ICP-USDT", "ALGO-USDT",
     "MANA-USDT", "SAND-USDT", "EOS-USDT", "CHZ-USDT", "XTZ-USDT",
     "NEAR-USDT", "AAVE-USDT", "KSM-USDT", "RUNE-USDT", "ENJ-USDT",
