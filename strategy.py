@@ -1,5 +1,3 @@
-# strategy.py
-
 import pandas as pd
 import json
 import os
@@ -28,6 +26,11 @@ def clear_position(symbol):
     if os.path.exists(file):
         os.remove(file)
 
+def count_open_positions():
+    if not os.path.exists("positions"):
+        return 0
+    return len([f for f in os.listdir("positions") if f.endswith(".json")])
+
 def check_signal(symbol):
     data = fetch_ohlcv(symbol, '1m', 100)
     df = pd.DataFrame(data, columns=['timestamp', 'open', 'high', 'low', 'close', 'volume'])
@@ -39,6 +42,10 @@ def check_signal(symbol):
     return None
 
 def execute_buy(symbol):
+    # ✅ تحقق من عدد الصفقات المفتوحة
+    if count_open_positions() >= 3:
+        return None, f"🚫 الحد الأقصى للصفقات المفتوحة (3) تم بلوغه. لن يتم فتح صفقة لـ {symbol}"
+
     price = fetch_price(symbol)
     usdt_balance = get_balance('USDT')
 
