@@ -1,4 +1,4 @@
-import config
+from config import TELEGRAM_TOKEN, TELEGRAM_CHAT_ID
 import json
 import os
 import requests
