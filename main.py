@@ -25,4 +25,4 @@ if __name__ == "__main__":
         except Exception as e:
             send_telegram_message(f"⚠️ خطأ:\n{str(e)}")
 
-        time.sleep(30)
+        time.sleep(1m)
