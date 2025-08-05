@@ -1,33 +1,31 @@
 # okx_api.py
 
 import ccxt
-from config import API_KEY, API_SECRET, API_PASSWORD
+from config import API_KEY, SECRET_KEY, PASSPHRASE
 
-# إعداد الاتصال بـ OKX
 exchange = ccxt.okx({
     'apiKey': API_KEY,
-    'secret': API_SECRET,
-    'password': API_PASSWORD,
+    'secret': SECRET_KEY,
+    'password': PASSPHRASE,
     'enableRateLimit': True,
     'options': {
         'defaultType': 'spot',
     }
 })
 
-def get_balance(usdt_only=True):
-    balance = exchange.fetch_balance()
-    if usdt_only:
-        return balance['total'].get('USDT', 0)
-    return balance['total']
+def get_balance(asset='USDT'):
+    balances = exchange.fetch_balance()
+    return balances.get(asset, {}).get('free', 0)
 
-def fetch_ohlcv(symbol, timeframe='15m', limit=100):
-    try:
-        return exchange.fetch_ohlcv(symbol, timeframe=timeframe, limit=limit)
-    except Exception as e:
-        print(f"❌ خطأ في جلب بيانات الشموع لـ {symbol}: {e}")
-        return []
+def place_market_order(symbol, side, amount):
+    return exchange.create_market_order(symbol, side, amount)
 
-def get_current_price(symbol):
+def fetch_price(symbol):
+    return exchange.fetch_ticker(symbol)['last']
+
+def fetch_ohlcv(symbol, timeframe='1m', limit=100):
+    return exchange.fetch_ohlcv(symbol, timeframe=timeframe, limit=limit)
+
     try:
         ticker = exchange.fetch_ticker(symbol)
         return ticker['last']
