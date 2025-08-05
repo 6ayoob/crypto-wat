@@ -1,8 +1,13 @@
+# strategy.py
+
 import pandas as pd
 import json
 import os
 from okx_api import fetch_ohlcv, fetch_price, place_market_order, get_balance
-from config import TRADE_AMOUNT_USDT, STOP_LOSS_PCT, TAKE_PROFIT_PCT
+from config import STOP_LOSS_PCT, TAKE_PROFIT_PCT
+
+TRADE_AMOUNT_USDT = 20  # قيمة كل صفقة بالدولار
+MAX_OPEN_POSITIONS = 4  # الحد الأقصى للصفقات المفتوحة
 
 def get_position_filename(symbol):
     symbol = symbol.replace("/", "_")
@@ -26,26 +31,48 @@ def clear_position(symbol):
     if os.path.exists(file):
         os.remove(file)
 
-def count_open_positions():
+def get_open_positions_count():
     if not os.path.exists("positions"):
         return 0
     return len([f for f in os.listdir("positions") if f.endswith(".json")])
 
-def check_signal(symbol):
-    data = fetch_ohlcv(symbol, '1m', 100)
-    df = pd.DataFrame(data, columns=['timestamp', 'open', 'high', 'low', 'close', 'volume'])
-    df['ma20'] = df['close'].rolling(window=20).mean()
-    df['ma50'] = df['close'].rolling(window=50).mean()
+def check_signal(symbol, timeframe='15m'):
+    if get_open_positions_count() >= MAX_OPEN_POSITIONS:
+        return None  # لا نفتح صفقات جديدة
 
-    if df['ma20'].iloc[-2] < df['ma50'].iloc[-2] and df['ma20'].iloc[-1] > df['ma50'].iloc[-1]:
+    data = fetch_ohlcv(symbol, timeframe, 100)
+    df = pd.DataFrame(data, columns=['timestamp', 'open', 'high', 'low', 'close', 'volume'])
+
+    df['ema9'] = df['close'].ewm(span=9).mean()
+    df['ema21'] = df['close'].ewm(span=21).mean()
+    df['rsi'] = compute_rsi(df['close'], 14)
+    df['macd'], df['macd_signal'] = compute_macd(df['close'])
+
+    # إشارات الدخول: تقاطع EMA + RSI خروج من التشبع البيعي + تقاطع MACD
+    if (
+        df['ema9'].iloc[-2] < df['ema21'].iloc[-2] and
+        df['ema9'].iloc[-1] > df['ema21'].iloc[-1] and
+        df['rsi'].iloc[-1] > 30 and
+        df['macd'].iloc[-1] > df['macd_signal'].iloc[-1]
+    ):
         return "buy"
     return None
 
-def execute_buy(symbol):
-    # ✅ تحقق من عدد الصفقات المفتوحة
-    if count_open_positions() >= 3:
-        return None, f"🚫 الحد الأقصى للصفقات المفتوحة (3) تم بلوغه. لن يتم فتح صفقة لـ {symbol}"
+def compute_rsi(series, period=14):
+    delta = series.diff()
+    gain = (delta.where(delta > 0, 0)).rolling(window=period).mean()
+    loss = (-delta.where(delta < 0, 0)).rolling(window=period).mean()
+    rs = gain / loss
+    return 100 - (100 / (1 + rs))
 
+def compute_macd(series, fast=12, slow=26, signal=9):
+    ema_fast = series.ewm(span=fast).mean()
+    ema_slow = series.ewm(span=slow).mean()
+    macd = ema_fast - ema_slow
+    signal_line = macd.ewm(span=signal).mean()
+    return macd, signal_line
+
+def execute_buy(symbol):
     price = fetch_price(symbol)
     usdt_balance = get_balance('USDT')
 
@@ -67,7 +94,7 @@ def execute_buy(symbol):
     }
 
     save_position(symbol, position)
-    return order, f"✅ شراء {symbol} @ {price:.2f}\n🎯 هدف: {take_profit:.2f} | ❌ وقف: {stop_loss:.2f}"
+    return order, f"✅ شراء {symbol} @ {price:.4f}\n🎯 هدف: {take_profit:.4f} | ❌ وقف: {stop_loss:.4f}"
 
 def manage_position(symbol, send_message):
     position = load_position(symbol)
@@ -79,9 +106,9 @@ def manage_position(symbol, send_message):
     if current_price <= position['stop_loss']:
         place_market_order(symbol, 'sell', position['amount'])
         clear_position(symbol)
-        send_message(f"❌ تم وقف الخسارة لـ {symbol} عند {current_price:.2f}")
+        send_message(f"❌ تم وقف الخسارة لـ {symbol} عند {current_price:.4f}")
 
     elif current_price >= position['take_profit']:
         place_market_order(symbol, 'sell', position['amount'])
         clear_position(symbol)
-        send_message(f"🎯 تم تحقيق هدف الربح لـ {symbol} عند {current_price:.2f}")
+        send_message(f"🎯 تم تحقيق هدف الربح لـ {symbol} عند {current_price:.4f}")
