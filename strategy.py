@@ -2,18 +2,16 @@ import pandas as pd
 import numpy as np
 import json
 import os
-from okx_api import fetch_ohlcv, fetch_price, place_market_order, get_balance
-from config import TRADE_AMOUNT_USDT
+from okx_api import fetch_ohlcv, fetch_price, place_market_order, fetch_balance
+from config import TRADE_AMOUNT_USDT, MAX_OPEN_POSITIONS
 from datetime import datetime, timedelta
 
-MAX_OPEN_POSITIONS = 4  # الحد الأقصى للصفقات المفتوحة
+POSITIONS_DIR = "positions"
 CLOSED_POSITIONS_FILE = "closed_positions.json"
-
-# ================== إدارة مراكز التداول ==================
 
 def get_position_filename(symbol):
     symbol = symbol.replace("/", "_")
-    return f"positions/{symbol}.json"
+    return f"{POSITIONS_DIR}/{symbol}.json"
 
 def load_position(symbol):
     file = get_position_filename(symbol)
@@ -23,7 +21,7 @@ def load_position(symbol):
     return None
 
 def save_position(symbol, position):
-    os.makedirs("positions", exist_ok=True)
+    os.makedirs(POSITIONS_DIR, exist_ok=True)
     file = get_position_filename(symbol)
     with open(file, 'w') as f:
         json.dump(position, f)
@@ -34,10 +32,8 @@ def clear_position(symbol):
         os.remove(file)
 
 def count_open_positions():
-    os.makedirs("positions", exist_ok=True)
-    return len([f for f in os.listdir("positions") if f.endswith(".json")])
-
-# ================== سجل الصفقات المغلقة ==================
+    os.makedirs(POSITIONS_DIR, exist_ok=True)
+    return len([f for f in os.listdir(POSITIONS_DIR) if f.endswith(".json")])
 
 def load_closed_positions():
     if os.path.exists(CLOSED_POSITIONS_FILE):
@@ -48,8 +44,6 @@ def load_closed_positions():
 def save_closed_positions(closed_positions):
     with open(CLOSED_POSITIONS_FILE, 'w') as f:
         json.dump(closed_positions, f, indent=2)
-
-# ================== المؤشرات الفنية ==================
 
 def ema(series, period):
     return series.ewm(span=period, adjust=False).mean()
@@ -75,8 +69,6 @@ def calculate_indicators(df):
     df['atr'] = atr(df, 14)
     return df
 
-# ================== استراتيجية الإشارات ==================
-
 def check_signal(symbol):
     data_1m = fetch_ohlcv(symbol, '1m', 200)
     data_5m = fetch_ohlcv(symbol, '5m', 200)
@@ -98,14 +90,12 @@ def check_signal(symbol):
 
     return "buy" if cond_buy else None
 
-# ================== تنفيذ أمر شراء مع TP1 وTP2 ==================
-
 def execute_buy(symbol):
     if count_open_positions() >= MAX_OPEN_POSITIONS:
         return None, f"🚫 الحد الأقصى للصفقات ({MAX_OPEN_POSITIONS}) مفتوح بالفعل."
 
     price = fetch_price(symbol)
-    usdt_balance = get_balance('USDT')
+    usdt_balance = fetch_balance('USDT')
 
     if usdt_balance < TRADE_AMOUNT_USDT:
         return None, f"🚫 لا يوجد رصيد كافي لشراء {symbol}"
@@ -116,8 +106,8 @@ def execute_buy(symbol):
     atr_val = df['atr'].iloc[-1]
 
     stop_loss = price - (1.5 * atr_val)
-    tp1 = price + (1.5 * atr_val)  # هدف أول
-    tp2 = price + (3.0 * atr_val)  # هدف ثاني
+    tp1 = price + (1.5 * atr_val)
+    tp2 = price + (3.0 * atr_val)
 
     amount = TRADE_AMOUNT_USDT / price
     order = place_market_order(symbol, 'buy', amount)
@@ -136,8 +126,6 @@ def execute_buy(symbol):
     save_position(symbol, position)
     return order, f"✅ شراء {symbol} @ {price:.4f}\n🎯 TP1: {tp1:.4f} | 🏆 TP2: {tp2:.4f} | ❌ SL: {stop_loss:.4f}"
 
-# ================== إدارة الصفقة مع TP1 وTP2 + Trailing Stop ==================
-
 def manage_position(symbol, send_message):
     position = load_position(symbol)
     if not position:
@@ -147,7 +135,6 @@ def manage_position(symbol, send_message):
     amount = position['amount']
     entry_price = position['entry_price']
 
-    # تحقق من TP1
     if current_price >= position['tp1'] and not position['tp1_hit']:
         sell_amount = amount * 0.5
         place_market_order(symbol, 'sell', sell_amount)
@@ -158,19 +145,15 @@ def manage_position(symbol, send_message):
         save_position(symbol, position)
         send_message(f"🎯 تم تحقيق TP1 لـ {symbol} عند {current_price:.4f} | بيع نصف الكمية ✅ وتحريك SL إلى نقطة الدخول")
 
-    # Trailing Stop بعد TP1
     if position.get('trailing_active'):
         new_sl = current_price - (0.5 * (position['tp1'] - entry_price))
         if new_sl > position['stop_loss']:
             position['stop_loss'] = new_sl
             save_position(symbol, position)
 
-    # تحقق من TP2 (إغلاق الصفقة بالكامل)
     if current_price >= position['tp2']:
         place_market_order(symbol, 'sell', position['amount'])
-
         profit = (current_price - entry_price) * position['amount']
-
         closed_positions = load_closed_positions()
         closed_positions.append({
             "symbol": symbol,
@@ -185,12 +168,9 @@ def manage_position(symbol, send_message):
         send_message(f"🏆 تم تحقيق TP2 لـ {symbol} عند {current_price:.4f} | الصفقة مغلقة بالكامل ✅")
         return
 
-    # تحقق من وقف الخسارة (إغلاق الصفقة بالكامل)
     if current_price <= position['stop_loss']:
         place_market_order(symbol, 'sell', position['amount'])
-
         profit = (current_price - entry_price) * position['amount']
-
         closed_positions = load_closed_positions()
         closed_positions.append({
             "symbol": symbol,
