@@ -126,6 +126,8 @@ def execute_buy(symbol):
     save_position(symbol, position)
     return order, f"✅ شراء {symbol} @ {price:.4f}\n🎯 TP1: {tp1:.4f} | 🏆 TP2: {tp2:.4f} | ❌ SL: {stop_loss:.4f}"
 
+# نفس الاستيرادات والدوال السابقة حتى نصل لـ manage_position()
+
 def manage_position(symbol, send_message):
     position = load_position(symbol)
     if not position:
@@ -137,13 +139,17 @@ def manage_position(symbol, send_message):
 
     if current_price >= position['tp1'] and not position['tp1_hit']:
         sell_amount = amount * 0.5
-        place_market_order(symbol, 'sell', sell_amount)
-        position['amount'] -= sell_amount
-        position['tp1_hit'] = True
-        position['stop_loss'] = entry_price
-        position['trailing_active'] = True
-        save_position(symbol, position)
-        send_message(f"🎯 تم تحقيق TP1 لـ {symbol} عند {current_price:.4f} | بيع نصف الكمية ✅ وتحريك SL إلى نقطة الدخول")
+        order = place_market_order(symbol, 'sell', sell_amount)
+
+        if order:  # ✅ التأكد من أن البيع تم
+            position['amount'] -= sell_amount
+            position['tp1_hit'] = True
+            position['stop_loss'] = entry_price
+            position['trailing_active'] = True
+            save_position(symbol, position)
+            send_message(f"🎯 تم تحقيق TP1 لـ {symbol} عند {current_price:.4f} | بيع نصف الكمية ✅ وتحريك SL إلى نقطة الدخول")
+        else:
+            send_message(f"❌ فشل تنفيذ أمر البيع الجزئي لـ {symbol} عند TP1")
 
     if position.get('trailing_active'):
         new_sl = current_price - (0.5 * (position['tp1'] - entry_price))
@@ -152,34 +158,43 @@ def manage_position(symbol, send_message):
             save_position(symbol, position)
 
     if current_price >= position['tp2']:
-        place_market_order(symbol, 'sell', position['amount'])
-        profit = (current_price - entry_price) * position['amount']
-        closed_positions = load_closed_positions()
-        closed_positions.append({
-            "symbol": symbol,
-            "entry_price": entry_price,
-            "exit_price": current_price,
-            "amount": position['amount'],
-            "profit": profit,
-            "closed_at": datetime.utcnow().isoformat()
-        })
-        save_closed_positions(closed_positions)
-        clear_position(symbol)
-        send_message(f"🏆 تم تحقيق TP2 لـ {symbol} عند {current_price:.4f} | الصفقة مغلقة بالكامل ✅")
+        order = place_market_order(symbol, 'sell', position['amount'])
+
+        if order:  # ✅ تم تنفيذ البيع عند TP2
+            profit = (current_price - entry_price) * position['amount']
+            closed_positions = load_closed_positions()
+            closed_positions.append({
+                "symbol": symbol,
+                "entry_price": entry_price,
+                "exit_price": current_price,
+                "amount": position['amount'],
+                "profit": profit,
+                "closed_at": datetime.utcnow().isoformat()
+            })
+            save_closed_positions(closed_positions)
+            clear_position(symbol)
+            send_message(f"🏆 تم تحقيق TP2 لـ {symbol} عند {current_price:.4f} | الصفقة مغلقة بالكامل ✅")
+        else:
+            send_message(f"❌ فشل تنفيذ أمر البيع الكامل لـ {symbol} عند TP2")
+
         return
 
     if current_price <= position['stop_loss']:
-        place_market_order(symbol, 'sell', position['amount'])
-        profit = (current_price - entry_price) * position['amount']
-        closed_positions = load_closed_positions()
-        closed_positions.append({
-            "symbol": symbol,
-            "entry_price": entry_price,
-            "exit_price": current_price,
-            "amount": position['amount'],
-            "profit": profit,
-            "closed_at": datetime.utcnow().isoformat()
-        })
-        save_closed_positions(closed_positions)
-        clear_position(symbol)
-        send_message(f"❌ تم ضرب وقف الخسارة لـ {symbol} عند {current_price:.4f} | الصفقة مغلقة 🚫")
+        order = place_market_order(symbol, 'sell', position['amount'])
+
+        if order:  # ✅ تم تنفيذ البيع عند SL
+            profit = (current_price - entry_price) * position['amount']
+            closed_positions = load_closed_positions()
+            closed_positions.append({
+                "symbol": symbol,
+                "entry_price": entry_price,
+                "exit_price": current_price,
+                "amount": position['amount'],
+                "profit": profit,
+                "closed_at": datetime.utcnow().isoformat()
+            })
+            save_closed_positions(closed_positions)
+            clear_position(symbol)
+            send_message(f"❌ تم ضرب وقف الخسارة لـ {symbol} عند {current_price:.4f} | الصفقة مغلقة 🚫")
+        else:
+            send_message(f"❌ فشل تنفيذ أمر البيع الكامل لـ {symbol} عند وقف الخسارة")
