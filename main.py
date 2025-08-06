@@ -31,7 +31,6 @@ def generate_daily_report():
             except:
                 current_price = "N/A"
 
-            # قراءة البيانات الجديدة (TP1 / TP2 / Trailing)
             entry = pos.get('entry_price', 0)
             stop = pos.get('stop_loss', 0)
             tp1 = pos.get('tp1', 0)
@@ -56,21 +55,18 @@ def generate_daily_report():
 
 if __name__ == "__main__":
     send_telegram_message("🚀 بدأ البوت بمراقبة الأسواق باستخدام استراتيجية TP1/TP2 + Trailing ✅")
-
     last_report_date = None
 
     while True:
         try:
             now_utc = datetime.utcnow()
-            now_saudi = now_utc + timedelta(hours=3)  # توقيت السعودية UTC+3
+            now_saudi = now_utc + timedelta(hours=3)
 
-            # إرسال التقرير اليومي مرة واحدة عند الساعة 3:00 فجراً
             if now_saudi.hour == 3 and (last_report_date is None or last_report_date != now_saudi.date()):
                 report = generate_daily_report()
                 send_telegram_message(report)
                 last_report_date = now_saudi.date()
 
-            # ✅ مراقبة وإدارة جميع الرموز
             for symbol in SYMBOLS:
                 position = load_position(symbol)
 
@@ -84,6 +80,7 @@ if __name__ == "__main__":
                     manage_position(symbol, send_telegram_message)
 
         except Exception as e:
-            send_telegram_message(f"⚠️ خطأ في main.py:\n{str(e)}")
+            import traceback
+            send_telegram_message(f"⚠️ خطأ في main.py:\n{traceback.format_exc()}")
 
-        time.sleep(60)  # التشغيل كل دقيقة
+        time.sleep(60)
