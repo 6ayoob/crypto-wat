@@ -1,165 +1,108 @@
-import pandas as pd
-import numpy as np
-import json
-import os
-from okx_api import fetch_ohlcv, fetch_price, place_market_order, get_balance
-from config import TRADE_AMOUNT_USDT
+import ccxt
+import time
+import datetime
+from config import (
+    API_KEY, SECRET_KEY, PASSPHRASE, SYMBOLS, TIMEFRAME,
+    TRADE_AMOUNT_USDT, STOP_LOSS_PCT, TAKE_PROFIT_PCT, MAX_OPEN_POSITIONS
+)
 
-MAX_OPEN_POSITIONS = 4  # الحد الأقصى للصفقات المفتوحة
+# تهيئة الاتصال بـ OKX
+exchange = ccxt.okx({
+    'apiKey': API_KEY,
+    'secret': SECRET_KEY,
+    'password': PASSPHRASE,
+    'enableRateLimit': True,
+    'options': {'defaultType': 'spot'}
+})
 
-# ================== إدارة مراكز التداول ==================
+# قائمة الصفقات المفتوحة
+open_positions = {}
 
-def get_position_filename(symbol):
-    symbol = symbol.replace("/", "_")
-    return f"positions/{symbol}.json"
+def get_price(symbol):
+    ticker = exchange.fetch_ticker(symbol)
+    return ticker['last']
 
-def load_position(symbol):
-    file = get_position_filename(symbol)
-    if os.path.exists(file):
-        with open(file, 'r') as f:
-            return json.load(f)
+def get_candles(symbol, timeframe="3m", limit=100):
+    try:
+        candles = exchange.fetch_ohlcv(symbol, timeframe=timeframe, limit=limit)
+        return candles
+    except Exception as e:
+        print(f"❌ خطأ في جلب البيانات لـ {symbol}: {e}")
+        return []
+
+def calculate_signal(candles):
+    if len(candles) < 20:
+        return None
+    close_prices = [c[4] for c in candles]  # سعر الإغلاق
+    ma5 = sum(close_prices[-5:]) / 5
+    ma10 = sum(close_prices[-10:]) / 10
+    if ma5 > ma10:
+        return "buy"
     return None
 
-def save_position(symbol, position):
-    os.makedirs("positions", exist_ok=True)
-    file = get_position_filename(symbol)
-    with open(file, 'w') as f:
-        json.dump(position, f)
-
-def clear_position(symbol):
-    file = get_position_filename(symbol)
-    if os.path.exists(file):
-        os.remove(file)
-
-def count_open_positions():
-    os.makedirs("positions", exist_ok=True)
-    return len([f for f in os.listdir("positions") if f.endswith(".json")])
-
-# ================== المؤشرات الفنية ==================
-
-def ema(series, period):
-    return series.ewm(span=period, adjust=False).mean()
-
-def rsi(series, period=14):
-    delta = series.diff()
-    gain = (delta.where(delta > 0, 0)).rolling(period).mean()
-    loss = (-delta.where(delta < 0, 0)).rolling(period).mean()
-    rs = gain / loss
-    return 100 - (100 / (1 + rs))
-
-def atr(df, period=14):
-    high_low = df['high'] - df['low']
-    high_close = (df['high'] - df['close'].shift()).abs()
-    low_close = (df['low'] - df['close'].shift()).abs()
-    tr = pd.concat([high_low, high_close, low_close], axis=1).max(axis=1)
-    return tr.rolling(period).mean()
-
-def calculate_indicators(df):
-    df['ema9'] = ema(df['close'], 9)
-    df['ema21'] = ema(df['close'], 21)
-    df['rsi'] = rsi(df['close'], 14)
-    df['atr'] = atr(df, 14)
-    return df
-
-# ================== استراتيجية الإشارات ==================
-
-def check_signal(symbol):
-    data_1m = fetch_ohlcv(symbol, '1m', 200)
-    data_5m = fetch_ohlcv(symbol, '5m', 200)
-    if not data_1m or not data_5m:
+def place_order(symbol, side, amount):
+    try:
+        order = exchange.create_market_order(symbol, side, amount)
+        print(f"✅ تم تنفيذ أمر {side.upper()} لـ {symbol}")
+        return order
+    except Exception as e:
+        print(f"❌ فشل تنفيذ أمر {side} لـ {symbol}: {e}")
         return None
 
-    df1 = pd.DataFrame(data_1m, columns=['timestamp','open','high','low','close','volume'])
-    df5 = pd.DataFrame(data_5m, columns=['timestamp','open','high','low','close','volume'])
-    df1 = calculate_indicators(df1)
-    df5 = calculate_indicators(df5)
+def monitor_positions():
+    to_remove = []
+    for symbol, pos in open_positions.items():
+        current_price = get_price(symbol)
+        entry_price = pos['entry_price']
+        side = pos['side']
+        
+        # احتساب الأرباح والخسائر
+        if side == 'buy':
+            change = (current_price - entry_price) / entry_price
+        else:
+            change = (entry_price - current_price) / entry_price
 
-    last = df1.iloc[-1]
-    prev = df1.iloc[-2]
+        if change >= TAKE_PROFIT_PCT:
+            print(f"🎯 جني أرباح {symbol} عند {current_price}")
+            place_order(symbol, 'sell', pos['amount'])
+            to_remove.append(symbol)
 
-    cond_buy = (prev['ema9'] < prev['ema21']) and (last['ema9'] > last['ema21']) \
-               and (last['rsi'] > 50) \
-               and (last['volume'] > df1['volume'].rolling(20).mean().iloc[-1]) \
-               and (df5['ema9'].iloc[-1] > df5['ema21'].iloc[-1])
+        elif change <= -STOP_LOSS_PCT:
+            print(f"🚨 وقف خسارة {symbol} عند {current_price}")
+            place_order(symbol, 'sell', pos['amount'])
+            to_remove.append(symbol)
 
-    return "buy" if cond_buy else None
+    for symbol in to_remove:
+        del open_positions[symbol]
 
-# ================== تنفيذ أمر شراء مع TP1 وTP2 ==================
+def run_strategy():
+    while True:
+        try:
+            if len(open_positions) < MAX_OPEN_POSITIONS:
+                for symbol in SYMBOLS:
+                    if symbol in open_positions:
+                        continue
 
-def execute_buy(symbol):
-    if count_open_positions() >= MAX_OPEN_POSITIONS:
-        return None, f"🚫 الحد الأقصى للصفقات ({MAX_OPEN_POSITIONS}) مفتوح بالفعل."
+                    candles = get_candles(symbol, timeframe=TIMEFRAME)
+                    signal = calculate_signal(candles)
+                    if signal == "buy":
+                        price = get_price(symbol)
+                        amount = round(TRADE_AMOUNT_USDT / price, 5)
+                        order = place_order(symbol, 'buy', amount)
+                        if order:
+                            open_positions[symbol] = {
+                                'entry_price': price,
+                                'amount': amount,
+                                'side': 'buy',
+                                'time': datetime.datetime.now()
+                            }
 
-    price = fetch_price(symbol)
-    usdt_balance = get_balance('USDT')
+                    if len(open_positions) >= MAX_OPEN_POSITIONS:
+                        break
 
-    if usdt_balance < TRADE_AMOUNT_USDT:
-        return None, f"🚫 لا يوجد رصيد كافي لشراء {symbol}"
+            monitor_positions()
+            time.sleep(60)  # راقب كل دقيقة
+        except Exception as e:
+            print(f"⚠️ خطأ عام: {e}")
+            time.sleep(60)
 
-    # حساب ATR لتحديد SL و TP ديناميكيًا
-    data = fetch_ohlcv(symbol, '1m', 200)
-    df = pd.DataFrame(data, columns=['timestamp','open','high','low','close','volume'])
-    df = calculate_indicators(df)
-    atr_val = df['atr'].iloc[-1]
-
-    stop_loss = price - (1.5 * atr_val)
-    tp1 = price + (1.5 * atr_val)  # هدف أول
-    tp2 = price + (3.0 * atr_val)  # هدف ثاني
-
-    amount = TRADE_AMOUNT_USDT / price
-    order = place_market_order(symbol, 'buy', amount)
-
-    position = {
-        "symbol": symbol,
-        "amount": amount,
-        "entry_price": price,
-        "stop_loss": stop_loss,
-        "tp1": tp1,
-        "tp2": tp2,
-        "tp1_hit": False,
-        "trailing_active": False
-    }
-
-    save_position(symbol, position)
-    return order, f"✅ شراء {symbol} @ {price:.4f}\n🎯 TP1: {tp1:.4f} | 🏆 TP2: {tp2:.4f} | ❌ SL: {stop_loss:.4f}"
-
-# ================== إدارة الصفقة مع TP1 وTP2 + Trailing Stop ==================
-
-def manage_position(symbol, send_message):
-    position = load_position(symbol)
-    if not position:
-        return
-
-    current_price = fetch_price(symbol)
-    amount = position['amount']
-
-    # ✅ تحقق من TP1
-    if current_price >= position['tp1'] and not position['tp1_hit']:
-        sell_amount = amount * 0.5
-        place_market_order(symbol, 'sell', sell_amount)
-        position['amount'] -= sell_amount
-        position['tp1_hit'] = True
-        position['stop_loss'] = position['entry_price']  # SL يتحرك إلى نقطة الدخول
-        position['trailing_active'] = True
-        save_position(symbol, position)
-        send_message(f"🎯 تم تحقيق TP1 لـ {symbol} عند {current_price:.4f} | بيع نصف الكمية ✅ وتحريك SL إلى نقطة الدخول")
-
-    # ✅ Trailing Stop بعد TP1
-    if position.get('trailing_active'):
-        new_sl = current_price - (0.5 * (position['tp1'] - position['entry_price']))
-        if new_sl > position['stop_loss']:
-            position['stop_loss'] = new_sl
-            save_position(symbol, position)
-
-    # ✅ تحقق من TP2
-    if current_price >= position['tp2']:
-        place_market_order(symbol, 'sell', position['amount'])
-        clear_position(symbol)
-        send_message(f"🏆 تم تحقيق TP2 لـ {symbol} عند {current_price:.4f} | الصفقة مغلقة بالكامل ✅")
-        return
-
-    # ❌ تحقق من وقف الخسارة
-    if current_price <= position['stop_loss']:
-        place_market_order(symbol, 'sell', position['amount'])
-        clear_position(symbol)
-        send_message(f"❌ تم ضرب وقف الخسارة لـ {symbol} عند {current_price:.4f} | الصفقة مغلقة 🚫")
