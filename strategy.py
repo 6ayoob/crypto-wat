@@ -135,11 +135,18 @@ def manage_position(symbol, send_message):
     amount = position['amount']
     entry_price = position['entry_price']
 
+    base_asset = symbol.split('/')[0]
+    actual_balance = fetch_balance(base_asset)
+    print(f"رصيد {base_asset} الحالي: {actual_balance}، المطلوب للبيع: {amount}")
+
+    sell_amount = min(amount, actual_balance)
+    sell_amount = round(sell_amount, 6)  # تقريب الكمية إلى 6 أرقام عشرية
+
     if current_price >= position['tp1'] and not position['tp1_hit']:
-        sell_amount = amount * 0.5
-        order = place_market_order(symbol, 'sell', sell_amount)
+        sell_amount_half = round(sell_amount * 0.5, 6)
+        order = place_market_order(symbol, 'sell', sell_amount_half)
         if order:
-            position['amount'] -= sell_amount
+            position['amount'] -= sell_amount_half
             position['tp1_hit'] = True
             position['stop_loss'] = entry_price
             position['trailing_active'] = True
@@ -155,15 +162,15 @@ def manage_position(symbol, send_message):
             save_position(symbol, position)
 
     if current_price >= position['tp2']:
-        order = place_market_order(symbol, 'sell', position['amount'])
+        order = place_market_order(symbol, 'sell', sell_amount)
         if order:
-            profit = (current_price - entry_price) * position['amount']
+            profit = (current_price - entry_price) * sell_amount
             closed_positions = load_closed_positions()
             closed_positions.append({
                 "symbol": symbol,
                 "entry_price": entry_price,
                 "exit_price": current_price,
-                "amount": position['amount'],
+                "amount": sell_amount,
                 "profit": profit,
                 "closed_at": datetime.utcnow().isoformat()
             })
@@ -175,15 +182,15 @@ def manage_position(symbol, send_message):
         return
 
     if current_price <= position['stop_loss']:
-        order = place_market_order(symbol, 'sell', position['amount'])
+        order = place_market_order(symbol, 'sell', sell_amount)
         if order:
-            profit = (current_price - entry_price) * position['amount']
+            profit = (current_price - entry_price) * sell_amount
             closed_positions = load_closed_positions()
             closed_positions.append({
                 "symbol": symbol,
                 "entry_price": entry_price,
                 "exit_price": current_price,
-                "amount": position['amount'],
+                "amount": sell_amount,
                 "profit": profit,
                 "closed_at": datetime.utcnow().isoformat()
             })
