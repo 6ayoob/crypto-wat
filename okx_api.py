@@ -43,15 +43,11 @@ def fetch_ohlcv(symbol, timeframe='5m', limit=100):
 
 def place_market_order(symbol, side, amount):
     symbol = format_symbol(symbol)
+    print(f"🔄 محاولة تنفيذ أمر {side.upper()} للسوق: {symbol}، الكمية: {amount}")
     try:
         order = exchange.create_market_order(symbol, side, amount)
-        print(f"✅ أمر السوق ({side}) لـ {symbol} تم إرساله: {order}")
-        status = order.get('status', '') if order else ''
-        if status in ['closed', 'open', 'new', 'filled']:
-            return order
-        else:
-            print(f"⚠️ أمر {side} لـ {symbol} ربما لم ينفذ بنجاح: {order}")
-            return None
+        print(f"✅ تم تنفيذ أمر {side.upper()} بنجاح: {order}")
+        return order
     except Exception as e:
         print(f"❌ خطأ في تنفيذ أمر السوق ({side}) لـ {symbol}: {e}")
         return None
