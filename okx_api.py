@@ -12,7 +12,6 @@ exchange = ccxt.okx({
 })
 
 def format_symbol(symbol):
-    # تحويل من CRV-USDT إلى CRV/USDT
     return symbol.replace("-", "/")
 
 def fetch_balance(asset='USDT'):
@@ -43,11 +42,25 @@ def fetch_ohlcv(symbol, timeframe='5m', limit=100):
 
 def place_market_order(symbol, side, amount):
     symbol = format_symbol(symbol)
-    print(f"🔄 محاولة تنفيذ أمر {side.upper()} للسوق: {symbol}، الكمية: {amount}")
+
     try:
-        order = exchange.create_market_order(symbol, side, amount)
-        print(f"✅ تم تنفيذ أمر {side.upper()} بنجاح: {order}")
+        # جلب بيانات السوق لتحديد الدقة المطلوبة في الكمية
+        market = exchange.market(symbol)
+        precision = market['precision']['amount']
+        min_amount = market['limits']['amount']['min']
+
+        # تقريب الكمية للدقة المطلوبة
+        rounded_amount = round(amount, precision)
+
+        # التأكد من أن الكمية أكبر من الحد الأدنى
+        if rounded_amount < min_amount:
+            print(f"❌ الكمية {rounded_amount} أقل من الحد الأدنى للتداول {min_amount} لـ {symbol}")
+            return None
+
+        order = exchange.create_market_order(symbol, side, rounded_amount)
+        print(f"✅ تم تنفيذ أمر {side} لـ {symbol} بالكمية: {rounded_amount}")
         return order
+
     except Exception as e:
-        print(f"❌ خطأ في تنفيذ أمر السوق ({side}) لـ {symbol}: {e}")
+        print(f"❌ خطأ في تنفيذ أمر السوق ({side}) لـ {symbol} بالكمية {amount}: {e}")
         return None
