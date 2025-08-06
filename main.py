@@ -50,7 +50,6 @@ def generate_daily_report():
                 )
                 report_lines.append(line)
 
-    # تقارير الصفقات المغلقة خلال آخر 24 ساعة
     closed_positions = load_closed_positions()
     now = datetime.utcnow()
     recent_closed = [pos for pos in closed_positions if datetime.fromisoformat(pos['closed_at']) > now - timedelta(days=1)]
@@ -77,7 +76,6 @@ if __name__ == "__main__":
             now_utc = datetime.utcnow()
             now_saudi = now_utc + timedelta(hours=3)
 
-            # إرسال التقرير اليومي عند الساعة 3 فجراً بتوقيت السعودية
             if now_saudi.hour == 3 and (last_report_date is None or last_report_date != now_saudi.date()):
                 report = generate_daily_report()
                 send_telegram_message(report)
