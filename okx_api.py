@@ -11,6 +11,10 @@ exchange = ccxt.okx({
     }
 })
 
+def format_symbol(symbol):
+    # تحويل من CRV-USDT إلى CRV/USDT
+    return symbol.replace("-", "/")
+
 def fetch_balance(asset='USDT'):
     try:
         balances = exchange.fetch_balance()
@@ -20,6 +24,7 @@ def fetch_balance(asset='USDT'):
         return 0
 
 def fetch_price(symbol):
+    symbol = format_symbol(symbol)
     try:
         ticker = exchange.fetch_ticker(symbol)
         return ticker['last']
@@ -28,6 +33,7 @@ def fetch_price(symbol):
         return None
 
 def fetch_ohlcv(symbol, timeframe='5m', limit=100):
+    symbol = format_symbol(symbol)
     try:
         data = exchange.fetch_ohlcv(symbol, timeframe=timeframe, limit=limit)
         return data
@@ -36,6 +42,7 @@ def fetch_ohlcv(symbol, timeframe='5m', limit=100):
         return []
 
 def place_market_order(symbol, side, amount):
+    symbol = format_symbol(symbol)
     try:
         order = exchange.create_market_order(symbol, side, amount)
         return order
