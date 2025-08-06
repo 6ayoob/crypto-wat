@@ -4,8 +4,10 @@ import json
 import os
 from okx_api import fetch_ohlcv, fetch_price, place_market_order, get_balance
 from config import TRADE_AMOUNT_USDT
+from datetime import datetime, timedelta
 
 MAX_OPEN_POSITIONS = 4  # الحد الأقصى للصفقات المفتوحة
+CLOSED_POSITIONS_FILE = "closed_positions.json"
 
 # ================== إدارة مراكز التداول ==================
 
@@ -34,6 +36,18 @@ def clear_position(symbol):
 def count_open_positions():
     os.makedirs("positions", exist_ok=True)
     return len([f for f in os.listdir("positions") if f.endswith(".json")])
+
+# ================== سجل الصفقات المغلقة ==================
+
+def load_closed_positions():
+    if os.path.exists(CLOSED_POSITIONS_FILE):
+        with open(CLOSED_POSITIONS_FILE, 'r') as f:
+            return json.load(f)
+    return []
+
+def save_closed_positions(closed_positions):
+    with open(CLOSED_POSITIONS_FILE, 'w') as f:
+        json.dump(closed_positions, f, indent=2)
 
 # ================== المؤشرات الفنية ==================
 
@@ -96,7 +110,6 @@ def execute_buy(symbol):
     if usdt_balance < TRADE_AMOUNT_USDT:
         return None, f"🚫 لا يوجد رصيد كافي لشراء {symbol}"
 
-    # حساب ATR لتحديد SL و TP ديناميكيًا
     data = fetch_ohlcv(symbol, '1m', 200)
     df = pd.DataFrame(data, columns=['timestamp','open','high','low','close','volume'])
     df = calculate_indicators(df)
@@ -132,34 +145,61 @@ def manage_position(symbol, send_message):
 
     current_price = fetch_price(symbol)
     amount = position['amount']
+    entry_price = position['entry_price']
 
-    # ✅ تحقق من TP1
+    # تحقق من TP1
     if current_price >= position['tp1'] and not position['tp1_hit']:
         sell_amount = amount * 0.5
         place_market_order(symbol, 'sell', sell_amount)
         position['amount'] -= sell_amount
         position['tp1_hit'] = True
-        position['stop_loss'] = position['entry_price']  # SL يتحرك إلى نقطة الدخول
+        position['stop_loss'] = entry_price
         position['trailing_active'] = True
         save_position(symbol, position)
         send_message(f"🎯 تم تحقيق TP1 لـ {symbol} عند {current_price:.4f} | بيع نصف الكمية ✅ وتحريك SL إلى نقطة الدخول")
 
-    # ✅ Trailing Stop بعد TP1
+    # Trailing Stop بعد TP1
     if position.get('trailing_active'):
-        new_sl = current_price - (0.5 * (position['tp1'] - position['entry_price']))
+        new_sl = current_price - (0.5 * (position['tp1'] - entry_price))
         if new_sl > position['stop_loss']:
             position['stop_loss'] = new_sl
             save_position(symbol, position)
 
-    # ✅ تحقق من TP2
+    # تحقق من TP2 (إغلاق الصفقة بالكامل)
     if current_price >= position['tp2']:
         place_market_order(symbol, 'sell', position['amount'])
+
+        profit = (current_price - entry_price) * position['amount']
+
+        closed_positions = load_closed_positions()
+        closed_positions.append({
+            "symbol": symbol,
+            "entry_price": entry_price,
+            "exit_price": current_price,
+            "amount": position['amount'],
+            "profit": profit,
+            "closed_at": datetime.utcnow().isoformat()
+        })
+        save_closed_positions(closed_positions)
         clear_position(symbol)
         send_message(f"🏆 تم تحقيق TP2 لـ {symbol} عند {current_price:.4f} | الصفقة مغلقة بالكامل ✅")
         return
 
-    # ❌ تحقق من وقف الخسارة
+    # تحقق من وقف الخسارة (إغلاق الصفقة بالكامل)
     if current_price <= position['stop_loss']:
         place_market_order(symbol, 'sell', position['amount'])
+
+        profit = (current_price - entry_price) * position['amount']
+
+        closed_positions = load_closed_positions()
+        closed_positions.append({
+            "symbol": symbol,
+            "entry_price": entry_price,
+            "exit_price": current_price,
+            "amount": position['amount'],
+            "profit": profit,
+            "closed_at": datetime.utcnow().isoformat()
+        })
+        save_closed_positions(closed_positions)
         clear_position(symbol)
         send_message(f"❌ تم ضرب وقف الخسارة لـ {symbol} عند {current_price:.4f} | الصفقة مغلقة 🚫")
