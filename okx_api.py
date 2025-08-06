@@ -11,7 +11,7 @@ exchange = ccxt.okx({
     }
 })
 
-def get_balance(asset='USDT'):
+def fetch_balance(asset='USDT'):
     try:
         balances = exchange.fetch_balance()
         return balances.get(asset, {}).get('free', 0)
