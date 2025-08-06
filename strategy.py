@@ -106,8 +106,8 @@ def execute_buy(symbol):
     atr_val = df['atr'].iloc[-1]
 
     stop_loss = price - (1.5 * atr_val)
-    tp1 = price + (1.5 * atr_val)
-    tp2 = price + (3.0 * atr_val)
+    tp1 = price + (3.0 * atr_val)
+    tp2 = price + (6.0 * atr_val)
 
     amount = TRADE_AMOUNT_USDT / price
     order = place_market_order(symbol, 'buy', amount)
