@@ -16,40 +16,46 @@ def send_telegram_message(text):
 def generate_daily_report():
     report_lines = []
     open_positions_count = count_open_positions()
-    report_lines.append(f"📊 تقرير الصفقات المفتوحة اليوم ({open_positions_count} صفقة):\n")
+    report_lines.append(f"📊 تقرير الصفقات المفتوحة ({open_positions_count} صفقة):\n")
 
     if open_positions_count == 0:
-        report_lines.append("لا توجد صفقات مفتوحة حالياً.")
+        report_lines.append("✅ لا توجد صفقات مفتوحة حالياً.")
         return "\n".join(report_lines)
 
     for symbol in SYMBOLS:
         pos = load_position(symbol)
         if pos:
-            # بيانات المركز
-            symbol = pos['symbol']
-            entry = pos['entry_price']
-            stop = pos['stop_loss']
-            take = pos['take_profit']
-            amount = pos['amount']
-            current_price = None
             try:
                 from okx_api import fetch_price
                 current_price = fetch_price(symbol)
             except:
                 current_price = "N/A"
+
+            # قراءة البيانات الجديدة (TP1 / TP2 / Trailing)
+            entry = pos.get('entry_price', 0)
+            stop = pos.get('stop_loss', 0)
+            tp1 = pos.get('tp1', 0)
+            tp2 = pos.get('tp2', 0)
+            amount = pos.get('amount', 0)
+            tp1_hit = pos.get('tp1_hit', False)
+            trailing = pos.get('trailing_active', False)
+
             line = (
                 f"{symbol}:\n"
-                f"  السعر الحالي: {current_price}\n"
-                f"  سعر الدخول: {entry:.4f}\n"
-                f"  وقف الخسارة: {stop:.4f}\n"
-                f"  هدف الربح: {take:.4f}\n"
-                f"  الكمية: {amount:.6f}\n"
+                f"  📈 السعر الحالي: {current_price}\n"
+                f"  💰 سعر الدخول: {entry:.4f}\n"
+                f"  🛑 وقف الخسارة: {stop:.4f}\n"
+                f"  🎯 TP1: {tp1:.4f} {'(✅ محقق)' if tp1_hit else ''}\n"
+                f"  🏆 TP2: {tp2:.4f}\n"
+                f"  📦 الكمية المتبقية: {amount:.6f}\n"
+                f"  📌 Trailing Stop: {'✅ مفعل' if trailing else '❌ غير مفعل'}\n"
             )
             report_lines.append(line)
+
     return "\n".join(report_lines)
 
 if __name__ == "__main__":
-    send_telegram_message("🤖 بدأ البوت في مراقبة الأسواق!")
+    send_telegram_message("🚀 بدأ البوت بمراقبة الأسواق باستخدام استراتيجية TP1/TP2 + Trailing ✅")
 
     last_report_date = None
 
@@ -64,17 +70,20 @@ if __name__ == "__main__":
                 send_telegram_message(report)
                 last_report_date = now_saudi.date()
 
+            # ✅ مراقبة وإدارة جميع الرموز
             for symbol in SYMBOLS:
                 position = load_position(symbol)
+
                 if position is None:
                     signal = check_signal(symbol)
                     if signal == "buy":
                         order, message = execute_buy(symbol)
-                        send_telegram_message(message)
+                        if message:
+                            send_telegram_message(message)
                 else:
                     manage_position(symbol, send_telegram_message)
 
         except Exception as e:
-            send_telegram_message(f"⚠️ خطأ:\n{str(e)}")
+            send_telegram_message(f"⚠️ خطأ في main.py:\n{str(e)}")
 
-        time.sleep(60)
+        time.sleep(60)  # التشغيل كل دقيقة
