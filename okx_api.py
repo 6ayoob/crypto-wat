@@ -45,7 +45,13 @@ def place_market_order(symbol, side, amount):
     symbol = format_symbol(symbol)
     try:
         order = exchange.create_market_order(symbol, side, amount)
-        return order
+        print(f"✅ أمر السوق ({side}) لـ {symbol} تم إرساله: {order}")
+        status = order.get('status', '') if order else ''
+        if status in ['closed', 'open', 'new', 'filled']:
+            return order
+        else:
+            print(f"⚠️ أمر {side} لـ {symbol} ربما لم ينفذ بنجاح: {order}")
+            return None
     except Exception as e:
         print(f"❌ خطأ في تنفيذ أمر السوق ({side}) لـ {symbol}: {e}")
         return None
