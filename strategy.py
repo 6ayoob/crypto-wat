@@ -100,17 +100,12 @@ def execute_buy(symbol):
     if usdt_balance < TRADE_AMOUNT_USDT:
         return None, f"🚫 لا يوجد رصيد كافي لشراء {symbol}"
 
-    data = fetch_ohlcv(symbol, '1m', 200)
-    df = pd.DataFrame(data, columns=['timestamp','open','high','low','close','volume'])
-    df = calculate_indicators(df)
-    atr_val = df['atr'].iloc[-1]
-
-    stop_loss = price - (1.5 * atr_val)
-    tp1 = price + (3.0 * atr_val)
-    tp2 = price + (6.0 * atr_val)
-
     amount = TRADE_AMOUNT_USDT / price
     order = place_market_order(symbol, 'buy', amount)
+
+    stop_loss = price * 0.97  # وقف خسارة 3% تحت سعر الدخول
+    tp1 = price * 1.03        # هدف أول: +3%
+    tp2 = price * 1.06        # هدف ثاني: +6%
 
     position = {
         "symbol": symbol,
@@ -124,7 +119,7 @@ def execute_buy(symbol):
     }
 
     save_position(symbol, position)
-    return order, f"✅ شراء {symbol} @ {price:.4f}\n🎯 TP1: {tp1:.4f} | 🏆 TP2: {tp2:.4f} | ❌ SL: {stop_loss:.4f}"
+    return order, f"✅ شراء {symbol} @ {price:.4f}\n🎯 TP1: {tp1:.4f} (+3%) | 🏆 TP2: {tp2:.4f} (+6%) | ❌ SL: {stop_loss:.4f} (-3%)"
 
 def manage_position(symbol, send_message):
     position = load_position(symbol)
@@ -137,10 +132,9 @@ def manage_position(symbol, send_message):
 
     base_asset = symbol.split('/')[0]
     actual_balance = fetch_balance(base_asset)
-    print(f"رصيد {base_asset} الحالي: {actual_balance}، المطلوب للبيع: {amount}")
 
     sell_amount = min(amount, actual_balance)
-    sell_amount = round(sell_amount, 6)  # تقريب الكمية إلى 6 أرقام عشرية
+    sell_amount = round(sell_amount, 6)
 
     if current_price >= position['tp1'] and not position['tp1_hit']:
         sell_amount_half = round(sell_amount * 0.5, 6)
@@ -151,12 +145,12 @@ def manage_position(symbol, send_message):
             position['stop_loss'] = entry_price
             position['trailing_active'] = True
             save_position(symbol, position)
-            send_message(f"🎯 تم تحقيق TP1 لـ {symbol} عند {current_price:.4f} | بيع نصف الكمية ✅ وتحريك SL إلى نقطة الدخول")
+            send_message(f"🎯 تم تحقيق TP1 لـ {symbol} عند {current_price:.4f} | بيع نصف الكمية ✅ وتحريك وقف الخسارة لنقطة الدخول")
         else:
             send_message(f"❌ فشل تنفيذ أمر البيع الجزئي لـ {symbol} عند TP1")
 
     if position.get('trailing_active'):
-        new_sl = current_price - (0.5 * (position['tp1'] - entry_price))
+        new_sl = current_price * 0.99  # وقف خسارة متحرك 1% تحت السعر الحالي
         if new_sl > position['stop_loss']:
             position['stop_loss'] = new_sl
             save_position(symbol, position)
