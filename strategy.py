@@ -3,9 +3,9 @@ import json
 import os
 import time
 import logging
-from datetime import datetime
 from okx_api import fetch_ohlcv, fetch_price, place_market_order, fetch_balance
 from config import TRADE_AMOUNT_USDT, MAX_OPEN_POSITIONS
+from datetime import datetime
 
 logging.basicConfig(filename='trading_bot.log', level=logging.INFO,
                     format='%(asctime)s - %(levelname)s - %(message)s')
@@ -139,8 +139,23 @@ def execute_buy(symbol):
 
 def manage_position(symbol, send_message):
     position = load_position(symbol)
-    if not position or 'amount' not in position or position['amount'] <= 0:
-        send_message(f"❌ بيانات الصفقة غير صالحة لـ {symbol}")
+    print(f"DEBUG: Loaded position for {symbol}: {position}")
+
+    if not position:
+        send_message(f"❌ لم يتم العثور على ملف الصفقة لـ {symbol}")
+        clear_position(symbol)
+        return
+
+    required_keys = ['amount', 'entry_price', 'stop_loss', 'tp1', 'tp2', 'tp1_hit', 'trailing_active']
+    missing_keys = [key for key in required_keys if key not in position]
+
+    if missing_keys:
+        send_message(f"❌ بيانات الصفقة ناقصة {missing_keys} لـ {symbol}")
+        clear_position(symbol)
+        return
+
+    if position['amount'] <= 0:
+        send_message(f"❌ كمية الصفقة غير صالحة (<=0) لـ {symbol}")
         clear_position(symbol)
         return
 
@@ -152,11 +167,17 @@ def manage_position(symbol, send_message):
     amount = position['amount']
     entry_price = position['entry_price']
 
-    base_asset = symbol.replace("-", "/").split('/')[0]
+    base_asset = symbol.split('/')[0]
     actual_balance = fetch_balance(base_asset)
+
+    if actual_balance is None:
+        send_message(f"❌ فشل جلب الرصيد لـ {base_asset}")
+        return
 
     sell_amount = min(amount, actual_balance)
     sell_amount = round(sell_amount, 6)
+
+    print(f"DEBUG: Current price: {current_price}, Sell amount: {sell_amount}, Actual balance: {actual_balance}")
 
     # تحقق من TP1
     if current_price >= position['tp1'] and not position.get('tp1_hit'):
@@ -172,7 +193,6 @@ def manage_position(symbol, send_message):
             position['trailing_active'] = True
             save_position(symbol, position)
             send_message(f"🎯 تم تحقيق TP1 لـ {symbol} عند {current_price:.4f} | بيع نصف الكمية ✅ وتحريك وقف الخسارة لنقطة الدخول")
-            time.sleep(3)
         else:
             send_message(f"❌ فشل تنفيذ أمر البيع الجزئي لـ {symbol} عند TP1")
             return
@@ -201,7 +221,6 @@ def manage_position(symbol, send_message):
             save_closed_positions(closed_positions)
             clear_position(symbol)
             send_message(f"🏆 تم تحقيق TP2 لـ {symbol} عند {current_price:.4f} | الصفقة مغلقة بالكامل ✅")
-            time.sleep(3)
         else:
             send_message(f"❌ فشل تنفيذ أمر البيع الكامل لـ {symbol} عند TP2")
         return
@@ -223,6 +242,5 @@ def manage_position(symbol, send_message):
             save_closed_positions(closed_positions)
             clear_position(symbol)
             send_message(f"❌ تم ضرب وقف الخسارة لـ {symbol} عند {current_price:.4f} | الصفقة مغلقة 🚫")
-            time.sleep(3)
         else:
             send_message(f"❌ فشل تنفيذ أمر البيع الكامل لـ {symbol} عند وقف الخسارة")
