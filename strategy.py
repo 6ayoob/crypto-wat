@@ -1,14 +1,10 @@
 import pandas as pd
+import numpy as np
 import json
 import os
-import time
-import logging
 from okx_api import fetch_ohlcv, fetch_price, place_market_order, fetch_balance
 from config import TRADE_AMOUNT_USDT, MAX_OPEN_POSITIONS
-from datetime import datetime
-
-logging.basicConfig(filename='trading_bot.log', level=logging.INFO,
-                    format='%(asctime)s - %(levelname)s - %(message)s')
+from datetime import datetime, timedelta
 
 POSITIONS_DIR = "positions"
 CLOSED_POSITIONS_FILE = "closed_positions.json"
@@ -20,12 +16,8 @@ def get_position_filename(symbol):
 def load_position(symbol):
     file = get_position_filename(symbol)
     if os.path.exists(file):
-        try:
-            with open(file, 'r') as f:
-                return json.load(f)
-        except json.JSONDecodeError:
-            logging.error(f"ملف صفقة تالف: {file}")
-            return None
+        with open(file, 'r') as f:
+            return json.load(f)
     return None
 
 def save_position(symbol, position):
@@ -45,12 +37,8 @@ def count_open_positions():
 
 def load_closed_positions():
     if os.path.exists(CLOSED_POSITIONS_FILE):
-        try:
-            with open(CLOSED_POSITIONS_FILE, 'r') as f:
-                return json.load(f)
-        except json.JSONDecodeError:
-            logging.error("ملف الصفقات المغلقة تالف")
-            return []
+        with open(CLOSED_POSITIONS_FILE, 'r') as f:
+            return json.load(f)
     return []
 
 def save_closed_positions(closed_positions):
@@ -67,10 +55,18 @@ def rsi(series, period=14):
     rs = gain / loss
     return 100 - (100 / (1 + rs))
 
+def atr(df, period=14):
+    high_low = df['high'] - df['low']
+    high_close = (df['high'] - df['close'].shift()).abs()
+    low_close = (df['low'] - df['close'].shift()).abs()
+    tr = pd.concat([high_low, high_close, low_close], axis=1).max(axis=1)
+    return tr.rolling(period).mean()
+
 def calculate_indicators(df):
     df['ema9'] = ema(df['close'], 9)
     df['ema21'] = ema(df['close'], 21)
     df['rsi'] = rsi(df['close'], 14)
+    df['atr'] = atr(df, 14)
     return df
 
 def check_signal(symbol):
@@ -79,8 +75,8 @@ def check_signal(symbol):
     if not data_1m or not data_5m:
         return None
 
-    df1 = pd.DataFrame(data_1m, columns=['timestamp', 'open', 'high', 'low', 'close', 'volume'])
-    df5 = pd.DataFrame(data_5m, columns=['timestamp', 'open', 'high', 'low', 'close', 'volume'])
+    df1 = pd.DataFrame(data_1m, columns=['timestamp','open','high','low','close','volume'])
+    df5 = pd.DataFrame(data_5m, columns=['timestamp','open','high','low','close','volume'])
     df1 = calculate_indicators(df1)
     df5 = calculate_indicators(df5)
 
@@ -99,28 +95,17 @@ def execute_buy(symbol):
         return None, f"🚫 الحد الأقصى للصفقات ({MAX_OPEN_POSITIONS}) مفتوح بالفعل."
 
     price = fetch_price(symbol)
-    if price is None:
-        return None, f"🚫 فشل جلب سعر {symbol}"
-
     usdt_balance = fetch_balance('USDT')
-    if usdt_balance is None or usdt_balance < TRADE_AMOUNT_USDT:
-        return None, f"🚫 لا يوجد رصيد كافٍ لشراء {symbol}: متاح = {usdt_balance}, مطلوب = {TRADE_AMOUNT_USDT}"
+
+    if usdt_balance < TRADE_AMOUNT_USDT:
+        return None, f"🚫 لا يوجد رصيد كافي لشراء {symbol}"
 
     amount = TRADE_AMOUNT_USDT / price
-    amount = round(amount, 6)
+    order = place_market_order(symbol, 'buy', amount)
 
-    max_retries = 3
-    for attempt in range(max_retries):
-        order = place_market_order(symbol, 'buy', amount)
-        if order:
-            break
-        time.sleep(1)
-    else:
-        return None, f"❌ فشل تنفيذ أمر الشراء لـ {symbol} بعد {max_retries} محاولات"
-
-    stop_loss = round(price * 0.97, 6)
-    tp1 = round(price * 1.03, 6)
-    tp2 = round(price * 1.06, 6)
+    stop_loss = price * 0.97  # وقف خسارة 3% تحت سعر الدخول
+    tp1 = price * 1.03        # هدف أول: +3%
+    tp2 = price * 1.06        # هدف ثاني: +6%
 
     position = {
         "symbol": symbol,
@@ -134,57 +119,25 @@ def execute_buy(symbol):
     }
 
     save_position(symbol, position)
-    message = f"✅ شراء {symbol} @ {price:.4f}\n🎯 TP1: {tp1:.4f} (+3%) | 🏆 TP2: {tp2:.4f} (+6%) | ❌ SL: {stop_loss:.4f} (-3%)"
-    return order, message
+    return order, f"✅ شراء {symbol} @ {price:.4f}\n🎯 TP1: {tp1:.4f} (+3%) | 🏆 TP2: {tp2:.4f} (+6%) | ❌ SL: {stop_loss:.4f} (-3%)"
 
 def manage_position(symbol, send_message):
     position = load_position(symbol)
-    print(f"DEBUG: Loaded position for {symbol}: {position}")
-
     if not position:
-        send_message(f"❌ لم يتم العثور على ملف الصفقة لـ {symbol}")
-        clear_position(symbol)
-        return
-
-    required_keys = ['amount', 'entry_price', 'stop_loss', 'tp1', 'tp2', 'tp1_hit', 'trailing_active']
-    missing_keys = [key for key in required_keys if key not in position]
-
-    if missing_keys:
-        send_message(f"❌ بيانات الصفقة ناقصة {missing_keys} لـ {symbol}")
-        clear_position(symbol)
-        return
-
-    if position['amount'] <= 0:
-        send_message(f"❌ كمية الصفقة غير صالحة (<=0) لـ {symbol}")
-        clear_position(symbol)
         return
 
     current_price = fetch_price(symbol)
-    if current_price is None:
-        send_message(f"❌ فشل جلب السعر الحالي لـ {symbol}")
-        return
-
     amount = position['amount']
     entry_price = position['entry_price']
 
     base_asset = symbol.split('/')[0]
     actual_balance = fetch_balance(base_asset)
 
-    if actual_balance is None:
-        send_message(f"❌ فشل جلب الرصيد لـ {base_asset}")
-        return
-
     sell_amount = min(amount, actual_balance)
     sell_amount = round(sell_amount, 6)
 
-    print(f"DEBUG: Current price: {current_price}, Sell amount: {sell_amount}, Actual balance: {actual_balance}")
-
-    # تحقق من TP1
-    if current_price >= position['tp1'] and not position.get('tp1_hit'):
+    if current_price >= position['tp1'] and not position['tp1_hit']:
         sell_amount_half = round(sell_amount * 0.5, 6)
-        if sell_amount_half <= 0 or sell_amount_half > actual_balance:
-            send_message(f"❌ الكمية غير كافية للبيع الجزئي لـ {symbol}: رصيد متاح = {actual_balance}, مطلوب = {sell_amount_half}")
-            return
         order = place_market_order(symbol, 'sell', sell_amount_half)
         if order:
             position['amount'] -= sell_amount_half
@@ -195,16 +148,13 @@ def manage_position(symbol, send_message):
             send_message(f"🎯 تم تحقيق TP1 لـ {symbol} عند {current_price:.4f} | بيع نصف الكمية ✅ وتحريك وقف الخسارة لنقطة الدخول")
         else:
             send_message(f"❌ فشل تنفيذ أمر البيع الجزئي لـ {symbol} عند TP1")
-            return
 
-    # Trailing Stop
     if position.get('trailing_active'):
-        new_sl = round(current_price * 0.99, 4)
+        new_sl = current_price * 0.99  # وقف خسارة متحرك 1% تحت السعر الحالي
         if new_sl > position['stop_loss']:
             position['stop_loss'] = new_sl
             save_position(symbol, position)
 
-    # تحقق من TP2
     if current_price >= position['tp2']:
         order = place_market_order(symbol, 'sell', sell_amount)
         if order:
@@ -225,7 +175,6 @@ def manage_position(symbol, send_message):
             send_message(f"❌ فشل تنفيذ أمر البيع الكامل لـ {symbol} عند TP2")
         return
 
-    # تحقق من وقف الخسارة
     if current_price <= position['stop_loss']:
         order = place_market_order(symbol, 'sell', sell_amount)
         if order:
