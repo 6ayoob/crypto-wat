@@ -61,13 +61,13 @@ def place_market_order(symbol, side, amount):
         return None
     if side.lower() == "sell":
         base_asset = symbol.split("-")[0]
-        actual_balance = fetch_balance(base_asset)
-        if actual_balance == 0:
-            print(f"❌ لا يوجد رصيد متاح لـ {base_asset} لتنفيذ أمر البيع لـ {symbol}")
+        balance = fetch_balance(base_asset)
+        if balance <= 0:
+            print(f"❌ لا يوجد رصيد متاح لـ {base_asset} لتنفيذ البيع.")
             return None
-        amount = min(amount, actual_balance * 0.99)
+        amount = min(amount, balance * 0.99)
         if amount <= 0:
-            print(f"❌ الكمية غير كافية للبيع بعد التحقق من الرصيد لـ {base_asset}")
+            print(f"❌ الكمية غير صالحة للبيع بعد التحقق من الرصيد لـ {base_asset}.")
             return None
     try:
         order = exchange.create_market_order(symbol_formatted, side, amount)
