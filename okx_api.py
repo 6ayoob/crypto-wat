@@ -11,10 +11,8 @@ exchange = ccxt.okx({
     }
 })
 
-
 def format_symbol(symbol):
     return symbol.replace("-", "/")
-
 
 def is_symbol_available(symbol):
     try:
@@ -24,7 +22,6 @@ def is_symbol_available(symbol):
         print(f"❌ خطأ في تحميل الأسواق من OKX: {e}")
         return False
 
-
 def fetch_balance(asset='USDT'):
     try:
         balances = exchange.fetch_balance()
@@ -33,13 +30,11 @@ def fetch_balance(asset='USDT'):
         print(f"❌ خطأ في جلب الرصيد لـ {asset}: {e}")
         return 0
 
-
 def fetch_price(symbol):
     symbol_formatted = format_symbol(symbol)
     if not is_symbol_available(symbol):
         print(f"❌ السوق غير متوفر على OKX: {symbol_formatted}")
         return None
-
     try:
         ticker = exchange.fetch_ticker(symbol_formatted)
         return ticker['last']
@@ -47,13 +42,11 @@ def fetch_price(symbol):
         print(f"❌ خطأ في جلب السعر الحالي لـ {symbol_formatted}: {e}")
         return None
 
-
 def fetch_ohlcv(symbol, timeframe='5m', limit=100):
     symbol_formatted = format_symbol(symbol)
     if not is_symbol_available(symbol):
         print(f"❌ السوق غير متوفر على OKX: {symbol_formatted}")
         return []
-
     try:
         data = exchange.fetch_ohlcv(symbol_formatted, timeframe=timeframe, limit=limit)
         return data
@@ -61,14 +54,11 @@ def fetch_ohlcv(symbol, timeframe='5m', limit=100):
         print(f"❌ خطأ في جلب بيانات الشموع لـ {symbol_formatted}: {e}")
         return []
 
-
 def place_market_order(symbol, side, amount):
     symbol_formatted = format_symbol(symbol)
-
     if not is_symbol_available(symbol):
         print(f"❌ لا يمكن تنفيذ الأمر، السوق غير متوفر: {symbol_formatted}")
         return None
-
     if side.lower() == "sell":
         base_asset = symbol.split("-")[0]
         actual_balance = fetch_balance(base_asset)
@@ -79,9 +69,9 @@ def place_market_order(symbol, side, amount):
         if amount <= 0:
             print(f"❌ الكمية غير كافية للبيع بعد التحقق من الرصيد لـ {base_asset}")
             return None
-
     try:
         order = exchange.create_market_order(symbol_formatted, side, amount)
+        print(f"✅ تم تنفيذ أمر {side.upper()} لـ {symbol_formatted} بكمية {amount}")
         return order
     except Exception as e:
         print(f"❌ خطأ في تنفيذ أمر السوق ({side}) لـ {symbol_formatted}: {e}")
