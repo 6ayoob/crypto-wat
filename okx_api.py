@@ -34,8 +34,7 @@ def fetch_price(symbol):
 def fetch_ohlcv(symbol, timeframe='5m', limit=100):
     symbol = format_symbol(symbol)
     try:
-        data = exchange.fetch_ohlcv(symbol, timeframe=timeframe, limit=limit)
-        return data
+        return exchange.fetch_ohlcv(symbol, timeframe=timeframe, limit=limit)
     except Exception as e:
         print(f"❌ خطأ في جلب بيانات الشموع لـ {symbol}: {e}")
         return []
@@ -47,16 +46,19 @@ def place_market_order(symbol, side, amount):
         base_asset = symbol.split("-")[0]
         actual_balance = fetch_balance(base_asset)
         if actual_balance == 0:
-            print(f"❌ لا يوجد رصيد متاح لـ {base_asset} لتنفيذ أمر البيع لـ {symbol}")
-            return None
+            error = f"❌ لا يوجد رصيد متاح لـ {base_asset} لتنفيذ أمر البيع لـ {symbol}"
+            print(error)
+            return None, error
         amount = min(amount, actual_balance * 0.99)
         if amount <= 0:
-            print(f"❌ الكمية غير كافية للبيع بعد التحقق من الرصيد لـ {base_asset}")
-            return None
+            error = f"❌ الكمية غير كافية للبيع بعد التحقق من الرصيد لـ {base_asset}"
+            print(error)
+            return None, error
 
     try:
         order = exchange.create_market_order(symbol_formatted, side, amount)
-        return order
+        return order, None
     except Exception as e:
-        print(f"❌ خطأ في تنفيذ أمر السوق ({side}) لـ {symbol_formatted}: {e}")
-        return None
+        error = f"❌ خطأ في تنفيذ أمر السوق ({side}) لـ {symbol_formatted}: {e}"
+        print(error)
+        return None, error
