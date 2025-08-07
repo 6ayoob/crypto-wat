@@ -183,4 +183,4 @@ if __name__ == "__main__":
             import traceback
             send_telegram_message(f"⚠️ خطأ في main.py:\n{traceback.format_exc()}")
 
-        time.sleep(90)
+        time.sleep(60)
