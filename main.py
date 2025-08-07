@@ -36,4 +36,4 @@ def generate_daily_report():
                 tp2 = pos.get('tp2', 0)
                 amount = pos.get('amount', 0)
                 tp1_hit = pos.get('tp1_hit', False)
-                trailing = pos.get('tr
+                trailing = pos.get('trailing_active', False)
