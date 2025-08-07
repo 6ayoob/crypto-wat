@@ -16,7 +16,7 @@ SYMBOLS = [
   "MANA/USDT", "AXS/USDT", "SAND/USDT", "CHZ/USDT", "ENJ/USDT",
   "GALA/USDT", "APE/USDT", "ILV/USDT",
   # Layer 2 (5)
-  "OP/USDT", "MATIC/USDT", "LUNA/USDT", "ZIL/USDT", "SKL/USDT",
+  "OP/USDT", "ETHA/USDT", "LUNA/USDT", "ZIL/USDT", "SKL/USDT",
   # Meme Coins (5)
   "PEPE/USDT", "DOGE/USDT", "SHIB/USDT", "PUMP/USDT", "MEMEFI/USDT",
   # Stable / Oracles / Infra (10)
