@@ -43,7 +43,6 @@ def fetch_ohlcv(symbol, timeframe='5m', limit=100):
 def place_market_order(symbol, side, amount, send_message=None):
     symbol_ccxt = format_symbol(symbol)
 
-    # قبل التنفيذ: تأكد أن الكمية أكبر من صفر
     if amount <= 0:
         msg = f"⚠️ الكمية صفر أو غير صالحة عند محاولة تنفيذ أمر {side} لـ {symbol}"
         print(msg)
