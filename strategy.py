@@ -123,7 +123,9 @@ def execute_buy(symbol):
 
 def manage_position(symbol, send_message):
     position = load_position(symbol)
-    if not position:
+    if not position or 'amount' not in position or position['amount'] <= 0:
+        send_message(f"❌ بيانات الصفقة غير صالحة لـ {symbol}")
+        clear_position(symbol)
         return
 
     current_price = fetch_price(symbol)
@@ -136,8 +138,12 @@ def manage_position(symbol, send_message):
     sell_amount = min(amount, actual_balance)
     sell_amount = round(sell_amount, 6)
 
-    if current_price >= position['tp1'] and not position['tp1_hit']:
+    # ✅ تحقق من TP1
+    if current_price >= position['tp1'] and not position.get('tp1_hit'):
         sell_amount_half = round(sell_amount * 0.5, 6)
+        if sell_amount_half <= 0 or sell_amount_half > actual_balance:
+            send_message(f"❌ الكمية غير كافية للبيع الجزئي لـ {symbol}: رصيد متاح = {actual_balance}, مطلوب = {sell_amount_half}")
+            return
         order = place_market_order(symbol, 'sell', sell_amount_half)
         if order:
             position['amount'] -= sell_amount_half
@@ -148,13 +154,16 @@ def manage_position(symbol, send_message):
             send_message(f"🎯 تم تحقيق TP1 لـ {symbol} عند {current_price:.4f} | بيع نصف الكمية ✅ وتحريك وقف الخسارة لنقطة الدخول")
         else:
             send_message(f"❌ فشل تنفيذ أمر البيع الجزئي لـ {symbol} عند TP1")
+            return
 
+    # ✅ Trailing Stop
     if position.get('trailing_active'):
-        new_sl = current_price * 0.99  # وقف خسارة متحرك 1% تحت السعر الحالي
+        new_sl = round(current_price * 0.99, 4)
         if new_sl > position['stop_loss']:
             position['stop_loss'] = new_sl
             save_position(symbol, position)
 
+    # ✅ تحقق من TP2
     if current_price >= position['tp2']:
         order = place_market_order(symbol, 'sell', sell_amount)
         if order:
@@ -175,6 +184,7 @@ def manage_position(symbol, send_message):
             send_message(f"❌ فشل تنفيذ أمر البيع الكامل لـ {symbol} عند TP2")
         return
 
+    # ✅ تحقق من وقف الخسارة
     if current_price <= position['stop_loss']:
         order = place_market_order(symbol, 'sell', sell_amount)
         if order:
