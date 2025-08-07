@@ -3,11 +3,22 @@ import numpy as np
 import json
 import os
 from okx_api import fetch_ohlcv, fetch_price, place_market_order, fetch_balance
-from config import TRADE_AMOUNT_USDT, MAX_OPEN_POSITIONS
+from config import TRADE_AMOUNT_USDT, MAX_OPEN_POSITIONS, TELEGRAM_TOKEN, TELEGRAM_CHAT_ID, SYMBOLS
 from datetime import datetime, timedelta
+import requests
+import time
 
 POSITIONS_DIR = "positions"
 CLOSED_POSITIONS_FILE = "closed_positions.json"
+
+def send_telegram_message(text):
+    url = f"https://api.telegram.org/bot{TELEGRAM_TOKEN}/sendMessage"
+    try:
+        response = requests.post(url, data={"chat_id": TELEGRAM_CHAT_ID, "text": text})
+        if not response.ok:
+            print(f"Failed to send Telegram message: {response.status_code} {response.text}")
+    except Exception as e:
+        print(f"Telegram error: {e}")
 
 def get_position_filename(symbol):
     symbol = symbol.replace("/", "_")
@@ -48,80 +59,55 @@ def save_closed_positions(closed_positions):
 def ema(series, period):
     return series.ewm(span=period, adjust=False).mean()
 
-def rsi(series, period=14):
-    delta = series.diff()
-    gain = (delta.where(delta > 0, 0)).rolling(period).mean()
-    loss = (-delta.where(delta < 0, 0)).rolling(period).mean()
-    rs = gain / loss
-    return 100 - (100 / (1 + rs))
-
-def atr(df, period=14):
-    high_low = df['high'] - df['low']
-    high_close = (df['high'] - df['close'].shift()).abs()
-    low_close = (df['low'] - df['close'].shift()).abs()
-    tr = pd.concat([high_low, high_close, low_close], axis=1).max(axis=1)
-    return tr.rolling(period).mean()
-
 def calculate_indicators(df):
     df['ema9'] = ema(df['close'], 9)
     df['ema21'] = ema(df['close'], 21)
-    df['rsi'] = rsi(df['close'], 14)
-    df['atr'] = atr(df, 14)
     return df
 
 def check_signal(symbol):
-    data_1m = fetch_ohlcv(symbol, '1m', 200)
-    data_5m = fetch_ohlcv(symbol, '5m', 200)
-    if not data_1m or not data_5m:
+    data_5m = fetch_ohlcv(symbol, '5m', 100)
+    if not data_5m:
         return None
 
-    df1 = pd.DataFrame(data_1m, columns=['timestamp','open','high','low','close','volume'])
-    df5 = pd.DataFrame(data_5m, columns=['timestamp','open','high','low','close','volume'])
-    df1 = calculate_indicators(df1)
-    df5 = calculate_indicators(df5)
+    df = pd.DataFrame(data_5m, columns=['timestamp','open','high','low','close','volume'])
+    df = calculate_indicators(df)
 
-    last = df1.iloc[-1]
-    prev = df1.iloc[-2]
+    last = df.iloc[-1]
+    prev = df.iloc[-2]
 
-    cond_buy = (prev['ema9'] < prev['ema21']) and (last['ema9'] > last['ema21']) \
-               and (last['rsi'] > 50) \
-               and (last['volume'] > df1['volume'].rolling(20).mean().iloc[-1]) \
-               and (df5['ema9'].iloc[-1] > df5['ema21'].iloc[-1])
-
-    return "buy" if cond_buy else None
+    # شرط شراء مبسط: EMA9 تعبر EMA21 من الأسفل للأعلى
+    if (prev['ema9'] < prev['ema21']) and (last['ema9'] > last['ema21']):
+        return "buy"
+    return None
 
 def execute_buy(symbol):
     if count_open_positions() >= MAX_OPEN_POSITIONS:
-        return None, f"🚫 الحد الأقصى للصفقات ({MAX_OPEN_POSITIONS}) مفتوح بالفعل."
+        return None, f"🚫 وصلت للحد الأقصى للصفقات المفتوحة ({MAX_OPEN_POSITIONS})."
 
     price = fetch_price(symbol)
     usdt_balance = fetch_balance('USDT')
 
     if usdt_balance < TRADE_AMOUNT_USDT:
-        return None, f"🚫 لا يوجد رصيد كافي لشراء {symbol}"
+        return None, f"🚫 رصيد USDT غير كافٍ لشراء {symbol}."
 
     amount = TRADE_AMOUNT_USDT / price
     order = place_market_order(symbol, 'buy', amount)
 
-    stop_loss = price * 0.97  # وقف خسارة 3% تحت سعر الدخول
-    tp1 = price * 1.03        # هدف أول: +3%
-    tp2 = price * 1.06        # هدف ثاني: +6%
+    stop_loss = price * 0.98  # وقف خسارة 2% تحت سعر الدخول (أكثر أمان)
+    take_profit = price * 1.04  # هدف ربح 4%
 
     position = {
         "symbol": symbol,
         "amount": amount,
         "entry_price": price,
         "stop_loss": stop_loss,
-        "tp1": tp1,
-        "tp2": tp2,
-        "tp1_hit": False,
-        "trailing_active": False
+        "take_profit": take_profit,
     }
 
     save_position(symbol, position)
-    return order, f"✅ شراء {symbol} @ {price:.4f}\n🎯 TP1: {tp1:.4f} (+3%) | 🏆 TP2: {tp2:.4f} (+6%) | ❌ SL: {stop_loss:.4f} (-3%)"
+    return order, f"✅ تم شراء {symbol} بسعر {price:.4f}\n🎯 هدف الربح: {take_profit:.4f} (+4%) | 🛑 وقف الخسارة: {stop_loss:.4f} (-2%)"
 
-def manage_position(symbol, send_message):
+def manage_position(symbol):
     position = load_position(symbol)
     if not position:
         return
@@ -132,30 +118,10 @@ def manage_position(symbol, send_message):
 
     base_asset = symbol.split('/')[0]
     actual_balance = fetch_balance(base_asset)
-
     sell_amount = min(amount, actual_balance)
     sell_amount = round(sell_amount, 6)
 
-    if current_price >= position['tp1'] and not position['tp1_hit']:
-        sell_amount_half = round(sell_amount * 0.5, 6)
-        order = place_market_order(symbol, 'sell', sell_amount_half)
-        if order:
-            position['amount'] -= sell_amount_half
-            position['tp1_hit'] = True
-            position['stop_loss'] = entry_price
-            position['trailing_active'] = True
-            save_position(symbol, position)
-            send_message(f"🎯 تم تحقيق TP1 لـ {symbol} عند {current_price:.4f} | بيع نصف الكمية ✅ وتحريك وقف الخسارة لنقطة الدخول")
-        else:
-            send_message(f"❌ فشل تنفيذ أمر البيع الجزئي لـ {symbol} عند TP1")
-
-    if position.get('trailing_active'):
-        new_sl = current_price * 0.99  # وقف خسارة متحرك 1% تحت السعر الحالي
-        if new_sl > position['stop_loss']:
-            position['stop_loss'] = new_sl
-            save_position(symbol, position)
-
-    if current_price >= position['tp2']:
+    if current_price >= position['take_profit']:
         order = place_market_order(symbol, 'sell', sell_amount)
         if order:
             profit = (current_price - entry_price) * sell_amount
@@ -170,9 +136,9 @@ def manage_position(symbol, send_message):
             })
             save_closed_positions(closed_positions)
             clear_position(symbol)
-            send_message(f"🏆 تم تحقيق TP2 لـ {symbol} عند {current_price:.4f} | الصفقة مغلقة بالكامل ✅")
+            send_telegram_message(f"🏆 تم تحقيق هدف الربح لـ {symbol} عند {current_price:.4f} | الصفقة مغلقة ✅")
         else:
-            send_message(f"❌ فشل تنفيذ أمر البيع الكامل لـ {symbol} عند TP2")
+            send_telegram_message(f"❌ فشل تنفيذ أمر البيع لـ {symbol} عند هدف الربح")
         return
 
     if current_price <= position['stop_loss']:
@@ -190,6 +156,31 @@ def manage_position(symbol, send_message):
             })
             save_closed_positions(closed_positions)
             clear_position(symbol)
-            send_message(f"❌ تم ضرب وقف الخسارة لـ {symbol} عند {current_price:.4f} | الصفقة مغلقة 🚫")
+            send_telegram_message(f"❌ تم ضرب وقف الخسارة لـ {symbol} عند {current_price:.4f} | الصفقة مغلقة 🚫")
         else:
-            send_message(f"❌ فشل تنفيذ أمر البيع الكامل لـ {symbol} عند وقف الخسارة")
+            send_telegram_message(f"❌ فشل تنفيذ أمر البيع لـ {symbol} عند وقف الخسارة")
+        return
+
+if __name__ == "__main__":
+    send_telegram_message("🚀 بدأ البوت بمراقبة الأسواق باستخدام استراتيجية أبسط وأكثر أمانًا ✅")
+    last_report_date = None
+
+    while True:
+        try:
+            for symbol in SYMBOLS:
+                position = load_position(symbol)
+
+                if position is None:
+                    signal = check_signal(symbol)
+                    if signal == "buy":
+                        order, message = execute_buy(symbol)
+                        if message:
+                            send_telegram_message(message)
+                else:
+                    manage_position(symbol)
+
+        except Exception as e:
+            import traceback
+            send_telegram_message(f"⚠️ خطأ في main.py:\n{traceback.format_exc()}")
+
+        time.sleep(90)
