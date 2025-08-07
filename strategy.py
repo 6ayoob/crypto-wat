@@ -1,14 +1,12 @@
 import pandas as pd
-import numpy as np
 import json
 import os
 import time
 import logging
-from okx_api import fetch_ohlcv, fetch_price, place_market_order, fetch_balance, get_instrument_info
+from okx_api import fetch_ohlcv, fetch_price, place_market_order, fetch_balance
 from config import TRADE_AMOUNT_USDT, MAX_OPEN_POSITIONS
-from datetime import datetime, timedelta
+from datetime import datetime
 
-# إعداد التسجيل
 logging.basicConfig(filename='trading_bot.log', level=logging.INFO,
                     format='%(asctime)s - %(levelname)s - %(message)s')
 
@@ -69,51 +67,16 @@ def rsi(series, period=14):
     rs = gain / loss
     return 100 - (100 / (1 + rs))
 
-def atr(df, period=14):
-    high_low = df['high'] - df['low']
-    high_close = (df['high'] - df['close'].shift()).abs()
-    low_close = (df['low'] - df['close'].shift()).abs()
-    tr = pd.concat([high_low, high_close, low_close], axis=1).max(axis=1)
-    return tr.rolling(period).mean()
-
 def calculate_indicators(df):
     df['ema9'] = ema(df['close'], 9)
     df['ema21'] = ema(df['close'], 21)
     df['rsi'] = rsi(df['close'], 14)
-    df['atr'] = atr(df, 14)
     return df
 
-def get_instrument_constraints(symbol):
-    """جلب قيود التداول للزوج من OKX"""
-    try:
-        info = get_instrument_info(symbol)
-        return {
-            'min_order_size': float(info.get('minSz', 0.0001)),
-            'quantity_precision': int(-np.log10(float(info.get('lotSz', 0.0001))))
-        }
-    except Exception as e:
-        logging.error(f"فشل جلب قيود الزوج {symbol}: {str(e)}")
-        return {'min_order_size': 0.0001, 'quantity_precision': 6}
-
-def check_api_status():
-    """التحقق من حالة اتصال OKX API"""
-    try:
-        # افتراضي: استدعاء API للتحقق من الحالة
-        response = okx_api.get_system_status()  # يجب أن تكون متوفرة في okx_api
-        return response.get('status') == 'ok'
-    except Exception as e:
-        logging.error(f"فشل التحقق من حالة API: {str(e)}")
-        return False
-
 def check_signal(symbol):
-    if not check_api_status():
-        logging.warning(f"لا يمكن التحقق من إشارة لـ {symbol}: مشكلة اتصال API")
-        return None
-
     data_1m = fetch_ohlcv(symbol, '1m', 200)
     data_5m = fetch_ohlcv(symbol, '5m', 200)
     if not data_1m or not data_5m:
-        logging.error(f"فشل جلب بيانات OHLCV لـ {symbol}")
         return None
 
     df1 = pd.DataFrame(data_1m, columns=['timestamp', 'open', 'high', 'low', 'close', 'volume'])
@@ -133,46 +96,31 @@ def check_signal(symbol):
 
 def execute_buy(symbol):
     if count_open_positions() >= MAX_OPEN_POSITIONS:
-        message = f"🚫 الحد الأقصى للصفقات ({MAX_OPEN_POSITIONS}) مفتوح بالفعل."
-        logging.info(message)
-        return None, message
-
-    if not check_api_status():
-        message = f"🚫 فشل الشراء لـ {symbol}: مشكلة اتصال API"
-        logging.error(message)
-        return None, message
+        return None, f"🚫 الحد الأقصى للصفقات ({MAX_OPEN_POSITIONS}) مفتوح بالفعل."
 
     price = fetch_price(symbol)
     if price is None:
-        message = f"🚫 فشل جلب سعر {symbol}"
-        logging.error(message)
-        return None, message
+        return None, f"🚫 فشل جلب سعر {symbol}"
 
     usdt_balance = fetch_balance('USDT')
     if usdt_balance is None or usdt_balance < TRADE_AMOUNT_USDT:
-        message = f"🚫 لا يوجد رصيد كافٍ لشراء {symbol}: متاح = {usdt_balance}, مطلوب = {TRADE_AMOUNT_USDT}"
-        logging.error(message)
-        return None, message
+        return None, f"🚫 لا يوجد رصيد كافٍ لشراء {symbol}: متاح = {usdt_balance}, مطلوب = {TRADE_AMOUNT_USDT}"
 
-    constraints = get_instrument_constraints(symbol)
     amount = TRADE_AMOUNT_USDT / price
-    amount = max(constraints['min_order_size'], round(amount, constraints['quantity_precision']))
+    amount = round(amount, 6)
 
     max_retries = 3
     for attempt in range(max_retries):
-        order, error = place_market_order(symbol, 'buy', amount)
+        order = place_market_order(symbol, 'buy', amount)
         if order:
             break
-        logging.error(f"محاولة {attempt+1} فشلت لشراء {symbol}: {error}")
         time.sleep(1)
     else:
-        message = f"❌ فشل تنفيذ أمر الشراء لـ {symbol} بعد {max_retries} محاولات"
-        logging.error(message)
-        return None, message
+        return None, f"❌ فشل تنفيذ أمر الشراء لـ {symbol} بعد {max_retries} محاولات"
 
-    stop_loss = round(price * 0.97, constraints['quantity_precision'])
-    tp1 = round(price * 1.03, constraints['quantity_precision'])
-    tp2 = round(price * 1.06, constraints['quantity_precision'])
+    stop_loss = round(price * 0.97, 6)
+    tp1 = round(price * 1.03, 6)
+    tp2 = round(price * 1.06, 6)
 
     position = {
         "symbol": symbol,
@@ -187,7 +135,6 @@ def execute_buy(symbol):
 
     save_position(symbol, position)
     message = f"✅ شراء {symbol} @ {price:.4f}\n🎯 TP1: {tp1:.4f} (+3%) | 🏆 TP2: {tp2:.4f} (+6%) | ❌ SL: {stop_loss:.4f} (-3%)"
-    logging.info(message)
     return order, message
 
 def manage_position(symbol, send_message):
@@ -196,153 +143,76 @@ def manage_position(symbol, send_message):
     if not position or not all(key in position for key in required_keys) or position['amount'] <= 0:
         message = f"❌ بيانات الصفقة غير صالحة لـ {symbol}"
         send_message(message)
-        logging.error(message)
         clear_position(symbol)
-        return
-
-    if not check_api_status():
-        message = f"🚫 فشل إدارة الصفقة لـ {symbol}: مشكلة اتصال API"
-        send_message(message)
-        logging.error(message)
         return
 
     current_price = fetch_price(symbol)
     if current_price is None:
-        message = f"❌ فشل جلب السعر الحالي لـ {symbol}"
-        send_message(message)
-        logging.error(message)
+        send_message(f"❌ فشل جلب السعر الحالي لـ {symbol}")
         return
 
     amount = position['amount']
-    entry_price = position['entry_price']
-    base_asset = symbol.split('/')[0]
+    base_asset = symbol.split('-')[0]
     actual_balance = fetch_balance(base_asset)
     if actual_balance is None:
-        message = f"❌ فشل جلب رصيد {base_asset} لـ {symbol}"
-        send_message(message)
-        logging.error(message)
+        send_message(f"❌ فشل جلب رصيد {base_asset} لـ {symbol}")
         return
 
-    constraints = get_instrument_constraints(symbol)
-    sell_amount = max(constraints['min_order_size'], round(min(amount, actual_balance), constraints['quantity_precision']))
+    sell_amount = min(amount, actual_balance)
 
-    # ✅ تحقق من TP1
-    if current_price >= position['tp1'] and not position.get('tp1_hit'):
-        sell_amount_half = max(constraints['min_order_size'], round(sell_amount * 0.5, constraints['quantity_precision']))
-        if sell_amount_half <= 0 or sell_amount_half > actual_balance:
-            message = f"❌ الكمية غير كافية للبيع الجزئي لـ {symbol}: رصيد متاح = {actual_balance}, مطلوب = {sell_amount_half}"
-            send_message(message)
-            logging.error(message)
-            return
-
-        max_retries = 3
-        for attempt in range(max_retries):
-            # استخدام أمر محدود بدلاً من سوقي لتحسين التنفيذ
-            order, error = place_limit_order(symbol, 'sell', sell_amount_half, position['tp1'])
-            if order:
-                break
-            logging.error(f"محاولة {attempt+1} فشلت لبيع جزئي لـ {symbol} عند TP1: {error}")
-            send_message(f"❌ محاولة {attempt+1} فشلت لبيع جزئي لـ {symbol} عند TP1: {error}")
-            time.sleep(1)
-        else:
-            message = f"❌ فشل تنفيذ أمر البيع الجزئي لـ {symbol} عند TP1 بعد {max_retries} محاولات"
-            send_message(message)
-            logging.error(message)
-            return
-
-        position['amount'] -= sell_amount_half
-        position['tp1_hit'] = True
-        position['stop_loss'] = entry_price
-        position['trailing_active'] = True
-        save_position(symbol, position)
-        message = f"🎯 تم تحقيق TP1 لـ {symbol} عند {current_price:.4f} | بيع نصف الكمية ✅ وتحريك وقف الخسارة لنقطة الدخول"
-        send_message(message)
-        logging.info(message)
-        return
-
-    # ✅ Trailing Stop
-    if position.get('trailing_active'):
-        new_sl = round(current_price * 0.99, constraints['quantity_precision'])
-        if new_sl > position['stop_loss']:
-            position['stop_loss'] = new_sl
+    # TP1 partial sell
+    if current_price >= position['tp1'] and not position['tp1_hit']:
+        sell_amount_half = round(sell_amount * 0.5, 6)
+        order = place_market_order(symbol, 'sell', sell_amount_half)
+        if order:
+            position['amount'] -= sell_amount_half
+            position['tp1_hit'] = True
+            position['stop_loss'] = position['entry_price']
+            position['trailing_active'] = True
             save_position(symbol, position)
-
-    # ✅ تحقق من TP2
-    if current_price >= position['tp2']:
-        max_retries = 3
-        for attempt in range(max_retries):
-            order, error = place_market_order(symbol, 'sell', sell_amount)
-            if order:
-                break
-            logging.error(f"محاولة {attempt+1} فشلت لبيع كامل لـ {symbol} عند TP2: {error}")
-            send_message(f"❌ محاولة {attempt+1} فشلت لبيع كامل لـ {symbol} عند TP2: {error}")
-            time.sleep(1)
+            send_message(f"🎯 تم تحقيق TP1 لـ {symbol} عند {current_price:.4f} | بيع نصف الكمية ✅ وتحريك وقف الخسارة لنقطة الدخول")
         else:
-            message = f"❌ فشل تنفيذ أمر البيع الكامل لـ {symbol} عند TP2 بعد {max_retries} محاولات"
-            send_message(message)
-            logging.error(message)
-            return
-
-        profit = (current_price - entry_price) * sell_amount
-        closed_positions = load_closed_positions()
-        closed_positions.append({
-            "symbol": symbol,
-            "entry_price": entry_price,
-            "exit_price": current_price,
-            "amount": sell_amount,
-            "profit": profit,
-            "closed_at": datetime.utcnow().isoformat()
-        })
-        save_closed_positions(closed_positions)
-        clear_position(symbol)
-        message = f"🏆 تم تحقيق TP2 لـ {symbol} عند {current_price:.4f} | الصفقة مغلقة بالكامل ✅"
-        send_message(message)
-        logging.info(message)
+            send_message(f"❌ فشل تنفيذ البيع الجزئي عند TP1 لـ {symbol}")
         return
 
-    # ✅ تحقق من وقف الخسارة
-    if current_price <= position['stop_loss']:
-        max_retries = 3
-        for attempt in range(max_retries):
-            order, error = place_market_order(symbol, 'sell', sell_amount)
-            if order:
-                break
-            logging.error(f"محاولة {attempt+1} فشلت لبيع كامل لـ {symbol} عند SL: {error}")
-            send_message(f"❌ محاولة {attempt+1} فشلت لبيع كامل لـ {symbol} عند SL: {error}")
-            time.sleep(1)
+    # TP2 full sell and close
+    if current_price >= position['tp2']:
+        order = place_market_order(symbol, 'sell', sell_amount)
+        if order:
+            profit = (current_price - position['entry_price']) * sell_amount
+            closed_positions = load_closed_positions()
+            closed_positions.append({
+                "symbol": symbol,
+                "entry_price": position['entry_price'],
+                "exit_price": current_price,
+                "amount": sell_amount,
+                "profit": profit,
+                "closed_at": datetime.utcnow().isoformat()
+            })
+            save_closed_positions(closed_positions)
+            clear_position(symbol)
+            send_message(f"🏆 تم تحقيق TP2 وبيع كامل الكمية لـ {symbol} | ربح: {profit:.4f} USDT")
         else:
-            message = f"❌ فشل تنفيذ أمر البيع الكامل لـ {symbol} عند وقف الخسارة بعد {max_retries} محاولات"
-            send_message(message)
-            logging.error(message)
-            return
+            send_message(f"❌ فشل تنفيذ البيع الكامل عند TP2 لـ {symbol}")
+        return
 
-        profit = (current_price - entry_price) * sell_amount
-        closed_positions = load_closed_positions()
-        closed_positions.append({
-            "symbol": symbol,
-            "entry_price": entry_price,
-            "exit_price": current_price,
-            "amount": sell_amount,
-            "profit": profit,
-            "closed_at": datetime.utcnow().isoformat()
-        })
-        save_closed_positions(closed_positions)
-        clear_position(symbol)
-        message = f"❌ تم ضرب وقف الخسارة لـ {symbol} عند {current_price:.4f} | الصفقة مغلقة 🚫"
-        send_message(message)
-        logging.info(message)
-
-# اختياري: إشعارات Telegram
-# def send_telegram_message(message, chat_id, bot_token):
-#     import requests
-#     url = f"https://api.telegram.org/bot{bot_token}/sendMessage"
-#     payload = {'chat_id': chat_id, 'text': message}
-#     try:
-#         response = requests.post(url, json=payload)
-#         response.raise_for_status()
-#     except Exception as e:
-#         logging.error(f"فشل إرسال إشعار Telegram: {str(e)}")
-#
-# def send_message_wrapper(message):
-#     send_message(message)  # الدالة الأصلية الممررة إلى manage_position
-#     send_telegram_message(message, "YOUR_CHAT_ID", "YOUR_BOT_TOKEN")
+    # Stop loss triggered
+    if current_price <= position['stop_loss']:
+        order = place_market_order(symbol, 'sell', sell_amount)
+        if order:
+            profit = (current_price - position['entry_price']) * sell_amount
+            closed_positions = load_closed_positions()
+            closed_positions.append({
+                "symbol": symbol,
+                "entry_price": position['entry_price'],
+                "exit_price": current_price,
+                "amount": sell_amount,
+                "profit": profit,
+                "closed_at": datetime.utcnow().isoformat()
+            })
+            save_closed_positions(closed_positions)
+            clear_position(symbol)
+            send_message(f"❌ تم تفعيل وقف الخسارة وبيع كامل الكمية لـ {symbol} | خسارة: {profit:.4f} USDT")
+        else:
+            send_message(f"❌ فشل تنفيذ البيع عند وقف الخسارة لـ {symbol}")
+        return
