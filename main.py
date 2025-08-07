@@ -1,8 +1,8 @@
 import time
-import requests
-from datetime import datetime
-import strategy
 from config import TELEGRAM_TOKEN, TELEGRAM_CHAT_ID, SYMBOLS
+from strategy import check_signal, execute_buy, manage_position, load_position, count_open_positions
+from okx_api import fetch_price
+import requests
 
 def send_telegram_message(text):
     url = f"https://api.telegram.org/bot{TELEGRAM_TOKEN}/sendMessage"
@@ -14,16 +14,17 @@ def send_telegram_message(text):
         print(f"Telegram error: {e}")
 
 def main_loop():
+    print("🚀 بدء تشغيل البوت ...")
     while True:
         for symbol in SYMBOLS:
-            signal = strategy.check_signal(symbol)
+            signal = check_signal(symbol)
             if signal == "buy":
-                order, msg = strategy.execute_buy(symbol)
+                order, msg = execute_buy(symbol)
                 send_telegram_message(msg)
-            strategy.manage_position(symbol, send_telegram_message)
-
-        time.sleep(60)  # انتظر دقيقة قبل التكرار
+            # إدارة الصفقة المفتوحة للرمز
+            manage_position(symbol, send_telegram_message)
+        # انتظر 60 ثانية بين كل دورة
+        time.sleep(60)
 
 if __name__ == "__main__":
-    print("تشغيل البوت...")
     main_loop()
