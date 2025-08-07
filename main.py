@@ -1,9 +1,7 @@
 import time
 import requests
-from datetime import datetime, timedelta
 from config import TELEGRAM_TOKEN, TELEGRAM_CHAT_ID, SYMBOLS
-from strategy import check_signal, execute_buy, manage_position, load_position, count_open_positions, load_closed_positions
-from okx_api import fetch_price
+from strategy import check_signal, execute_buy, manage_position, load_position
 
 def send_telegram_message(text):
     url = f"https://api.telegram.org/bot{TELEGRAM_TOKEN}/sendMessage"
@@ -14,26 +12,25 @@ def send_telegram_message(text):
     except Exception as e:
         print(f"Telegram error: {e}")
 
-def generate_daily_report():
-    report_lines = []
-    open_positions_count = count_open_positions()
-    report_lines.append(f"📊 تقرير الصفقات المفتوحة ({open_positions_count} صفقة):\n")
-
-    if open_positions_count == 0:
-        report_lines.append("✅ لا توجد صفقات مفتوحة حالياً.")
-    else:
+def main_loop():
+    while True:
         for symbol in SYMBOLS:
-            pos = load_position(symbol)
-            if pos:
-                try:
-                    current_price = fetch_price(symbol)
-                except:
-                    current_price = "N/A"
+            # تحقق هل هناك صفقة مفتوحة حالياً
+            position = load_position(symbol)
 
-                entry = pos.get('entry_price', 0)
-                stop = pos.get('stop_loss', 0)
-                tp1 = pos.get('tp1', 0)
-                tp2 = pos.get('tp2', 0)
-                amount = pos.get('amount', 0)
-                tp1_hit = pos.get('tp1_hit', False)
-                trailing = pos.get('trailing_active', False)
+            if position:
+                # إدارة الصفقة المفتوحة (متابعة TP و SL)
+                manage_position(symbol, send_telegram_message)
+            else:
+                # تحقق الإشارة للشراء
+                signal = check_signal(symbol)
+                if signal == "buy":
+                    order, msg = execute_buy(symbol)
+                    send_telegram_message(msg)
+
+        # انتظر 60 ثانية بين كل دورة
+        time.sleep(60)
+
+if __name__ == "__main__":
+    print("🚀 بدء بوت التداول التلقائي...")
+    main_loop()
