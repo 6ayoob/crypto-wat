@@ -1,59 +1,87 @@
 import pandas as pd
 import json
 import os
+from datetime import datetime
 from okx_api import fetch_ohlcv, fetch_price, place_market_order, fetch_balance
 from config import TRADE_AMOUNT_USDT, MAX_OPEN_POSITIONS, SYMBOLS
-from datetime import datetime
 
 POSITIONS_DIR = "positions"
 CLOSED_POSITIONS_FILE = "closed_positions.json"
 
+# ===============================
+# 📂 التعامل مع ملفات الصفقات
+# ===============================
+
+def ensure_dirs():
+    os.makedirs(POSITIONS_DIR, exist_ok=True)
+
 def get_position_filename(symbol):
+    ensure_dirs()
     symbol = symbol.replace("/", "_")
     return f"{POSITIONS_DIR}/{symbol}.json"
 
 def load_position(symbol):
-    file = get_position_filename(symbol)
-    if os.path.exists(file):
-        with open(file, 'r') as f:
-            return json.load(f)
+    try:
+        file = get_position_filename(symbol)
+        if os.path.exists(file):
+            with open(file, 'r') as f:
+                return json.load(f)
+    except Exception as e:
+        print(f"⚠️ خطأ في قراءة الصفقة: {e}")
     return None
 
 def save_position(symbol, position):
-    os.makedirs(POSITIONS_DIR, exist_ok=True)
-    file = get_position_filename(symbol)
-    with open(file, 'w') as f:
-        json.dump(position, f)
+    try:
+        ensure_dirs()
+        file = get_position_filename(symbol)
+        with open(file, 'w', encoding='utf-8') as f:
+            json.dump(position, f, indent=2, ensure_ascii=False)
+    except Exception as e:
+        print(f"⚠️ خطأ في حفظ الصفقة: {e}")
 
 def clear_position(symbol):
-    file = get_position_filename(symbol)
-    if os.path.exists(file):
-        os.remove(file)
+    try:
+        file = get_position_filename(symbol)
+        if os.path.exists(file):
+            os.remove(file)
+    except Exception as e:
+        print(f"⚠️ خطأ في حذف الصفقة: {e}")
 
 def count_open_positions():
-    os.makedirs(POSITIONS_DIR, exist_ok=True)
+    ensure_dirs()
     return len([f for f in os.listdir(POSITIONS_DIR) if f.endswith(".json")])
 
 def load_closed_positions():
-    if os.path.exists(CLOSED_POSITIONS_FILE):
-        with open(CLOSED_POSITIONS_FILE, 'r') as f:
-            return json.load(f)
+    try:
+        if os.path.exists(CLOSED_POSITIONS_FILE):
+            with open(CLOSED_POSITIONS_FILE, 'r', encoding='utf-8') as f:
+                return json.load(f)
+    except Exception as e:
+        print(f"⚠️ خطأ في قراءة الصفقات المغلقة: {e}")
     return []
 
 def save_closed_positions(closed_positions):
-    with open(CLOSED_POSITIONS_FILE, 'w') as f:
-        json.dump(closed_positions, f, indent=2)
+    try:
+        with open(CLOSED_POSITIONS_FILE, 'w', encoding='utf-8') as f:
+            json.dump(closed_positions, f, indent=2, ensure_ascii=False)
+    except Exception as e:
+        print(f"⚠️ خطأ في حفظ الصفقات المغلقة: {e}")
+
+# ===============================
+# 📊 المؤشرات الفنية
+# ===============================
 
 def ema(series, period):
     return series.ewm(span=period, adjust=False).mean()
 
 def rsi(series, period=14):
     delta = series.diff()
-    gain = (delta.where(delta > 0, 0)).rolling(period).mean()
-    loss = (-delta.where(delta < 0, 0)).rolling(period).mean()
-    rs = gain / loss
-    rsi_val = 100 - (100 / (1 + rs))
-    return rsi_val
+    gain = delta.where(delta > 0, 0.0)
+    loss = -delta.where(delta < 0, 0.0)
+    avg_gain = gain.ewm(alpha=1/period, adjust=False).mean()
+    avg_loss = loss.ewm(alpha=1/period, adjust=False).mean()
+    rs = avg_gain / avg_loss
+    return 100 - (100 / (1 + rs))
 
 def calculate_indicators(df):
     df['ema9'] = ema(df['close'], 9)
@@ -61,71 +89,92 @@ def calculate_indicators(df):
     df['rsi'] = rsi(df['close'], 14)
     return df
 
+# ===============================
+# 🎯 منطق الإشارة
+# ===============================
+
 def check_signal(symbol):
-    data_5m = fetch_ohlcv(symbol, '5m', 100)
-    if not data_5m:
-        return None
+    try:
+        data_5m = fetch_ohlcv(symbol, '5m', 100)
+        if not data_5m:
+            return None
 
-    df = pd.DataFrame(data_5m, columns=['timestamp','open','high','low','close','volume'])
-    df = calculate_indicators(df)
+        df = pd.DataFrame(data_5m, columns=['timestamp', 'open', 'high', 'low', 'close', 'volume'])
+        df = calculate_indicators(df)
 
-    last = df.iloc[-1]
-    prev = df.iloc[-2]
+        last = df.iloc[-1]
+        prev = df.iloc[-2]
 
-    if (prev['ema9'] < prev['ema21']) and (last['ema9'] > last['ema21']) and (last['rsi'] > 50):
-        return "buy"
+        # فلتر الحجم: الحجم الأخير يجب أن يكون أعلى من متوسط 20 شمعة
+        avg_vol = df['volume'].rolling(20).mean().iloc[-1]
+        if last['volume'] < avg_vol:
+            return None
+
+        if (prev['ema9'] < prev['ema21']) and (last['ema9'] > last['ema21']) and (last['rsi'] > 50):
+            return "buy"
+    except Exception as e:
+        print(f"⚠️ خطأ في فحص الإشارة لـ {symbol}: {e}")
     return None
 
+# ===============================
+# 🛒 تنفيذ الشراء
+# ===============================
+
 def execute_buy(symbol):
-    if count_open_positions() >= MAX_OPEN_POSITIONS:
-        return None, f"🚫 وصلت للحد الأقصى للصفقات المفتوحة ({MAX_OPEN_POSITIONS})."
+    try:
+        if count_open_positions() >= MAX_OPEN_POSITIONS:
+            return None, f"🚫 وصلت للحد الأقصى للصفقات المفتوحة ({MAX_OPEN_POSITIONS})."
 
-    price = fetch_price(symbol)
-    usdt_balance = fetch_balance('USDT')
+        price = fetch_price(symbol)
+        usdt_balance = fetch_balance('USDT')
 
-    if usdt_balance < TRADE_AMOUNT_USDT:
-        return None, f"🚫 رصيد USDT غير كافٍ لشراء {symbol}."
+        if usdt_balance < TRADE_AMOUNT_USDT:
+            return None, f"🚫 رصيد USDT غير كافٍ لشراء {symbol}."
 
-    amount = TRADE_AMOUNT_USDT / price
-    order = place_market_order(symbol, 'buy', amount)
+        amount = TRADE_AMOUNT_USDT / price
+        order = place_market_order(symbol, 'buy', amount)
 
-    stop_loss = price * 0.98  # 2% وقف خسارة
-    take_profit = price * 1.04  # 4% هدف ربح
+        stop_loss = price * 0.98  # 2% وقف خسارة
+        take_profit = price * 1.04  # 4% هدف ربح
 
-    position = {
-        "symbol": symbol,
-        "amount": amount,
-        "entry_price": price,
-        "stop_loss": stop_loss,
-        "take_profit": take_profit,
-    }
+        position = {
+            "symbol": symbol,
+            "amount": amount,
+            "entry_price": price,
+            "stop_loss": stop_loss,
+            "take_profit": take_profit,
+        }
 
-    save_position(symbol, position)
-    return order, f"✅ تم شراء {symbol} بسعر {price:.4f}\n🎯 هدف الربح: {take_profit:.4f} (+4%) | 🛑 وقف الخسارة: {stop_loss:.4f} (-2%)"
+        save_position(symbol, position)
+        return order, f"✅ تم شراء {symbol} بسعر {price:.4f}\n🎯 هدف الربح: {take_profit:.4f} (+4%) | 🛑 وقف الخسارة: {stop_loss:.4f} (-2%)"
+    except Exception as e:
+        return None, f"⚠️ خطأ أثناء تنفيذ الشراء لـ {symbol}: {e}"
+
+# ===============================
+# 📈 إدارة الصفقات
+# ===============================
 
 def manage_position(symbol):
-    position = load_position(symbol)
-    if not position:
-        return False
+    try:
+        position = load_position(symbol)
+        if not position:
+            return False
 
-    current_price = fetch_price(symbol)
-    amount = position['amount']
-    entry_price = position['entry_price']
+        current_price = fetch_price(symbol)
+        amount = position['amount']
+        entry_price = position['entry_price']
 
-    base_asset = symbol.split('/')[0]
-    actual_balance = fetch_balance(base_asset)
-    sell_amount = min(amount, actual_balance)
-    sell_amount = round(sell_amount, 6)
+        base_asset = symbol.split('/')[0]
+        actual_balance = fetch_balance(base_asset)
+        sell_amount = round(min(amount, actual_balance), 6)
 
-    if current_price >= position['take_profit']:
-        order = place_market_order(symbol, 'sell', sell_amount)
-        if order:
-            profit = (current_price - entry_price) * sell_amount
+        def close_trade(exit_price):
+            profit = (exit_price - entry_price) * sell_amount
             closed_positions = load_closed_positions()
             closed_positions.append({
                 "symbol": symbol,
                 "entry_price": entry_price,
-                "exit_price": current_price,
+                "exit_price": exit_price,
                 "amount": sell_amount,
                 "profit": profit,
                 "closed_at": datetime.utcnow().isoformat()
@@ -134,21 +183,17 @@ def manage_position(symbol):
             clear_position(symbol)
             return True
 
-    if current_price <= position['stop_loss']:
-        order = place_market_order(symbol, 'sell', sell_amount)
-        if order:
-            profit = (current_price - entry_price) * sell_amount
-            closed_positions = load_closed_positions()
-            closed_positions.append({
-                "symbol": symbol,
-                "entry_price": entry_price,
-                "exit_price": current_price,
-                "amount": sell_amount,
-                "profit": profit,
-                "closed_at": datetime.utcnow().isoformat()
-            })
-            save_closed_positions(closed_positions)
-            clear_position(symbol)
-            return True
+        if current_price >= position['take_profit']:
+            order = place_market_order(symbol, 'sell', sell_amount)
+            if order:
+                return close_trade(current_price)
+
+        if current_price <= position['stop_loss']:
+            order = place_market_order(symbol, 'sell', sell_amount)
+            if order:
+                return close_trade(current_price)
+
+    except Exception as e:
+        print(f"⚠️ خطأ في إدارة الصفقة لـ {symbol}: {e}")
 
     return False
