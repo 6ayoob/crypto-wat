@@ -15,7 +15,7 @@ def send_telegram_message(text):
         print(f"Telegram error: {e}")
 
 if __name__ == "__main__":
-    send_telegram_message("🚀 وماتوفيقي بالا بالله رب العالمين  EMA9/EMA21 + RSI مع هدف واحد ووقف خسارة ✅")
+    send_telegram_message("🚀 اثير تقول هلا بالشيخ   EMA9/EMA21 + RSI مع هدف واحد ووقف خسارة ✅")
 
     while True:
         try:
