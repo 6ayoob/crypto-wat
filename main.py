@@ -1,5 +1,4 @@
 import time
-from datetime import datetime, timedelta
 from config import TELEGRAM_TOKEN, TELEGRAM_CHAT_ID, SYMBOLS
 from strategy import check_signal, execute_buy, manage_position, load_position
 import requests
