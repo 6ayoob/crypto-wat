@@ -25,6 +25,16 @@ SYMBOLS = [
   # AI / Web3 / Others (10)
   "RNDR/USDT", "AMC/USDT", "CST/USDT", "GLMR/USDT", "T/USDT",
   "PSTAKE/USDT", "BADGER/USDT", "PHA/USDT", "REX/USDT", "REN/USDT",
+  SYMBOLS = [
+    # رموز ميم من OKX
+    "DOGE/USDT", "SHIB/USDT", "PEPE/USDT", "PENGU/USDT", 
+    "BONK/USDT", "TRUMP/USDT", "FLOKI/USDT", "FARTCOIN/USDT",
+    "WIF/USDT", "TURBO/USDT", "NOT/USDT", "ORDI/USDT",
+    "DEGEN/USDT", "MEME/USDT", "DOGS/USDT", "VINE/USDT",
+    "CAT/USDT", "ELON/USDT",
+    # ... ويمكنك إضافة باقي العملات السابقة حسب رغبتك
+]
+
   # باقي العملات المشهورة أو الطلب منك...
 ]
 
