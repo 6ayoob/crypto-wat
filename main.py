@@ -1,9 +1,9 @@
 import time
-import requests
 from datetime import datetime, timedelta
 from config import TELEGRAM_TOKEN, TELEGRAM_CHAT_ID, SYMBOLS
 from strategy import check_signal, execute_buy, manage_position, load_position, count_open_positions, load_closed_positions
 from okx_api import fetch_price
+import requests
 
 def send_telegram_message(text):
     url = f"https://api.telegram.org/bot{TELEGRAM_TOKEN}/sendMessage"
@@ -68,7 +68,7 @@ def generate_daily_report():
     return "\n".join(report_lines)
 
 if __name__ == "__main__":
-    send_telegram_message("🚀 بدأ البوت بمراقبة الأسواق باستخدام استراتيجية TP1/TP2 + Trailing ✅")
+    send_telegram_message("🚀 بدأ البوت بمراقبة الأسواق باستخدام استراتيجية مبسطة وآمنة ✅")
     last_report_date = None
 
     while True:
@@ -76,6 +76,7 @@ if __name__ == "__main__":
             now_utc = datetime.utcnow()
             now_saudi = now_utc + timedelta(hours=3)
 
+            # إرسال التقرير اليومي الساعة 3 صباحاً بتوقيت السعودية مرة واحدة يومياً
             if now_saudi.hour == 3 and (last_report_date is None or last_report_date != now_saudi.date()):
                 report = generate_daily_report()
                 send_telegram_message(report)
