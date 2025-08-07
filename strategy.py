@@ -89,8 +89,8 @@ def execute_buy(symbol):
     amount = TRADE_AMOUNT_USDT / price
     order = place_market_order(symbol, 'buy', amount)
 
-    stop_loss = price * 0.98
-    take_profit = price * 1.04
+    stop_loss = price * 0.98  # 2% وقف خسارة
+    take_profit = price * 1.04  # 4% هدف ربح
 
     position = {
         "symbol": symbol,
@@ -106,7 +106,7 @@ def execute_buy(symbol):
 def manage_position(symbol):
     position = load_position(symbol)
     if not position:
-        return
+        return False
 
     current_price = fetch_price(symbol)
     amount = position['amount']
@@ -133,6 +133,7 @@ def manage_position(symbol):
             save_closed_positions(closed_positions)
             clear_position(symbol)
             return True
+
     if current_price <= position['stop_loss']:
         order = place_market_order(symbol, 'sell', sell_amount)
         if order:
@@ -149,4 +150,5 @@ def manage_position(symbol):
             save_closed_positions(closed_positions)
             clear_position(symbol)
             return True
+
     return False
