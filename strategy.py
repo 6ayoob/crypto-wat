@@ -4,7 +4,7 @@ import json
 import os
 from okx_api import fetch_ohlcv, fetch_price, place_market_order, fetch_balance
 from config import TRADE_AMOUNT_USDT, MAX_OPEN_POSITIONS, TELEGRAM_TOKEN, TELEGRAM_CHAT_ID, SYMBOLS
-from datetime import datetime
+from datetime import datetime, timedelta
 import requests
 import time
 
@@ -59,17 +59,9 @@ def save_closed_positions(closed_positions):
 def ema(series, period):
     return series.ewm(span=period, adjust=False).mean()
 
-def rsi(series, period=14):
-    delta = series.diff()
-    gain = (delta.where(delta > 0, 0)).rolling(period).mean()
-    loss = (-delta.where(delta < 0, 0)).rolling(period).mean()
-    rs = gain / loss
-    return 100 - (100 / (1 + rs))
-
 def calculate_indicators(df):
     df['ema9'] = ema(df['close'], 9)
     df['ema21'] = ema(df['close'], 21)
-    df['rsi'] = rsi(df['close'], 14)
     return df
 
 def check_signal(symbol):
@@ -83,10 +75,8 @@ def check_signal(symbol):
     last = df.iloc[-1]
     prev = df.iloc[-2]
 
-    # شرط شراء: EMA9 يعبر EMA21 من الأسفل للأعلى و RSI > 50
-    cond_buy = (prev['ema9'] < prev['ema21']) and (last['ema9'] > last['ema21']) and (last['rsi'] > 50)
-
-    if cond_buy:
+    # شرط شراء مبسط: EMA9 تعبر EMA21 من الأسفل للأعلى
+    if (prev['ema9'] < prev['ema21']) and (last['ema9'] > last['ema21']):
         return "buy"
     return None
 
@@ -103,7 +93,7 @@ def execute_buy(symbol):
     amount = TRADE_AMOUNT_USDT / price
     order = place_market_order(symbol, 'buy', amount)
 
-    stop_loss = price * 0.98  # وقف خسارة 2% تحت سعر الدخول
+    stop_loss = price * 0.98  # وقف خسارة 2% تحت سعر الدخول (أكثر أمان)
     take_profit = price * 1.04  # هدف ربح 4%
 
     position = {
@@ -172,7 +162,9 @@ def manage_position(symbol):
         return
 
 if __name__ == "__main__":
-    send_telegram_message("🚀 بدأ البوت بمراقبة الأسواق باستخدام استراتيجية EMA + RSI ✅")
+    send_telegram_message("🚀 بدأ البوت بمراقبة الأسواق باستخدام استراتيجية أبسط وأكثر أمانًا ✅")
+    last_report_date = None
+
     while True:
         try:
             for symbol in SYMBOLS:
@@ -185,7 +177,7 @@ if __name__ == "__main__":
                         if message:
                             send_telegram_message(message)
                 else:
-                    manage_position(symbol)
+                    manage_position(symbol)  # استدعاء بديل
 
         except Exception as e:
             import traceback
