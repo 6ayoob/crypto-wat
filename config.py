@@ -25,7 +25,6 @@ SYMBOLS = [
   # AI / Web3 / Others (10)
   "RNDR/USDT", "AMC/USDT", "CST/USDT", "GLMR/USDT", "T/USDT",
   "PSTAKE/USDT", "BADGER/USDT", "PHA/USDT", "REX/USDT", "REN/USDT",
-  SYMBOLS = [
     # رموز ميم من OKX
     "DOGE/USDT", "SHIB/USDT", "PEPE/USDT", "PENGU/USDT", 
     "BONK/USDT", "TRUMP/USDT", "FLOKI/USDT", "FARTCOIN/USDT",
@@ -35,12 +34,10 @@ SYMBOLS = [
     # ... ويمكنك إضافة باقي العملات السابقة حسب رغبتك
 ]
 
-  # باقي العملات المشهورة أو الطلب منك...
-]
 
 
 TIMEFRAME = "5m"
-TRADE_AMOUNT_USDT = 25
+TRADE_AMOUNT_USDT = 20
 STOP_LOSS_PCT = 0.02
 TAKE_PROFIT_PCT = 0.06
 MAX_OPEN_POSITIONS = 4
