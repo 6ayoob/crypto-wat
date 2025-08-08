@@ -90,8 +90,44 @@ def calculate_indicators(df):
     return df
 
 # ===============================
-# 🎯 منطق الإشارة
+# 🔎 دعم ومقاومة (Support & Resistance)
 # ===============================
+
+def get_support_resistance(df, window=50):
+    """
+    يحسب مستوى الدعم والمقاومة من بيانات الشموع.
+    نستخدم نافذة (window) من الشموع السابقة (نستبعد الشمعة الحالية عند الحساب).
+    يعيد (support, resistance) أو (None, None) إذا البيانات غير كافية.
+    """
+    try:
+        n = len(df)
+        if n < 5:
+            return None, None
+
+        df_prev = df.iloc[:-1].copy()
+        if len(df_prev) < 1:
+            return None, None
+
+        use_window = min(window, len(df_prev))
+
+        resistance = df_prev['high'].rolling(use_window).max().iloc[-1]
+        support = df_prev['low'].rolling(use_window).min().iloc[-1]
+
+        if pd.isna(support) or pd.isna(resistance):
+            return None, None
+
+        return support, resistance
+    except Exception as e:
+        print(f"⚠️ خطأ في حساب الدعم/المقاومة: {e}")
+        return None, None
+
+# ===============================
+# 🎯 منطق الإشارة مع فلتر SR
+# ===============================
+
+SR_WINDOW = 50
+RESISTANCE_BUFFER = 0.005  # 0.5% لا نشترِي إذا السعر قريب جدًا من المقاومة
+SUPPORT_BUFFER = 0.002     # 0.2% نطلب أن السعر يكون فوق الدعم بقليل
 
 def check_signal(symbol):
     try:
@@ -102,13 +138,26 @@ def check_signal(symbol):
         df = pd.DataFrame(data_5m, columns=['timestamp', 'open', 'high', 'low', 'close', 'volume'])
         df = calculate_indicators(df)
 
+        if len(df) < 5:
+            return None
+
         last = df.iloc[-1]
         prev = df.iloc[-2]
 
-        # فلتر الحجم: الحجم الأخير يجب أن يكون أعلى من متوسط 20 شمعة
-        avg_vol = df['volume'].rolling(20).mean().iloc[-1]
-        if last['volume'] < avg_vol:
-            return None
+        # فلتر الحجم: الحجم الأخير يجب أن يكون أعلى من متوسط 20 شمعة (إن أمكن)
+        if len(df['volume']) >= 20:
+            avg_vol = df['volume'].rolling(20).mean().iloc[-1]
+            if pd.notna(avg_vol) and last['volume'] < avg_vol:
+                return None
+
+        support, resistance = get_support_resistance(df, window=SR_WINDOW)
+        last_price = float(last['close'])
+
+        if support is not None and resistance is not None:
+            if last_price >= resistance * (1 - RESISTANCE_BUFFER):
+                return None
+            if last_price <= support * (1 + SUPPORT_BUFFER):
+                return None
 
         if (prev['ema9'] < prev['ema21']) and (last['ema9'] > last['ema21']) and (last['rsi'] > 50):
             return "buy"
@@ -117,7 +166,7 @@ def check_signal(symbol):
     return None
 
 # ===============================
-# 🛒 تنفيذ الشراء
+# 🛒 تنفيذ الشراء (هدف ربح 4%)
 # ===============================
 
 def execute_buy(symbol):
@@ -146,7 +195,7 @@ def execute_buy(symbol):
         }
 
         save_position(symbol, position)
-        return order, f"✅ تم شراء {symbol} بسعر {price:.4f}\n🎯 هدف الربح: {take_profit:.4f} (+4%) | 🛑 وقف الخسارة: {stop_loss:.4f} (-2%)"
+        return order, f"✅ تم شراء {symbol} بسعر {price:.8f}\n🎯 هدف الربح: {take_profit:.8f} (+4%) | 🛑 وقف الخسارة: {stop_loss:.8f} (-2%)"
     except Exception as e:
         return None, f"⚠️ خطأ أثناء تنفيذ الشراء لـ {symbol}: {e}"
 
