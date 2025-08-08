@@ -3,7 +3,7 @@ from config import TELEGRAM_TOKEN, TELEGRAM_CHAT_ID, SYMBOLS
 from strategy import check_signal, execute_buy, manage_position, load_position
 import requests
 
-MAX_OPEN_POSITIONS = 3  # الحد الأقصى للصفقات المفتوحة في نفس الوقت
+MAX_OPEN_POSITIONS = 1  # الحد الأقصى للصفقات المفتوحة في نفس الوقت
 
 def send_telegram_message(text):
     url = f"https://api.telegram.org/bot{TELEGRAM_TOKEN}/sendMessage"
