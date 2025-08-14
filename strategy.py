@@ -87,6 +87,7 @@ def calculate_indicators(df):
     df['ema9'] = ema(df['close'], 9)
     df['ema21'] = ema(df['close'], 21)
     df['rsi'] = rsi(df['close'], 14)
+    df['ema50'] = ema(df['close'], 50)  # EMA50 لتأكيد الاتجاه
     return df
 
 # ===============================
@@ -94,11 +95,6 @@ def calculate_indicators(df):
 # ===============================
 
 def get_support_resistance(df, window=50):
-    """
-    يحسب مستوى الدعم والمقاومة من بيانات الشموع.
-    نستخدم نافذة (window) من الشموع السابقة (نستبعد الشمعة الحالية عند الحساب).
-    يعيد (support, resistance) أو (None, None) إذا البيانات غير كافية.
-    """
     try:
         n = len(df)
         if n < 5:
@@ -122,34 +118,43 @@ def get_support_resistance(df, window=50):
         return None, None
 
 # ===============================
-# 🎯 منطق الإشارة مع فلتر SR
+# 🎯 منطق الإشارة مع فلتر SR وتحسينات
 # ===============================
 
 SR_WINDOW = 50
-RESISTANCE_BUFFER = 0.005  # 0.5% لا نشترِي إذا السعر قريب جدًا من المقاومة
-SUPPORT_BUFFER = 0.002     # 0.2% نطلب أن السعر يكون فوق الدعم بقليل
+RESISTANCE_BUFFER = 0.005  # 0.5%
+SUPPORT_BUFFER = 0.002     # 0.2%
 
 def check_signal(symbol):
     try:
-        data_5m = fetch_ohlcv(symbol, '5m', 100)
+        data_5m = fetch_ohlcv(symbol, '5m', 150)
         if not data_5m:
             return None
 
         df = pd.DataFrame(data_5m, columns=['timestamp', 'open', 'high', 'low', 'close', 'volume'])
         df = calculate_indicators(df)
 
-        if len(df) < 5:
+        if len(df) < 50:
             return None
 
         last = df.iloc[-1]
         prev = df.iloc[-2]
 
-        # فلتر الحجم: الحجم الأخير يجب أن يكون أعلى من متوسط 20 شمعة (إن أمكن)
+        # فلتر الحجم + الشمعة الصاعدة
         if len(df['volume']) >= 20:
             avg_vol = df['volume'].rolling(20).mean().iloc[-1]
-            if pd.notna(avg_vol) and last['volume'] < avg_vol:
+            if pd.notna(avg_vol) and (last['volume'] < avg_vol or last['close'] <= last['open']):
                 return None
 
+        # فلتر الاتجاه: السعر فوق EMA50
+        if last['close'] < last['ema50']:
+            return None
+
+        # فلتر RSI بين 50 و70
+        if not (50 < last['rsi'] < 70):
+            return None
+
+        # فلتر الدعم والمقاومة
         support, resistance = get_support_resistance(df, window=SR_WINDOW)
         last_price = float(last['close'])
 
@@ -159,14 +164,15 @@ def check_signal(symbol):
             if last_price <= support * (1 + SUPPORT_BUFFER):
                 return None
 
-        if (prev['ema9'] < prev['ema21']) and (last['ema9'] > last['ema21']) and (last['rsi'] > 50):
+        # إشارة الدخول: تقاطع EMA9 مع EMA21 صعودي
+        if (prev['ema9'] < prev['ema21']) and (last['ema9'] > last['ema21']):
             return "buy"
     except Exception as e:
         print(f"⚠️ خطأ في فحص الإشارة لـ {symbol}: {e}")
     return None
 
 # ===============================
-# 🛒 تنفيذ الشراء (هدف ربح 4%)
+# 🛒 تنفيذ الشراء مع وقف خسارة ديناميكي وهدف 1:2
 # ===============================
 
 def execute_buy(symbol):
@@ -183,8 +189,14 @@ def execute_buy(symbol):
         amount = TRADE_AMOUNT_USDT / price
         order = place_market_order(symbol, 'buy', amount)
 
-        stop_loss = price * 0.98  # 2% وقف خسارة
-        take_profit = price * 1.04  # 4% هدف ربح
+        # وقف الخسارة: عند آخر قاع (swing low) خلال 10 شمعات
+        data_5m = fetch_ohlcv(symbol, '5m', 20)
+        df = pd.DataFrame(data_5m, columns=['timestamp', 'open', 'high', 'low', 'close', 'volume'])
+        swing_low = df['low'].rolling(10).min().iloc[-2]
+
+        stop_loss = float(swing_low)
+        risk = price - stop_loss
+        take_profit = price + (risk * 2)  # RR 1:2
 
         position = {
             "symbol": symbol,
@@ -195,7 +207,7 @@ def execute_buy(symbol):
         }
 
         save_position(symbol, position)
-        return order, f"✅ تم شراء {symbol} بسعر {price:.8f}\n🎯 هدف الربح: {take_profit:.8f} (+4%) | 🛑 وقف الخسارة: {stop_loss:.8f} (-2%)"
+        return order, f"✅ تم شراء {symbol} بسعر {price:.8f}\n🎯 هدف الربح: {take_profit:.8f} | 🛑 وقف الخسارة: {stop_loss:.8f}"
     except Exception as e:
         return None, f"⚠️ خطأ أثناء تنفيذ الشراء لـ {symbol}: {e}"
 
