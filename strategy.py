@@ -5,13 +5,27 @@ import pandas as pd
 from datetime import datetime, timedelta
 from okx_api import fetch_ohlcv, fetch_price, place_market_order, fetch_balance
 from config import TRADE_AMOUNT_USDT, MAX_OPEN_POSITIONS, SYMBOLS
+import requests
+import threading
 
 # ===============================
-# 📂 ملفات الصفقات
+# 📂 ملفات الصفقات والإشعارات
 # ===============================
 POSITIONS_DIR = "positions"
 CLOSED_POSITIONS_FILE = "closed_positions.json"
 RISK_STATE_FILE = "risk_state.json"
+DAILY_REPORT_FILE = "daily_report.json"
+
+TELEGRAM_TOKEN = "YOUR_TELEGRAM_BOT_TOKEN"
+TELEGRAM_CHAT_ID = "YOUR_CHAT_ID"
+
+def send_telegram(msg):
+    url = f"https://api.telegram.org/bot{TELEGRAM_TOKEN}/sendMessage"
+    payload = {"chat_id": TELEGRAM_CHAT_ID, "text": msg, "parse_mode": "HTML"}
+    try:
+        requests.post(url, data=payload)
+    except:
+        print("⚠️ فشل إرسال رسالة Telegram")
 
 def ensure_dirs():
     os.makedirs(POSITIONS_DIR, exist_ok=True)
@@ -121,8 +135,6 @@ PARTIAL_FRACTION = 0.5
 DAILY_MAX_LOSS_USDT = 50
 MAX_CONSECUTIVE_LOSSES = 3
 COOLDOWN_MINUTES_AFTER_HALT = 120
-MIN_USDT_5M_LIQUIDITY = 30000
-
 MAX_TRADES_PER_DAY = 5
 
 # ===============================
@@ -165,7 +177,7 @@ def trigger_cooldown(reason="risk_halt"):
     until = datetime.utcnow() + timedelta(minutes=COOLDOWN_MINUTES_AFTER_HALT)
     s["blocked_until"] = until.isoformat()
     save_risk_state(s)
-    print(f"⏸️ تفعيل تهدئة حتى {until.isoformat()} ({reason}).")
+    send_telegram(f"⏸️ تفعيل تهدئة حتى {until.isoformat()} ({reason})")
 
 def register_trade_result(total_pnl_usdt):
     s = load_risk_state()
@@ -199,7 +211,7 @@ def check_signal(symbol):
     price = float(last['close'])
     if support and resistance:
         if price>=resistance*(1-RESISTANCE_BUFFER) or price<=support*(1+SUPPORT_BUFFER): return None
-    # تقاطع EMA9 و EMA21
+    # تقاطع EMA9 و EMA21 و MACD
     if prev['ema9']<prev['ema21'] and last['ema9']>last['ema21'] and last['macd']>last['macd_signal']:
         return "buy"
     return None
@@ -242,27 +254,26 @@ def execute_buy(symbol):
     s["trades_today"] += 1
     save_risk_state(s)
 
-    return order,f"✅ تم شراء {symbol} بسعر {price:.8f} | TP:{take_profit:.8f} | SL:{stop_loss:.8f}"
+    # إشعار Telegram مباشر
+    send_telegram(f"✅ تم شراء {symbol} بسعر {price:.8f} | TP:{take_profit:.8f} | SL:{stop_loss:.8f}")
+    return order,f"✅ تم شراء {symbol}"
+
 # ===============================
 # 🔧 إدارة الصفقات تلقائيًا
 # ===============================
 def manage_position(symbol):
     try:
         position = load_position(symbol)
-        if not position:
-            return False
-
+        if not position: return False
         current_price = fetch_price(symbol)
         amount = position['amount']
         entry_price = position['entry_price']
-
         base_asset = symbol.split('/')[0]
         actual_balance = fetch_balance(base_asset)
         sell_amount = min(amount, actual_balance)
-
         closed = False
 
-        # 🔹 Partial TP
+        # Partial TP
         if not position.get("partial_done") and current_price >= entry_price + (position['take_profit']-entry_price)/2:
             partial_amount = sell_amount * PARTIAL_FRACTION
             order = place_market_order(symbol,'sell',partial_amount)
@@ -273,38 +284,36 @@ def manage_position(symbol):
                 closed = True
                 pnl = (current_price - entry_price) * partial_amount
                 register_trade_result(pnl)
-                print(f"📌 Partial TP {symbol}: {pnl:.2f} USDT")
-        
-        # 🔹 Take Profit
+                send_telegram(f"📌 Partial TP {symbol}: {pnl:.2f} USDT")
+
+        # Take Profit
         if current_price >= position['take_profit']:
             order = place_market_order(symbol,'sell',sell_amount)
             if order:
                 pnl = (current_price - entry_price) * sell_amount
                 close_trade(symbol,pnl)
                 closed = True
-                print(f"🎯 Take Profit {symbol}: {pnl:.2f} USDT")
-        
-        # 🔹 Stop Loss
+                send_telegram(f"🎯 Take Profit {symbol}: {pnl:.2f} USDT")
+
+        # Stop Loss
         elif current_price <= position['stop_loss']:
             order = place_market_order(symbol,'sell',sell_amount)
             if order:
                 pnl = (current_price - entry_price) * sell_amount
                 close_trade(symbol,pnl)
                 closed = True
-                print(f"🛑 Stop Loss {symbol}: {pnl:.2f} USDT")
-                # التحقق من الخسائر المتتالية
+                send_telegram(f"🛑 Stop Loss {symbol}: {pnl:.2f} USDT")
                 s = load_risk_state()
                 if s.get("consecutive_losses",0) >= MAX_CONSECUTIVE_LOSSES:
                     trigger_cooldown("max_consecutive_losses")
-        
-        # 🔹 Trailing Stop
+
+        # Trailing Stop
         elif current_price > position['trailing_stop']/(1-TRAILING_DISTANCE):
             position['trailing_stop'] = current_price*(1-TRAILING_DISTANCE)
             save_position(symbol,position)
-        
+
     except Exception as e:
         print(f"⚠️ خطأ في إدارة الصفقة لـ {symbol}: {e}")
-
     return closed
 
 # ===============================
@@ -327,6 +336,28 @@ def close_trade(symbol,pnl):
     clear_position(symbol)
 
 # ===============================
+# 🔄 تقرير يومي على Telegram
+# ===============================
+def send_daily_report():
+    closed_positions = load_closed_positions()
+    today_str = _today_str()
+    daily_trades = [c for c in closed_positions if c['closed_at'].startswith(today_str)]
+    if not daily_trades:
+        send_telegram(f"📊 تقرير اليوم {today_str}\nلا توجد صفقات اليوم.")
+        return
+
+    msg = f"📊 تقرير اليوم {today_str}\n\n"
+    msg += "الرمز | الكمية | سعر الدخول | سعر الخروج | الربح\n"
+    msg += "------------------------------------------\n"
+    total_pnl = 0
+    for t in daily_trades:
+        pnl = t['profit']
+        total_pnl += pnl
+        msg += f"{t['symbol']} | {t['amount']:.6f} | {t['entry_price']:.2f} | {t['exit_price']:.2f} | {pnl:.2f}\n"
+    msg += f"\n💰 صافي الربح اليوم: {total_pnl:.2f} USDT"
+    send_telegram(msg)
+
+# ===============================
 # 🔄 حلقة التشغيل التلقائي
 # ===============================
 def run_bot():
@@ -337,11 +368,28 @@ def run_bot():
                 order,msg = execute_buy(symbol)
                 print(msg)
             manage_position(symbol)
-        time.sleep(60)  # تكرار كل دقيقة
+        time.sleep(60)
+
+# ===============================
+# 🔄 جدولة التقرير اليومي
+# ===============================
+def schedule_daily_report(hour=9, minute=0):
+    def report_loop():
+        while True:
+            now = datetime.utcnow()
+            target = now.replace(hour=hour, minute=minute, second=0, microsecond=0)
+            if now >= target: target += timedelta(days=1)
+            sleep_seconds = (target - now).total_seconds()
+            time.sleep(sleep_seconds)
+            send_daily_report()
+    t = threading.Thread(target=report_loop, daemon=True)
+    t.start()
 
 # ===============================
 # 🔹 بدء البوت
 # ===============================
 if __name__ == "__main__":
     print("🚀 بدء تشغيل البوت Spot OKX")
+    send_telegram("🚀 بدأ تشغيل بوت Spot OKX")
+    schedule_daily_report(hour=6, minute=0)  # التقرير الساعة 9 صباحًا بتوقيتك المحلي (يمكن التعديل)
     run_bot()
