@@ -2,7 +2,7 @@ import os
 import json
 import time
 import pandas as pd
-from datetime import datetime
+from datetime import datetime, timedelta
 from okx_api import fetch_ohlcv, fetch_price, place_market_order, fetch_balance
 from config import TRADE_AMOUNT_USDT, MAX_OPEN_POSITIONS, SYMBOLS
 
@@ -11,14 +11,14 @@ from config import TRADE_AMOUNT_USDT, MAX_OPEN_POSITIONS, SYMBOLS
 # ===============================
 POSITIONS_DIR = "positions"
 CLOSED_POSITIONS_FILE = "closed_positions.json"
+RISK_STATE_FILE = "risk_state.json"
 
 def ensure_dirs():
     os.makedirs(POSITIONS_DIR, exist_ok=True)
 
 def get_position_filename(symbol):
     ensure_dirs()
-    symbol = symbol.replace("/", "_")
-    return f"{POSITIONS_DIR}/{symbol}.json"
+    return f"{POSITIONS_DIR}/{symbol.replace('/', '_')}.json"
 
 def load_position(symbol):
     try:
@@ -32,7 +32,6 @@ def load_position(symbol):
 
 def save_position(symbol, position):
     try:
-        ensure_dirs()
         file = get_position_filename(symbol)
         with open(file, 'w', encoding='utf-8') as f:
             json.dump(position, f, indent=2, ensure_ascii=False)
@@ -68,7 +67,7 @@ def save_closed_positions(closed_positions):
         print(f"⚠️ خطأ في حفظ الصفقات المغلقة: {e}")
 
 # ===============================
-# 📊 المؤشرات الفنية (EMA / RSI / MACD)
+# 📊 المؤشرات الفنية
 # ===============================
 def ema(series, period):
     return series.ewm(span=period, adjust=False).mean()
@@ -78,12 +77,11 @@ def rsi(series, period=14):
     gain = delta.where(delta > 0, 0.0)
     loss = -delta.where(delta < 0, 0.0)
     avg_gain = gain.ewm(alpha=1/period, adjust=False).mean()
-    avg_loss = loss.ewm(alpha=1/period, adjust=False).mean()
-    avg_loss = avg_loss.replace(0, 1e-9)
+    avg_loss = loss.ewm(alpha=1/period, adjust=False).mean().replace(0,1e-9)
     rs = avg_gain / avg_loss
     return 100 - (100 / (1 + rs))
 
-def macd_cols(df, fast=12, slow=26, signal=9):
+def macd(df, fast=12, slow=26, signal=9):
     df['ema_fast'] = ema(df['close'], fast)
     df['ema_slow'] = ema(df['close'], slow)
     df['macd'] = df['ema_fast'] - df['ema_slow']
@@ -91,150 +89,162 @@ def macd_cols(df, fast=12, slow=26, signal=9):
     return df
 
 def calculate_indicators(df):
-    df['ema9']  = ema(df['close'], 9)
-    df['ema21'] = ema(df['close'], 21)
-    df['rsi']   = rsi(df['close'], 14)
-    df['ema50'] = ema(df['close'], 50)  # تأكيد الاتجاه
+    df['ema9'] = ema(df['close'],9)
+    df['ema21'] = ema(df['close'],21)
+    df['ema50'] = ema(df['close'],50)
+    df['rsi'] = rsi(df['close'],14)
     df['vol_ma20'] = df['volume'].rolling(20).mean()
-    df = macd_cols(df)                  # إضافة MACD
+    df = macd(df)
     return df
 
 # ===============================
 # 🔎 دعم ومقاومة
 # ===============================
 def get_support_resistance(df, window=50):
-    try:
-        n = len(df)
-        if n < 5:
-            return None, None
-        df_prev = df.iloc[:-1].copy()
-        if len(df_prev) < 1:
-            return None, None
-        use_window = min(window, len(df_prev))
-        resistance = df_prev['high'].rolling(use_window).max().iloc[-1]
-        support = df_prev['low'].rolling(use_window).min().iloc[-1]
-        if pd.isna(support) or pd.isna(resistance):
-            return None, None
-        return support, resistance
-    except Exception as e:
-        print(f"⚠️ خطأ في حساب الدعم/المقاومة: {e}")
+    if len(df) < 5:
         return None, None
+    df_prev = df.iloc[:-1]
+    use_window = min(window,len(df_prev))
+    resistance = df_prev['high'].rolling(use_window).max().iloc[-1]
+    support = df_prev['low'].rolling(use_window).min().iloc[-1]
+    return support,resistance
 
 # ===============================
-# ⚙️ إعدادات فلتر SR و Trailing
+# ⚙️ إعدادات الاستراتيجية والحماية
 # ===============================
 SR_WINDOW = 50
-RESISTANCE_BUFFER = 0.005  # 0.5%
-SUPPORT_BUFFER    = 0.002  # 0.2%
-TRAILING_DISTANCE = 0.01   # 1% مسافة وقف متحرك بعد TP1
-PARTIAL_FRACTION  = 0.5    # إغلاق 50% عند TP1
+RESISTANCE_BUFFER = 0.005
+SUPPORT_BUFFER = 0.002
+TRAILING_DISTANCE = 0.01
+PARTIAL_FRACTION = 0.5
+
+DAILY_MAX_LOSS_USDT = 50
+MAX_CONSECUTIVE_LOSSES = 3
+COOLDOWN_MINUTES_AFTER_HALT = 120
+MIN_USDT_5M_LIQUIDITY = 30000
+
+MAX_TRADES_PER_DAY = 5
 
 # ===============================
-# 🎯 منطق الإشارة مع MACD + فلاتر
+# 🛡️ إدارة حالة المخاطر اليومية
+# ===============================
+def _today_str():
+    return datetime.utcnow().strftime("%Y-%m-%d")
+
+def load_risk_state():
+    state = {"date":_today_str(),"daily_pnl":0,"consecutive_losses":0,"trades_today":0,"blocked_until":None}
+    try:
+        if os.path.exists(RISK_STATE_FILE):
+            with open(RISK_STATE_FILE,'r',encoding='utf-8') as f:
+                data = json.load(f)
+                if data.get("date") != _today_str(): return state
+                return data
+    except: pass
+    return state
+
+def save_risk_state(s):
+    try:
+        with open(RISK_STATE_FILE,'w',encoding='utf-8') as f:
+            json.dump(s,f,indent=2,ensure_ascii=False)
+    except: pass
+
+def is_trading_blocked():
+    s = load_risk_state()
+    if s.get("blocked_until"):
+        try:
+            until = datetime.fromisoformat(s["blocked_until"])
+            if datetime.utcnow() < until: return True, f"⏸️ التداول موقوف حتى {until.isoformat()}."
+        except: pass
+    if s.get("daily_pnl",0.0) <= -DAILY_MAX_LOSS_USDT: return True,"⛔ تم بلوغ حد الخسارة اليومية."
+    if s.get("consecutive_losses",0) >= MAX_CONSECUTIVE_LOSSES: return True,"⛔ تم بلوغ حد الخسائر المتتالية."
+    if s.get("trades_today",0) >= MAX_TRADES_PER_DAY: return True,f"⛔ تم بلوغ الحد الأقصى للصفقات اليوم ({MAX_TRADES_PER_DAY})."
+    return False,""
+
+def trigger_cooldown(reason="risk_halt"):
+    s = load_risk_state()
+    until = datetime.utcnow() + timedelta(minutes=COOLDOWN_MINUTES_AFTER_HALT)
+    s["blocked_until"] = until.isoformat()
+    save_risk_state(s)
+    print(f"⏸️ تفعيل تهدئة حتى {until.isoformat()} ({reason}).")
+
+def register_trade_result(total_pnl_usdt):
+    s = load_risk_state()
+    s["daily_pnl"] += total_pnl_usdt
+    s["consecutive_losses"] = 0 if total_pnl_usdt>0 else s.get("consecutive_losses",0)+1
+    save_risk_state(s)
+
+# ===============================
+# 🔎 فحص الإشارة
 # ===============================
 def check_signal(symbol):
-    try:
-        data_5m = fetch_ohlcv(symbol, '5m', 200)
-        if not data_5m:
-            return None
-        df = pd.DataFrame(data_5m, columns=['timestamp', 'open', 'high', 'low', 'close', 'volume'])
-        df = calculate_indicators(df)
-        if len(df) < 60:
-            return None
+    blocked,msg = is_trading_blocked()
+    if blocked: print(msg); return None
+    data = fetch_ohlcv(symbol,'5m',150)
+    if not data: return None
+    df = pd.DataFrame(data,columns=['timestamp','open','high','low','close','volume'])
+    df = calculate_indicators(df)
+    if len(df)<50: return None
+    last = df.iloc[-1]; prev = df.iloc[-2]
 
-        last = df.iloc[-1]
-        prev = df.iloc[-2]
-
-        # فلتر الحجم + شمعة صاعدة
-        if len(df['volume']) >= 20:
-            avg_vol = df['vol_ma20'].iloc[-1]
-            if pd.notna(avg_vol) and (last['volume'] < avg_vol or last['close'] <= last['open']):
-                return None
-
-        # اتجاه: فوق EMA50
-        if last['close'] < last['ema50']:
-            return None
-
-        # RSI بين 50 و 70
-        if not (50 < last['rsi'] < 70):
-            return None
-
-        # MACD صاعد
-        if not (last['macd'] > last['macd_signal']):
-            return None
-
-        # دعم/مقاومة
-        support, resistance = get_support_resistance(df, window=SR_WINDOW)
-        last_price = float(last['close'])
-        if support is not None and resistance is not None:
-            if last_price >= resistance * (1 - RESISTANCE_BUFFER):
-                return None
-            if last_price <= support * (1 + SUPPORT_BUFFER):
-                return None
-
-        # إشارة الدخول: تقاطع EMA9/EMA21 صعودي
-        if (prev['ema9'] < prev['ema21']) and (last['ema9'] > last['ema21']):
-            return "buy"
-
-    except Exception as e:
-        print(f"⚠️ خطأ في فحص الإشارة لـ {symbol}: {e}")
+    # فلتر الحجم والشمعة صاعدة
+    if len(df['volume'])>=20:
+        avg_vol = df['volume'].rolling(20).mean().iloc[-1]
+        if last['volume']<avg_vol or last['close']<=last['open']: return None
+    # الاتجاه EMA50
+    if last['close'] < last['ema50']: return None
+    # RSI
+    if not (50<last['rsi']<70): return None
+    # الدعم والمقاومة
+    support,resistance = get_support_resistance(df,SR_WINDOW)
+    price = float(last['close'])
+    if support and resistance:
+        if price>=resistance*(1-RESISTANCE_BUFFER) or price<=support*(1+SUPPORT_BUFFER): return None
+    # تقاطع EMA9 و EMA21
+    if prev['ema9']<prev['ema21'] and last['ema9']>last['ema21'] and last['macd']>last['macd_signal']:
+        return "buy"
     return None
 
 # ===============================
-# 🛒 تنفيذ الشراء (Partial TP + Trailing Stop)
+# 🔎 تنفيذ الشراء
 # ===============================
 def execute_buy(symbol):
-    try:
-        if count_open_positions() >= MAX_OPEN_POSITIONS:
-            return None, f"🚫 وصلت للحد الأقصى للصفقات المفتوحة ({MAX_OPEN_POSITIONS})."
+    blocked,msg = is_trading_blocked()
+    if blocked: return None,msg
+    if count_open_positions()>=MAX_OPEN_POSITIONS: return None,f"🚫 الحد الأقصى للصفقات المفتوحة."
+    price = fetch_price(symbol)
+    usdt_balance = fetch_balance('USDT')
+    if usdt_balance<TRADE_AMOUNT_USDT: return None,f"🚫 رصيد USDT غير كافٍ."
 
-        price = fetch_price(symbol)
-        usdt_balance = fetch_balance('USDT')
-        if usdt_balance < TRADE_AMOUNT_USDT:
-            return None, f"🚫 رصيد USDT غير كافٍ لشراء {symbol}."
+    amount = TRADE_AMOUNT_USDT/price
+    order = place_market_order(symbol,'buy',amount)
+    if not order: return None,"⚠️ فشل تنفيذ الصفقة."
 
-        amount_total = TRADE_AMOUNT_USDT / price
-        order = place_market_order(symbol, 'buy', amount_total)
-        if not order:
-            return None, f"⚠️ فشل تنفيذ أمر الشراء لـ {symbol}."
+    # وقف خسارة من آخر 10 شمعات
+    data = fetch_ohlcv(symbol,'5m',20)
+    df = pd.DataFrame(data,columns=['timestamp','open','high','low','close','volume'])
+    swing_low = df['low'].rolling(10).min().iloc[-2]
+    stop_loss = float(swing_low)
+    take_profit = price + (price-stop_loss)*2  # RR 1:2
 
-        # وقف: أدنى قاع آخر 10 شموع (قبل الشمعة الحالية)
-        data_5m = fetch_ohlcv(symbol, '5m', 20)
-        df = pd.DataFrame(data_5m, columns=['timestamp', 'open', 'high', 'low', 'close', 'volume'])
-        swing_low = df['low'].rolling(10).min().iloc[-2]
+    position = {
+        "symbol": symbol,
+        "amount": amount,
+        "entry_price": price,
+        "stop_loss": stop_loss,
+        "take_profit": take_profit,
+        "trailing_stop": price*(1-TRAILING_DISTANCE),
+        "partial_done": False
+    }
+    save_position(symbol,position)
 
-        stop_loss = float(swing_low)
-        risk = price - stop_loss
-        if risk <= 0:
-            return None, f"⚠️ لم يتم فتح الصفقة لأن المخاطرة سالبة {symbol}."
+    # تحديث عدد الصفقات اليومية
+    s = load_risk_state()
+    s["trades_today"] += 1
+    save_risk_state(s)
 
-        tp1 = price + risk * 1.0    # الهدف الأول 1:1
-        tp2 = price + risk * 2.0    # الهدف الثاني 1:2
-
-        position = {
-            "symbol": symbol,
-            "amount_total": float(amount_total),
-            "amount_open": float(amount_total),   # المتبقي المفتوح
-            "entry_price": float(price),
-            "stop_loss": float(stop_loss),
-            "take_profit_1": float(tp1),
-            "take_profit_2": float(tp2),
-            "partial_closed": False,
-            "trailing_stop": None,               # يُفعّل بعد TP1
-            "highest_price": float(price),       # لأجل التريلينغ
-            "opened_at": datetime.utcnow().isoformat()
-        }
-        save_position(symbol, position)
-        msg = (
-            f"✅ تم شراء {symbol} بسعر {price:.8f}\n"
-            f"🎯 TP1: {tp1:.8f} | 🎯 TP2: {tp2:.8f} | 🛑 SL: {stop_loss:.8f}"
-        )
-        return order, msg
-    except Exception as e:
-        return None, f"⚠️ خطأ أثناء تنفيذ الشراء لـ {symbol}: {e}"
-
+    return order,f"✅ تم شراء {symbol} بسعر {price:.8f} | TP:{take_profit:.8f} | SL:{stop_loss:.8f}"
 # ===============================
-# 📈 إدارة الصفقات (Partial TP + Trailing Stop)
+# 🔧 إدارة الصفقات تلقائيًا
 # ===============================
 def manage_position(symbol):
     try:
@@ -243,143 +253,95 @@ def manage_position(symbol):
             return False
 
         current_price = fetch_price(symbol)
-        entry_price   = position['entry_price']
-        amount_open   = float(position.get('amount_open', 0.0))
-        if amount_open <= 0:
-            clear_position(symbol)
-            return False
-
-        # تحديث أعلى سعر
-        position['highest_price'] = max(position.get('highest_price', entry_price), current_price)
+        amount = position['amount']
+        entry_price = position['entry_price']
 
         base_asset = symbol.split('/')[0]
         actual_balance = fetch_balance(base_asset)
-        # تأكد ألا نبيع أكثر من الرصيد المتاح
-        sellable_amount = min(amount_open, actual_balance)
-        if sellable_amount <= 0:
-            return False
+        sell_amount = min(amount, actual_balance)
 
-        def close_part(exit_price, qty, reason):
-            # تنفيذ بيع
-            order = place_market_order(symbol, 'sell', qty)
-            if not order:
-                return False
-            # تحديث الحالة
-            position['amount_open'] = float(max(0.0, position['amount_open'] - qty))
-            save_position(symbol, position)
-            # حفظ في السجل
-            profit = (exit_price - entry_price) * qty
-            closed = load_closed_positions()
-            closed.append({
-                "symbol": symbol,
-                "entry_price": entry_price,
-                "exit_price": exit_price,
-                "amount": float(qty),
-                "profit": float(profit),
-                "reason": reason,
-                "closed_at": datetime.utcnow().isoformat()
-            })
-            save_closed_positions(closed)
-            return True
+        closed = False
 
-        def close_all(exit_price, reason):
-            qty = min(position['amount_open'], fetch_balance(base_asset))
-            if qty <= 0:
-                return False
-            ok = close_part(exit_price, qty, reason)
-            if ok:
-                clear_position(symbol)
-            return ok
-
-        # 🎯 الوصول إلى TP1 (إغلاق جزئي + تفعيل التريلينغ)
-        if not position.get("partial_closed", False) and current_price >= position['take_profit_1']:
-            qty_half = sellable_amount * PARTIAL_FRACTION
-            if qty_half > 0:
-                if close_part(current_price, qty_half, "TP1_PARTIAL"):
-                    position['partial_closed'] = True
-                    # قفل الصفقة على الأقل على نقطة الدخول
-                    position['stop_loss'] = max(position['stop_loss'], position['entry_price'])
-                    # تفعيل Trailing
-                    position['trailing_stop'] = position['highest_price'] * (1 - TRAILING_DISTANCE)
-                    save_position(symbol, position)
-                    print(f"ℹ️ {symbol}: أخذ ربح جزئي وتفعيل Trailing Stop.")
-
-        # 🎯 الهدف الثاني TP2 (إغلاق كامل)
-        if current_price >= position['take_profit_2']:
-            if close_all(current_price, "TP2_FULL"):
-                print(f"✅ {symbol}: تحقق الهدف الثاني وإغلاق كامل.")
-                return True
-
-        # 🔁 تحديث Trailing Stop (لو مفعّل)
-        if position.get("trailing_stop"):
-            new_trailing = position['highest_price'] * (1 - TRAILING_DISTANCE)
-            if new_trailing > position['trailing_stop']:
-                position['trailing_stop'] = new_trailing
-                save_position(symbol, position)
-
-            if current_price <= position['trailing_stop']:
-                if close_all(current_price, "TRAILING_STOP"):
-                    print(f"🛑 {symbol}: تم الخروج بواسطة Trailing Stop.")
-                    return True
-
-        # 🛑 وقف الخسارة
-        if current_price <= position['stop_loss']:
-            if close_all(current_price, "STOP_LOSS"):
-                print(f"🛑 {symbol}: تم الخروج بواسطة وقف الخسارة.")
-                return True
-
+        # 🔹 Partial TP
+        if not position.get("partial_done") and current_price >= entry_price + (position['take_profit']-entry_price)/2:
+            partial_amount = sell_amount * PARTIAL_FRACTION
+            order = place_market_order(symbol,'sell',partial_amount)
+            if order:
+                position['amount'] -= partial_amount
+                position['partial_done'] = True
+                save_position(symbol,position)
+                closed = True
+                pnl = (current_price - entry_price) * partial_amount
+                register_trade_result(pnl)
+                print(f"📌 Partial TP {symbol}: {pnl:.2f} USDT")
+        
+        # 🔹 Take Profit
+        if current_price >= position['take_profit']:
+            order = place_market_order(symbol,'sell',sell_amount)
+            if order:
+                pnl = (current_price - entry_price) * sell_amount
+                close_trade(symbol,pnl)
+                closed = True
+                print(f"🎯 Take Profit {symbol}: {pnl:.2f} USDT")
+        
+        # 🔹 Stop Loss
+        elif current_price <= position['stop_loss']:
+            order = place_market_order(symbol,'sell',sell_amount)
+            if order:
+                pnl = (current_price - entry_price) * sell_amount
+                close_trade(symbol,pnl)
+                closed = True
+                print(f"🛑 Stop Loss {symbol}: {pnl:.2f} USDT")
+                # التحقق من الخسائر المتتالية
+                s = load_risk_state()
+                if s.get("consecutive_losses",0) >= MAX_CONSECUTIVE_LOSSES:
+                    trigger_cooldown("max_consecutive_losses")
+        
+        # 🔹 Trailing Stop
+        elif current_price > position['trailing_stop']/(1-TRAILING_DISTANCE):
+            position['trailing_stop'] = current_price*(1-TRAILING_DISTANCE)
+            save_position(symbol,position)
+        
     except Exception as e:
         print(f"⚠️ خطأ في إدارة الصفقة لـ {symbol}: {e}")
 
-    return False
+    return closed
 
 # ===============================
-# 🚀 حلقة التشغيل الآلي
+# 🔹 إغلاق الصفقة وتسجيلها
 # ===============================
-SCAN_INTERVAL_SEC = 15     # كل كم ثانية يفحص الإشارات
-MANAGE_INTERVAL_SEC = 5    # كل كم ثانية يدير الصفقات المفتوحة
-PER_SYMBOL_PAUSE = 0.4     # لتخفيف الضغط على API
+def close_trade(symbol,pnl):
+    position = load_position(symbol)
+    if not position: return
+    closed_positions = load_closed_positions()
+    closed_positions.append({
+        "symbol": symbol,
+        "entry_price": position['entry_price'],
+        "exit_price": fetch_price(symbol),
+        "amount": position['amount'],
+        "profit": pnl,
+        "closed_at": datetime.utcnow().isoformat()
+    })
+    save_closed_positions(closed_positions)
+    register_trade_result(pnl)
+    clear_position(symbol)
 
-def run_live():
-    print("✅ بدء التشغيل الآلي (OKX Spot) مع MACD + Partial TP + Trailing Stop")
-    print(f"الرموز: {', '.join(SYMBOLS)}")
-    last_scan = 0
+# ===============================
+# 🔄 حلقة التشغيل التلقائي
+# ===============================
+def run_bot():
     while True:
-        now = time.time()
+        for symbol in SYMBOLS:
+            signal = check_signal(symbol)
+            if signal == "buy":
+                order,msg = execute_buy(symbol)
+                print(msg)
+            manage_position(symbol)
+        time.sleep(60)  # تكرار كل دقيقة
 
-        # إدارة الصفقات أولاً (أسرع)
-        if True:
-            for sym in SYMBOLS:
-                try:
-                    manage_position(sym)
-                    time.sleep(PER_SYMBOL_PAUSE)
-                except Exception as e:
-                    print(f"⚠️ manage_position({sym}) -> {e}")
-
-        # فحص الإشارات وفتح صفقات جديدة
-        if now - last_scan >= SCAN_INTERVAL_SEC:
-            for sym in SYMBOLS:
-                try:
-                    # لا تفتح جديدة إذا فيه صفقة مفتوحة على نفس الرمز
-                    if load_position(sym):
-                        continue
-                    signal = check_signal(sym)
-                    if signal == "buy":
-                        if count_open_positions() < MAX_OPEN_POSITIONS:
-                            order, msg = execute_buy(sym)
-                            print(msg)
-                        else:
-                            print(f"🚫 حد الصفقات المفتوحة ممتلئ ({MAX_OPEN_POSITIONS}).")
-                    time.sleep(PER_SYMBOL_PAUSE)
-                except Exception as e:
-                    print(f"⚠️ check/execute({sym}) -> {e}")
-            last_scan = now
-
-        time.sleep(MANAGE_INTERVAL_SEC)
-
+# ===============================
+# 🔹 بدء البوت
+# ===============================
 if __name__ == "__main__":
-    ensure_dirs()
-    try:
-        run_live()
-    except KeyboardInterrupt:
-        print("\n👋 تم الإيقاف اليدوي.")
+    print("🚀 بدء تشغيل البوت Spot OKX")
+    run_bot()
