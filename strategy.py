@@ -135,7 +135,7 @@ PARTIAL_FRACTION = 0.5
 DAILY_MAX_LOSS_USDT = 50
 MAX_CONSECUTIVE_LOSSES = 3
 COOLDOWN_MINUTES_AFTER_HALT = 120
-MAX_TRADES_PER_DAY = 5
+MAX_TRADES_PER_DAY = 10
 
 # ===============================
 # 🛡️ إدارة حالة المخاطر اليومية
