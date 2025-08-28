@@ -1,28 +1,35 @@
-# run.py — حلقة التشغيل + فلترة الرموز + تيليجرام
+# run.py — تشغيل + فلترة رموز + تقرير يومي
 import time
+import threading
 import requests
 
 from config import TELEGRAM_TOKEN, TELEGRAM_CHAT_ID, SYMBOLS as RAW_SYMBOLS
-from strategy import check_signal, execute_buy, manage_position, load_position, count_open_positions
+from strategy import (
+    check_signal, execute_buy, manage_position, load_position, count_open_positions,
+    build_daily_report_text
+)
 from okx_api import exchange
 
 MAX_LOOP_DELAY_SEC = 60  # مهلة بين الدورات
+REPORT_HOUR = 9          # توقيت التقرير اليومي (ساعة)
+REPORT_MINUTE = 0        # توقيت التقرير اليومي (دقيقة)
 
-def send_telegram(text):
+def send_telegram(text, html=False):
     if not TELEGRAM_TOKEN or TELEGRAM_TOKEN == "CHANGE_ME":
         print(text);  return
     url = f"https://api.telegram.org/bot{TELEGRAM_TOKEN}/sendMessage"
+    payload = {"chat_id": TELEGRAM_CHAT_ID, "text": text}
+    if html:
+        payload["parse_mode"] = "HTML"
+        payload["disable_web_page_preview"] = True
     try:
-        r = requests.post(url, data={"chat_id": TELEGRAM_CHAT_ID, "text": text}, timeout=10)
+        r = requests.post(url, data=payload, timeout=10)
         if not r.ok: print("Telegram failed:", r.status_code, r.text)
     except Exception as e:
         print("Telegram error:", e)
 
 # خريطة تصحيح أسماء إن احتجت
-ALIAS_MAP = {
-    "RENDER/USDT": "RNDR/USDT",
-    "LUNA/USDT":   "LUNC/USDT",
-}
+ALIAS_MAP = {"RENDER/USDT": "RNDR/USDT", "LUNA/USDT": "LUNC/USDT"}
 
 def normalize_symbols(symbols):
     seen, out = set(), []
@@ -45,12 +52,39 @@ def filter_supported_symbols(symbols):
 SYMBOLS = filter_supported_symbols(normalize_symbols(RAW_SYMBOLS))
 print("✅ الرموز المستخدمة:", SYMBOLS)
 
+# ====== جدولة التقرير اليومي (09:00 بتوقيت الرياض) ======
+def schedule_daily_report(hour=REPORT_HOUR, minute=REPORT_MINUTE):
+    from datetime import datetime, timedelta, timezone
+    RIYADH_TZ = timezone(timedelta(hours=3))
+
+    def loop():
+        sent_for = None
+        while True:
+            now = datetime.now(RIYADH_TZ)
+            key = now.date().isoformat()
+            target = now.replace(hour=hour, minute=minute, second=0, microsecond=0)
+            if now >= target:
+                target += timedelta(days=1)
+            sleep_s = (target - now).total_seconds()
+            if sleep_s > 1:
+                time.sleep(sleep_s)
+            try:
+                if sent_for != key:
+                    txt = build_daily_report_text()
+                    send_telegram(txt, html=True)
+                    sent_for = key
+            except Exception as e:
+                send_telegram(f"⚠️ فشل إرسال التقرير اليومي: {e}")
+            time.sleep(61)  # تجاوز نفس الدقيقة
+    t = threading.Thread(target=loop, daemon=True)
+    t.start()
+
 if __name__ == "__main__":
-    send_telegram("🚀 بدء تشغيل البوت (ATR + MTF) — موفقين")
+    send_telegram("🚀 بدء تشغيل البوت (ATR + MTF + تقرير يومي 09:00)", html=True)
+    schedule_daily_report()  # ← يبدأ مجدول التقرير في الخلفية
 
     while True:
         try:
-            # عدّ الصفقات الحالية مرة واحدة لكل دورة
             open_cnt = count_open_positions()
 
             for symbol in SYMBOLS:
@@ -58,8 +92,7 @@ if __name__ == "__main__":
                     position = load_position(symbol)
 
                     if position is None:
-                        # نتحقق من الإشارة فقط إذا لا زال لدينا سعة
-                        if open_cnt >= 3:  # الحد الأقصى للصفقات المفتوحة من config
+                        if open_cnt >= 3:  # الحد الأقصى من config
                             continue
                         sig = check_signal(symbol)
                         if sig == "buy":
