@@ -251,7 +251,7 @@ def execute_buy(symbol):
 
     # تحديث عدد الصفقات اليومية
     s = load_risk_state()
-    s["trades_today"] += 1
+    s["trades_today"] += 2
     save_risk_state(s)
 
     # إشعار Telegram مباشر
