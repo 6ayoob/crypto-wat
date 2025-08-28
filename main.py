@@ -24,7 +24,7 @@ if __name__ == "__main__":
             # احسب عدد الصفقات المفتوحة حاليًا
             for symbol in SYMBOLS:
                 if load_position(symbol) is not None:
-                    open_positions_count += 1
+                    open_positions_count += 2
 
             for symbol in SYMBOLS:
                 position = load_position(symbol)
@@ -38,12 +38,12 @@ if __name__ == "__main__":
                         if message:
                             send_telegram_message(message)
                         if order:
-                            open_positions_count += 1  # زيادة العداد بعد فتح صفقة
+                            open_positions_count += 2  # زيادة العداد بعد فتح صفقة
                 else:
                     closed = manage_position(symbol)
                     if closed:
                         send_telegram_message(f"صفقة {symbol} أُغلقت بناءً على هدف الربح أو وقف الخسارة.")
-                        open_positions_count -= 1  # تقليل العداد إذا أغلقت الصفقة
+                        open_positions_count -= 2  # تقليل العداد إذا أغلقت الصفقة
 
         except Exception as e:
             import traceback
