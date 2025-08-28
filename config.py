@@ -4,22 +4,16 @@
 # ===============================
 import os
 
-API_KEY     = os.getenv("6e2d2b3f-636a-424a-a97e-5154e39e525a",     "CHANGE_ME")
-SECRET_KEY  = os.getenv("D4B9966385BEE5A7B7D8791BA5C0539F",  "CHANGE_ME")
-PASSPHRASE  = os.getenv("Ta123456&",  "CHANGE_ME")
-
-# لو تبغى تختبر على Testnet:
-# export OKX_TESTNET=true
-# وسيتم التفعيل تلقائياً داخل okx_api.py
-
+API_KEY = "6e2d2b3f-636a-424a-a97e-5154e39e525a"
+SECRET_KEY = "D4B9966385BEE5A7B7D8791BA5C0539F"
+PASSPHRASE = "Ta123456&"
 # ===============================
 # 🤖 Telegram
 # ===============================
 
-TELEGRAM_TOKEN  = os.getenv("8300868885:AAEx8Zxdkz9CRUHmjJ0vvn6L3kC2kOPCHuk", "CHANGE_ME")
-TELEGRAM_CHAT_ID = os.getenv("658712542", "CHANGE_ME")  # عدّل حسب حسابك
 
-
+TELEGRAM_TOKEN = "8300868885:AAEx8Zxdkz9CRUHmjJ0vvn6L3kC2kOPCHuk"
+TELEGRAM_CHAT_ID = "658712542"
 # ===============================
 # 📈 الرموز
 # (سيتم فلترتها تلقائياً في وقت التشغيل للتأكد أنها مدعومة على OKX)
