@@ -1,10 +1,10 @@
-# strategy.py — 80/100 + Daily Report Builder (Fixed %: SL 2% • TP1 3% • TP2 6% + EMA50 slope & S/R)
-import os, json
+# strategy.py — SL 2% • TP1 3% (50%) • TP2 6% + EMA50 slope & S/R + Telegram alerts
+import os, json, requests
 from datetime import datetime, timedelta, timezone
 import pandas as pd
 
 from okx_api import fetch_ohlcv, fetch_price, place_market_order, fetch_balance
-from config import TRADE_AMOUNT_USDT, MAX_OPEN_POSITIONS, SYMBOLS, FEE_BPS_ROUNDTRIP
+from config import TRADE_AMOUNT_USDT, MAX_OPEN_POSITIONS, SYMBOLS, FEE_BPS_ROUNDTRIP, TELEGRAM_TOKEN, TELEGRAM_CHAT_ID
 
 RIYADH_TZ = timezone(timedelta(hours=3))
 POSITIONS_DIR = "positions"
@@ -16,15 +16,26 @@ EMA_FAST, EMA_SLOW, EMA_TREND = 9, 21, 50
 RSI_MIN, RSI_MAX = 50, 70
 VOL_MA, SR_WINDOW = 20, 50
 RESISTANCE_BUFFER, SUPPORT_BUFFER = 0.005, 0.002
-
-# تأكيد تعدد الأطر (15m فوق EMA50)
-REQUIRE_MTF = True
+REQUIRE_MTF = True  # تأكيد إطار 15m
 
 # ===== نسب ثابتة للأهداف والوقف =====
 STOP_LOSS_PCT = 0.02   # 2% أسفل الدخول
 TP1_PCT       = 0.03   # 3% فوق الدخول (بيع 50% + نقل SL للتعادل)
 TP2_PCT       = 0.06   # 6% فوق الدخول (إغلاق كامل)
 TP1_FRACTION  = 0.5    # نسبة البيع عند TP1
+
+# ===== Telegram helper =====
+def _tg(text, parse_mode="HTML"):
+    try:
+        if not TELEGRAM_TOKEN or not TELEGRAM_CHAT_ID:
+            return
+        url = f"https://api.telegram.org/bot{TELEGRAM_TOKEN}/sendMessage"
+        data = {"chat_id": TELEGRAM_CHAT_ID, "text": text}
+        if parse_mode:
+            data["parse_mode"] = parse_mode
+        requests.post(url, data=data, timeout=10)
+    except Exception:
+        pass
 
 def now_riyadh():
     return datetime.now(RIYADH_TZ)
@@ -235,6 +246,17 @@ def execute_buy(symbol):
         "opened_at": now_riyadh().isoformat(timespec="seconds"),
     }
     save_position(symbol, pos)
+
+    # Telegram — دخول
+    _tg(
+        f"✅ <b>دخول BUY</b> {symbol}\n"
+        f"قيمة الشراء: <b>{TRADE_AMOUNT_USDT}$</b>\n"
+        f"الدخول: <code>{price:.6f}</code>\n"
+        f"SL −2%: <code>{sl:.6f}</code>\n"
+        f"TP1 +3% (50%): <code>{tp1:.6f}</code>\n"
+        f"TP2 +6% (إغلاق): <code>{tp2:.6f}</code>"
+    )
+
     register_trade_opened()
     return order, f"✅ شراء {symbol} | SL: {sl:.6f} | TP1: {tp1:.6f} | TP2: {tp2:.6f}"
 
@@ -257,7 +279,7 @@ def manage_position(symbol):
     base_asset = symbol.split("/")[0]
     wallet_balance = float(fetch_balance(base_asset) or 0)
     if wallet_balance <= 0:
-        print(f"⚠️ لا يوجد رصيد {base_asset} للبيع — إغلاق محلي.")
+        _tg(f"⚠️ لا يوجد رصيد {base_asset} للبيع في {symbol} — سيتم إغلاق المركز محليًا.")
         clear_position(symbol)
         return False
 
@@ -279,6 +301,13 @@ def manage_position(symbol):
             save_position(symbol, pos)
             register_trade_result(pnl_net)
 
+            _tg(
+                f"🎯 <b>TP1 تحقق</b> {symbol}\n"
+                f"تم بيع: <code>{part_qty:.6f} {base_asset}</code>\n"
+                f"السعر: <code>{exit_px:.6f}</code>\n"
+                f"نقل SL إلى التعادل."
+            )
+
     # تحديث القيم بعد TP1 المحتمل
     pos_ref = load_position(symbol)
     if not pos_ref: 
@@ -295,6 +324,14 @@ def manage_position(symbol):
             pnl_gross = (exit_px - entry) * sellable
             fees = (entry + exit_px) * sellable * (FEE_BPS_ROUNDTRIP / 10000.0)
             pnl_net = pnl_gross - fees
+
+            _tg(
+                f"🏁 <b>TP2</b> {symbol} — <b>إغلاق كامل</b>\n"
+                f"كمية: <code>{sellable:.6f} {base_asset}</code>\n"
+                f"السعر: <code>{exit_px:.6f}</code>\n"
+                f"P/L: <b>{pnl_net:.2f}$</b>"
+            )
+
             close_trade(symbol, exit_price=exit_px, pnl_net=pnl_net, reason="TP2")
             return True
 
@@ -313,6 +350,14 @@ def manage_position(symbol):
             pnl_gross = (exit_px - entry) * sellable
             fees = (entry + exit_px) * sellable * (FEE_BPS_ROUNDTRIP / 10000.0)
             pnl_net = pnl_gross - fees
+
+            _tg(
+                f"🛑 <b>SL</b> {symbol} — <b>إغلاق كامل</b>\n"
+                f"كمية: <code>{sellable:.6f} {base_asset}</code>\n"
+                f"السعر: <code>{exit_px:.6f}</code>\n"
+                f"P/L: <b>{pnl_net:.2f}$</b>"
+            )
+
             close_trade(symbol, exit_price=exit_px, pnl_net=pnl_net, reason="SL")
             return True
 
@@ -343,7 +388,7 @@ def close_trade(symbol, exit_price, pnl_net, reason="MANUAL"):
     register_trade_result(pnl_net)
     clear_position(symbol)
 
-# ============== ✨ تقرير يومي: يبني النص فقط (الإرسال يتم في run.py) ==============
+# ============== ✨ تقرير يومي: يبني النص فقط (الإرسال يتم من run.py) ==============
 def _fmt_table(rows, headers):
     widths = [len(h) for h in headers]
     for r in rows:
@@ -354,7 +399,6 @@ def _fmt_table(rows, headers):
     return "<pre>" + fmt_row(headers) + "\n" + "\n".join(fmt_row(r) for r in rows) + "</pre>"
 
 def build_daily_report_text():
-    """يرجع نص التقرير اليومي (HTML) لليوم الحالي بتوقيت الرياض، أو None إن لا توجد صفقات."""
     closed = load_closed_positions()
     today = _today_str()
     todays = [t for t in closed if str(t.get("closed_at", "")).startswith(today)]
