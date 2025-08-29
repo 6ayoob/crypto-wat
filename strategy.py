@@ -1,4 +1,4 @@
-# strategy.py — 80/100 + Daily Report Builder
+# strategy.py — 80/100 + Daily Report Builder (Updated TP ladder & fill price)
 import os, json
 from datetime import datetime, timedelta, timezone
 import pandas as pd
@@ -25,7 +25,14 @@ ATR_PERIOD = 14
 ATR_SL_MULT = 1.5
 ATR_TRAIL_MULT = 1.0
 R_MULT_TP = 2.0
-PARTIAL_FRACTION = 0.5
+
+# --- سُلّم جني أرباح أقرب ---
+P1_R = 0.6          # الهدف الأول كنسبة من R
+P2_R = 1.0          # الهدف الثاني كنسبة من R
+P1_FRAC = 0.25      # نسبة البيع عند TP1
+P2_FRAC = 0.25      # نسبة البيع عند TP2
+TRAIL_TIGHT_MULT = 0.8   # تشديد التريلينغ بعد TP2
+BE_ADD_FEE = 0.0008      # نقل الوقف للتعادل + رسوم تقريبية (≈8bps)
 
 def now_riyadh():
     return datetime.now(RIYADH_TZ)
@@ -195,6 +202,7 @@ def execute_buy(symbol):
     if count_open_positions() >= MAX_OPEN_POSITIONS:
         return None, "🚫 الحد الأقصى للصفقات المفتوحة."
 
+    # مبدئيًا نقرأ السعر ثم نستبدله بسعر التنفيذ الفعلي بعد الأمر
     price = float(fetch_price(symbol))
     usdt  = float(fetch_balance("USDT"))
     if price <= 0: return None, "⚠️ سعر غير صالح."
@@ -203,6 +211,13 @@ def execute_buy(symbol):
     amount = TRADE_AMOUNT_USDT / price
     order = place_market_order(symbol, "buy", amount)
     if not order: return None, "⚠️ فشل تنفيذ الصفقة."
+
+    # 🔹 استخدم سعر التنفيذ الحقيقي إن توفر
+    try:
+        fill_px = float(order.get("average") or order.get("price") or price)
+        price = fill_px
+    except Exception:
+        pass
 
     data5 = fetch_ohlcv(symbol, "5m", 100)
     df5 = add_indicators(_df(data5))
@@ -220,7 +235,9 @@ def execute_buy(symbol):
         "take_profit": float(tp),
         "trailing_stop": float(price - ATR_TRAIL_MULT * atr),
         "atr": float(atr),
-        "partial_done": False,
+        # سُلّم الجني
+        "p1_done": False,
+        "p2_done": False,
         "opened_at": now_riyadh().isoformat(timespec="seconds"),
     }
     save_position(symbol, pos)
@@ -248,34 +265,62 @@ def manage_position(symbol):
         pos["trailing_stop"] = float(trail_level)
         save_position(symbol, pos)
 
-    # جني جزئي عند 1R (نصف الطريق إلى TP لأن TP=2R)
-    half_target = entry + (pos["take_profit"] - entry) / 2
-    if (not pos.get("partial_done")) and current >= half_target and amount > 0:
-        sell_amount = amount * PARTIAL_FRACTION
+    # ---- R والأهداف المرحلية من TP النهائي (ثابت حتى لو تغيّر SL لاحقًا) ----
+    r = (pos["take_profit"] - entry) / R_MULT_TP
+    tp1 = entry + P1_R * r
+    tp2 = entry + P2_R * r
+    tp3 = pos["take_profit"]  # 2R
+
+    # === TP1: بيع 25% عند 0.6R + رفع SL إلى Entry - 0.25R ===
+    if (not pos.get("p1_done")) and current >= tp1 and amount > 0:
+        sell_amount = amount * P1_FRAC
         order = place_market_order(symbol, "sell", sell_amount)
         if order:
-            pnl_gross = (current - entry) * sell_amount
-            fees = (entry + current) * sell_amount * (FEE_BPS_ROUNDTRIP / 10000.0)
+            exit_px = float(order.get("average") or order.get("price") or current)
+            pnl_gross = (exit_px - entry) * sell_amount
+            fees = (entry + exit_px) * sell_amount * (FEE_BPS_ROUNDTRIP / 10000.0)
             pnl_net = pnl_gross - fees
             pos["amount"] = float(max(0.0, amount - sell_amount))
-            pos["partial_done"] = True
+            pos["p1_done"] = True
+            # حماية: SL = Entry - 0.25R (لا نُنزله لو كان أعلى)
+            pos["stop_loss"] = max(pos["stop_loss"], entry - 0.25 * r)
             save_position(symbol, pos)
             register_trade_result(pnl_net)
 
-    # إغلاقات
+    # === TP2: بيع 25% عند 1.0R + SL = BE+fees + تشديد التريلينغ ===
+    elif pos.get("p1_done") and (not pos.get("p2_done")) and current >= tp2 and pos["amount"] > 0:
+        # لجعلها 25% من الأصل (وليس من الباقي): اقسم على (1 - P1_FRAC)
+        sell_amount = pos["amount"] * (P2_FRAC / max(1e-9, (1.0 - P1_FRAC)))
+        order = place_market_order(symbol, "sell", sell_amount)
+        if order:
+            exit_px = float(order.get("average") or order.get("price") or current)
+            pnl_gross = (exit_px - entry) * sell_amount
+            fees = (entry + exit_px) * sell_amount * (FEE_BPS_ROUNDTRIP / 10000.0)
+            pnl_net = pnl_gross - fees
+            pos["amount"] = float(max(0.0, pos["amount"] - sell_amount))
+            pos["p2_done"] = True
+            # SL = التعادل + رسوم تقريبية
+            pos["stop_loss"] = max(pos["stop_loss"], entry * (1 + BE_ADD_FEE))
+            # تشديد التريلينغ بعد TP2
+            pos["trailing_stop"] = max(pos["trailing_stop"], current - TRAIL_TIGHT_MULT * atr)
+            save_position(symbol, pos)
+            register_trade_result(pnl_net)
+
+    # إغلاقات نهائية
     reason = None
-    if current >= pos["take_profit"]:     reason = "TP"
+    if current >= tp3:                    reason = "TP"
     elif current <= pos["stop_loss"]:     reason = "SL"
     elif current <= pos["trailing_stop"]: reason = "TRAIL"
 
     if reason:
         order = place_market_order(symbol, "sell", pos["amount"])
         if order:
-            amount = float(pos["amount"])
-            pnl_gross = (current - entry) * amount
-            fees = (entry + current) * amount * (FEE_BPS_ROUNDTRIP / 10000.0)
+            amount_left = float(pos["amount"])
+            exit_px = float(order.get("average") or order.get("price") or current)
+            pnl_gross = (exit_px - entry) * amount_left
+            fees = (entry + exit_px) * amount_left * (FEE_BPS_ROUNDTRIP / 10000.0)
             pnl_net = pnl_gross - fees
-            close_trade(symbol, exit_price=current, pnl_net=pnl_net, reason=reason)
+            close_trade(symbol, exit_price=exit_px, pnl_net=pnl_net, reason=reason)
             return True
     return False
 
