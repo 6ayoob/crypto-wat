@@ -1,4 +1,4 @@
-# strategy.py — 80/100 + Daily Report Builder (Updated TP ladder & fill price)
+# strategy.py — 80/100 + Daily Report Builder (Fixed %: SL 2% • TP1 3% • TP2 6% + EMA50 slope & S/R)
 import os, json
 from datetime import datetime, timedelta, timezone
 import pandas as pd
@@ -11,28 +11,20 @@ POSITIONS_DIR = "positions"
 CLOSED_POSITIONS_FILE = "closed_positions.json"
 RISK_STATE_FILE = "risk_state.json"
 
-# إعدادات المؤشرات
+# ===== إعدادات المؤشرات =====
 EMA_FAST, EMA_SLOW, EMA_TREND = 9, 21, 50
 RSI_MIN, RSI_MAX = 50, 70
 VOL_MA, SR_WINDOW = 20, 50
 RESISTANCE_BUFFER, SUPPORT_BUFFER = 0.005, 0.002
 
-# تعدد الأطر
+# تأكيد تعدد الأطر (15m فوق EMA50)
 REQUIRE_MTF = True
 
-# ATR / إدارة المخاطرة
-ATR_PERIOD = 14
-ATR_SL_MULT = 1.5
-ATR_TRAIL_MULT = 1.0
-R_MULT_TP = 2.0
-
-# --- سُلّم جني أرباح أقرب ---
-P1_R = 0.6          # الهدف الأول كنسبة من R
-P2_R = 1.0          # الهدف الثاني كنسبة من R
-P1_FRAC = 0.25      # نسبة البيع عند TP1
-P2_FRAC = 0.25      # نسبة البيع عند TP2
-TRAIL_TIGHT_MULT = 0.8   # تشديد التريلينغ بعد TP2
-BE_ADD_FEE = 0.0008      # نقل الوقف للتعادل + رسوم تقريبية (≈8bps)
+# ===== نسب ثابتة للأهداف والوقف =====
+STOP_LOSS_PCT = 0.02   # 2% أسفل الدخول
+TP1_PCT       = 0.03   # 3% فوق الدخول (بيع 50% + نقل SL للتعادل)
+TP2_PCT       = 0.06   # 6% فوق الدخول (إغلاق كامل)
+TP1_FRACTION  = 0.5    # نسبة البيع عند TP1
 
 def now_riyadh():
     return datetime.now(RIYADH_TZ)
@@ -124,11 +116,6 @@ def macd_cols(df, fast=12, slow=26, signal=9):
     df["macd_signal"] = df["macd"].ewm(span=signal, adjust=False).mean()
     return df
 
-def atr_series(df, period=14):
-    c = df["close"].shift(1)
-    tr = pd.concat([(df["high"]-df["low"]).abs(), (df["high"]-c).abs(), (df["low"]-c).abs()], axis=1).max(axis=1)
-    return tr.ewm(alpha=1/period, adjust=False).mean()
-
 def add_indicators(df):
     df["ema9"]  = ema(df["close"], EMA_FAST)
     df["ema21"] = ema(df["close"], EMA_SLOW)
@@ -136,7 +123,6 @@ def add_indicators(df):
     df["rsi"]   = rsi(df["close"], 14)
     df["vol_ma20"] = df["volume"].rolling(VOL_MA).mean()
     df = macd_cols(df)
-    df["atr"] = atr_series(df, ATR_PERIOD)
     return df
 
 def _df(data):  # OHLCV -> DataFrame
@@ -144,7 +130,7 @@ def _df(data):  # OHLCV -> DataFrame
 
 def get_sr_on_closed(df, window=50):
     if len(df) < window + 3: return (None, None)
-    df_prev = df.iloc[:-2]
+    df_prev = df.iloc[:-2]  # حتى الشمعة المغلقة
     w = min(window, len(df_prev))
     resistance = df_prev["high"].rolling(w).max().iloc[-1]
     support    = df_prev["low"].rolling(w).min().iloc[-1]
@@ -165,25 +151,40 @@ def check_signal(symbol):
     if _LAST_ENTRY_BAR_TS.get(symbol) == last_ts_closed:
         return None
 
+    price = float(closed["close"])
+    ema50_now  = float(closed["ema50"])
+    ema50_prev = float(df5["ema50"].iloc[-7]) if len(df5) >= 7 else ema50_now
+    ema50_slope_up = (ema50_now - ema50_prev) > 0
+
+    # اتجاه أقوى حول EMA50
+    if not ema50_slope_up:
+        return None
+    if price < ema50_now * 1.001:  # هامش فوق EMA50 (~0.1%)
+        return None
+    if price > ema50_now * 1.03:   # منع التمدد >3%
+        return None
+
+    # حجم/شمعة/RSI
     if not pd.isna(closed["vol_ma20"]) and closed["volume"] < closed["vol_ma20"]:
         return None
     if closed["close"] <= closed["open"]:
         return None
-    if closed["close"] < closed["ema50"]:
-        return None
     if not (RSI_MIN < closed["rsi"] < RSI_MAX):
         return None
+
+    # دعم/مقاومة
+    support, resistance = get_sr_on_closed(df5, SR_WINDOW)
+    if support and resistance:
+        if price >= resistance * (1 - RESISTANCE_BUFFER): return None
+        if price <= support    * (1 + SUPPORT_BUFFER):    return None
+
+    # تقاطع EMA9/21 + MACD
     crossed = (prev["ema9"] < prev["ema21"]) and (closed["ema9"] > closed["ema21"])
     macd_ok = closed["macd"] > closed["macd_signal"]
     if not (crossed and macd_ok):
         return None
 
-    support, resistance = get_sr_on_closed(df5, SR_WINDOW)
-    price = float(closed["close"])
-    if support and resistance:
-        if price >= resistance * (1 - RESISTANCE_BUFFER): return None
-        if price <= support    * (1 + SUPPORT_BUFFER):    return None
-
+    # تعدد الأطر (15m فوق EMA50)
     if REQUIRE_MTF:
         data15 = fetch_ohlcv(symbol, "15m", 150)
         if not data15: return None
@@ -202,7 +203,7 @@ def execute_buy(symbol):
     if count_open_positions() >= MAX_OPEN_POSITIONS:
         return None, "🚫 الحد الأقصى للصفقات المفتوحة."
 
-    # مبدئيًا نقرأ السعر ثم نستبدله بسعر التنفيذ الفعلي بعد الأمر
+    # السعر الحالي (سنستبدله بسعر التنفيذ الفعلي إن توفر)
     price = float(fetch_price(symbol))
     usdt  = float(fetch_balance("USDT"))
     if price <= 0: return None, "⚠️ سعر غير صالح."
@@ -212,37 +213,30 @@ def execute_buy(symbol):
     order = place_market_order(symbol, "buy", amount)
     if not order: return None, "⚠️ فشل تنفيذ الصفقة."
 
-    # 🔹 استخدم سعر التنفيذ الحقيقي إن توفر
+    # سعر التنفيذ الفعلي إن توفر
     try:
         fill_px = float(order.get("average") or order.get("price") or price)
-        price = fill_px
+        price = fill_px if fill_px > 0 else price
     except Exception:
         pass
 
-    data5 = fetch_ohlcv(symbol, "5m", 100)
-    df5 = add_indicators(_df(data5))
-    atr = float(df5["atr"].iloc[-2])
-
-    sl = price - ATR_SL_MULT * atr
-    r  = price - sl
-    tp = price + R_MULT_TP * r
+    sl  = price * (1 - STOP_LOSS_PCT)
+    tp1 = price * (1 + TP1_PCT)
+    tp2 = price * (1 + TP2_PCT)
 
     pos = {
         "symbol": symbol,
         "amount": float(amount),
         "entry_price": float(price),
         "stop_loss": float(sl),
-        "take_profit": float(tp),
-        "trailing_stop": float(price - ATR_TRAIL_MULT * atr),
-        "atr": float(atr),
-        # سُلّم الجني
-        "p1_done": False,
-        "p2_done": False,
+        "tp1": float(tp1),
+        "tp2": float(tp2),
+        "partial_done": False,  # TP1 لم يُنفذ بعد
         "opened_at": now_riyadh().isoformat(timespec="seconds"),
     }
     save_position(symbol, pos)
     register_trade_opened()
-    return order, f"✅ شراء {symbol} | SL(ATR): {sl:.6f} | TP: {tp:.6f}"
+    return order, f"✅ شراء {symbol} | SL: {sl:.6f} | TP1: {tp1:.6f} | TP2: {tp2:.6f}"
 
 # ============== إدارة الصفقة ==============
 def manage_position(symbol):
@@ -251,77 +245,77 @@ def manage_position(symbol):
 
     current = float(fetch_price(symbol))
     entry   = float(pos["entry_price"])
+    sl      = float(pos["stop_loss"])
+    tp1     = float(pos["tp1"])
+    tp2     = float(pos["tp2"])
     amount  = float(pos["amount"])
-    if amount <= 0: return False
 
-    data5 = fetch_ohlcv(symbol, "5m", 50)
-    df5 = _df(data5)
-    df5["atr"] = atr_series(df5, ATR_PERIOD)
-    atr = float(df5["atr"].iloc[-2])
+    if amount <= 0:
+        clear_position(symbol)
+        return False
 
-    # تحديث trailing (رفع فقط)
-    trail_level = current - ATR_TRAIL_MULT * atr
-    if trail_level > pos["trailing_stop"]:
-        pos["trailing_stop"] = float(trail_level)
-        save_position(symbol, pos)
+    base_asset = symbol.split("/")[0]
+    wallet_balance = float(fetch_balance(base_asset) or 0)
+    if wallet_balance <= 0:
+        print(f"⚠️ لا يوجد رصيد {base_asset} للبيع — إغلاق محلي.")
+        clear_position(symbol)
+        return False
 
-    # ---- R والأهداف المرحلية من TP النهائي (ثابت حتى لو تغيّر SL لاحقًا) ----
-    r = (pos["take_profit"] - entry) / R_MULT_TP
-    tp1 = entry + P1_R * r
-    tp2 = entry + P2_R * r
-    tp3 = pos["take_profit"]  # 2R
+    sellable = min(amount, wallet_balance)
 
-    # === TP1: بيع 25% عند 0.6R + رفع SL إلى Entry - 0.25R ===
-    if (not pos.get("p1_done")) and current >= tp1 and amount > 0:
-        sell_amount = amount * P1_FRAC
-        order = place_market_order(symbol, "sell", sell_amount)
+    # --- TP1: بيع 50% + SL = التعادل ---
+    if (not pos.get("partial_done")) and current >= tp1 and sellable > 0:
+        part_qty = sellable * TP1_FRACTION
+        order = place_market_order(symbol, "sell", part_qty)
         if order:
             exit_px = float(order.get("average") or order.get("price") or current)
-            pnl_gross = (exit_px - entry) * sell_amount
-            fees = (entry + exit_px) * sell_amount * (FEE_BPS_ROUNDTRIP / 10000.0)
+            pnl_gross = (exit_px - entry) * part_qty
+            fees = (entry + exit_px) * part_qty * (FEE_BPS_ROUNDTRIP / 10000.0)
             pnl_net = pnl_gross - fees
-            pos["amount"] = float(max(0.0, amount - sell_amount))
-            pos["p1_done"] = True
-            # حماية: SL = Entry - 0.25R (لا نُنزله لو كان أعلى)
-            pos["stop_loss"] = max(pos["stop_loss"], entry - 0.25 * r)
+
+            pos["amount"] = float(max(0.0, amount - part_qty))
+            pos["partial_done"] = True
+            pos["stop_loss"] = float(entry)  # نقل الوقف للتعادل
             save_position(symbol, pos)
             register_trade_result(pnl_net)
 
-    # === TP2: بيع 25% عند 1.0R + SL = BE+fees + تشديد التريلينغ ===
-    elif pos.get("p1_done") and (not pos.get("p2_done")) and current >= tp2 and pos["amount"] > 0:
-        # لجعلها 25% من الأصل (وليس من الباقي): اقسم على (1 - P1_FRAC)
-        sell_amount = pos["amount"] * (P2_FRAC / max(1e-9, (1.0 - P1_FRAC)))
-        order = place_market_order(symbol, "sell", sell_amount)
+    # تحديث القيم بعد TP1 المحتمل
+    pos_ref = load_position(symbol)
+    if not pos_ref: 
+        return True
+    amount = float(pos_ref.get("amount", 0.0))
+    wallet_balance = float(fetch_balance(base_asset) or 0)
+    sellable = min(amount, wallet_balance)
+
+    # --- TP2: إغلاق كامل ---
+    if sellable > 0 and current >= tp2:
+        order = place_market_order(symbol, "sell", sellable)
         if order:
             exit_px = float(order.get("average") or order.get("price") or current)
-            pnl_gross = (exit_px - entry) * sell_amount
-            fees = (entry + exit_px) * sell_amount * (FEE_BPS_ROUNDTRIP / 10000.0)
+            pnl_gross = (exit_px - entry) * sellable
+            fees = (entry + exit_px) * sellable * (FEE_BPS_ROUNDTRIP / 10000.0)
             pnl_net = pnl_gross - fees
-            pos["amount"] = float(max(0.0, pos["amount"] - sell_amount))
-            pos["p2_done"] = True
-            # SL = التعادل + رسوم تقريبية
-            pos["stop_loss"] = max(pos["stop_loss"], entry * (1 + BE_ADD_FEE))
-            # تشديد التريلينغ بعد TP2
-            pos["trailing_stop"] = max(pos["trailing_stop"], current - TRAIL_TIGHT_MULT * atr)
-            save_position(symbol, pos)
-            register_trade_result(pnl_net)
-
-    # إغلاقات نهائية
-    reason = None
-    if current >= tp3:                    reason = "TP"
-    elif current <= pos["stop_loss"]:     reason = "SL"
-    elif current <= pos["trailing_stop"]: reason = "TRAIL"
-
-    if reason:
-        order = place_market_order(symbol, "sell", pos["amount"])
-        if order:
-            amount_left = float(pos["amount"])
-            exit_px = float(order.get("average") or order.get("price") or current)
-            pnl_gross = (exit_px - entry) * amount_left
-            fees = (entry + exit_px) * amount_left * (FEE_BPS_ROUNDTRIP / 10000.0)
-            pnl_net = pnl_gross - fees
-            close_trade(symbol, exit_price=exit_px, pnl_net=pnl_net, reason=reason)
+            close_trade(symbol, exit_price=exit_px, pnl_net=pnl_net, reason="TP2")
             return True
+
+    # --- SL: إغلاق كامل ---
+    pos_ref = load_position(symbol)
+    if not pos_ref:
+        return True
+    amount = float(pos_ref.get("amount", 0.0))
+    wallet_balance = float(fetch_balance(base_asset) or 0)
+    sellable = min(amount, wallet_balance)
+
+    if sellable > 0 and current <= sl:
+        order = place_market_order(symbol, "sell", sellable)
+        if order:
+            exit_px = float(order.get("average") or order.get("price") or current)
+            pnl_gross = (exit_px - entry) * sellable
+            fees = (entry + exit_px) * sellable * (FEE_BPS_ROUNDTRIP / 10000.0)
+            pnl_net = pnl_gross - fees
+            close_trade(symbol, exit_price=exit_px, pnl_net=pnl_net, reason="SL")
+            return True
+
     return False
 
 # ============== إغلاق وتسجيل ==============
