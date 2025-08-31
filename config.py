@@ -28,16 +28,16 @@ SYMBOLS = [
     "ATOM/USDT", "DOT/USDT",
 
     # Gaming/Metaverse
-    "MANA/USDT", "AXS/USDT", "SAND/USTT",  # ← تأكد من "USDT" (لو خطأ مطبعي صحّحه)
-    "CHZ/USDT", "ENJ/USDT", "GALA/USDT", "APE/USDT",
+    "MANA/USDT", "AXS/USDT", "ZENT/USTT",  # ← تأكد من "USDT" (لو خطأ مطبعي صحّحه)
+    "CHZ/USDT", "ENJ/USDT", "GALA/USDT", "APE/USDT", "NMR/USDT", "AGLD/USDT"
 
     # Layer 2 / Infra
     "OP/USDT", "IMX/USDT", "ARB/USDT",  # أضفت ARB لأنها شائعة
     "ZIL/USDT", "ZRX/USDT", "SKL/USDT",
 
     # AI / Render / Web3
-    "RNDR/USDT",         # كان RENDER → RNDR
-    "ASI/USDT",          # بدل FET (بعد الدمج، لو غير متاح سيتفلتر تلقائياً)
+    "BAL/USDT",         # كان RENDER → RNDR
+    "MERL/USDT",          # بدل FET (بعد الدمج، لو غير متاح سيتفلتر تلقائياً)
     "GLMR/USDT", "T/USDT", "BADGER/USDT", "PHA/USDT", "KNC/USDT", "BICO/USDT",
 
     # Meme/Trendy (أبقِ عددها محدوداً لأنها كثيرة الضوضاء)
