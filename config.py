@@ -15,45 +15,46 @@ PASSPHRASE = "Ta123456&"
 TELEGRAM_TOKEN = "8300868885:AAEx8Zxdkz9CRUHmjJ0vvn6L3kC2kOPCHuk"
 TELEGRAM_CHAT_ID = "658712542"
 # ===============================
-# 📈 الرموز
-# (سيتم فلترتها تلقائياً في وقت التشغيل للتأكد أنها مدعومة على OKX)
+# 📈 الرموز — قائمة منقّحة (سيتم فلترتها تلقائياً عند التشغيل عبر OKX markets)
+# ملاحظة: لا تعتمد على هذه القائمة فقط؛ okx_api سيزيل أي رمز غير مدعوم.
 # ===============================
 SYMBOLS = [
-  # DeFi (10)
-  "AAVE/USDT", "UNI/USDT", "SUSHI/USDT", "COMP/USDT", "MKR/USDT",
-  "SNX/USDT", "CRV/USDT", "LDO/USDT", "GRT/USDT", "LINK/USDT",
-  # Layer 1 (10)
-  "ETH/USDT", "SOL/USDT", "ADA/USDT", "AVAX/USDT", "NEAR/USDT",
-  "ALGO/USDT", "ATOM/USDT", "DOT/USDT", "BNB/USDT", "FET/USDT",
-  # Gaming/Metaverse (8)
-  "MANA/USDT", "AXS/USDT", "SAND/USDT", "CHZ/USDT", "ENJ/USDT",
-  "GALA/USDT", "APE/USDT", "ILV/USDT",
-  # Layer 2 (5)
-  "OP/USDT", "IMX/USDT", "LUNA/USDT", "ZIL/USDT", "ZRX/USDT", "SKL/USDT",
-  # Meme Coins (5)
-  "PEPE/USDT", "DOGE/USDT", "SHIB/USDT", "PUMP/USDT", "MEMEFI/USDT",
-  # Stable / Oracles / Infra (10)
-  "USDC/USDT", "DAI/USDT", "BAND/USDT", "API3/USDT", "AVAX/USDT",
-  "LINK/USDT", "RSR/USDT", "UMA/USDT", "KNC/USDT", "BICO/USDT",
-  # AI / Web3 / Others (10)
-  "RENDER/USDT", "AIXBT/USDT", "VRA/USDT", "GLMR/USDT", "T/USDT",
-  "PSTAKE/USDT", "BADGER/USDT", "PHA/USDT", "NC/USDT", "BOME/USDT",
-  # رموز ميم من OKX
-  "DOGE/USDT", "SHIB/USDT", "PEPE/USDT", "PENGU/USDT", 
-  "BONK/USDT", "TRUMP/USDT", "FLOKI/USDT", "POLYDOGE/USDT",
-  "WIF/USDT", "TURBO/USDT", "NOT/USDT", "ORDI/USDT",
-  "DEGEN/USDT", "MEME/USDT", "DOGS/USDT", "VINE/USDT",
-  "CAT/USDT", "ELON/USDT",
+    # DeFi / Bluechips
+    "AAVE/USDT", "UNI/USDT", "SUSHI/USDT", "COMP/USDT", "MKR/USDT",
+    "SNX/USDT", "LDO/USDT", "GRT/USDT", "LINK/USDT",
+
+    # Layer 1 / Majors
+    "ETH/USDT", "SOL/USDT", "ADA/USDT", "AVAX/USDT", "NEAR/USDT",
+    "ATOM/USDT", "DOT/USDT",
+
+    # Gaming/Metaverse
+    "MANA/USDT", "AXS/USDT", "SAND/USTT",  # ← تأكد من "USDT" (لو خطأ مطبعي صحّحه)
+    "CHZ/USDT", "ENJ/USDT", "GALA/USDT", "APE/USDT",
+
+    # Layer 2 / Infra
+    "OP/USDT", "IMX/USDT", "ARB/USDT",  # أضفت ARB لأنها شائعة
+    "ZIL/USDT", "ZRX/USDT", "SKL/USDT",
+
+    # AI / Render / Web3
+    "RNDR/USDT",         # كان RENDER → RNDR
+    "ASI/USDT",          # بدل FET (بعد الدمج، لو غير متاح سيتفلتر تلقائياً)
+    "GLMR/USDT", "T/USDT", "BADGER/USDT", "PHA/USDT", "KNC/USDT", "BICO/USDT",
+
+    # Meme/Trendy (أبقِ عددها محدوداً لأنها كثيرة الضوضاء)
+    "DOGE/USDT", "SHIB/USDT", "PEPE/USDT", "BONK/USDT", "WIF/USDT",
+    "ORDI/USDT", "FLOKI/USDT", "NOT/USDT"
 ]
 
 # ===============================
 # ⏱ إعدادات التداول
+# ملاحظة: TIMEFRAME هنا "تراثية" للنسخ القديمة — الاستراتيجية الحالية تستخدم HTF/LTF داخل strategy.py
 # ===============================
-TIMEFRAME = "5m"
-TRADE_AMOUNT_USDT = 45         # ← تم الرفع إلى 45$
-MAX_OPEN_POSITIONS = 3         # ← 3 كحد أقصى للصفقات المفتوحة
+TIMEFRAME = "5m"                 # غير مستخدمة في المنطق الجديد، اتركها للتوافق فقط
+TRADE_AMOUNT_USDT = 45           # قيمة الصفقة الافتراضية (يُمكن تفعيل sizing بالريسك من strategy.py)
+MAX_OPEN_POSITIONS = 3           # الحد الأقصى للصفقات المفتوحة
 
 # ===============================
 # 🧮 الرسوم (round-trip) بالـ bps
+# اضبطها على إجمالي الذهاب/الإياب. مثال: 16 = 0.16% إجمالي.
 # ===============================
-FEE_BPS_ROUNDTRIP = 8          # 0.08% ذهاب/إياب (عدّلها حسب حسابك)
+FEE_BPS_ROUNDTRIP = 16
