@@ -1,30 +1,84 @@
-# strategy.py — SL 2% • TP1 3% (50%) • TP2 6% + EMA50 slope & S/R + Telegram alerts
-import os, json, requests
+# strategy.py — MTF 15m/5m + Pullback/Breakout/Hybrid + ATR/VWAP/RVol/NR + Full Trade Management
+import os, json, requests, math
 from datetime import datetime, timedelta, timezone
 import pandas as pd
 
 from okx_api import fetch_ohlcv, fetch_price, place_market_order, fetch_balance
-from config import TRADE_AMOUNT_USDT, MAX_OPEN_POSITIONS, SYMBOLS, FEE_BPS_ROUNDTRIP, TELEGRAM_TOKEN, TELEGRAM_CHAT_ID
+from config import (
+    TRADE_AMOUNT_USDT, MAX_OPEN_POSITIONS, SYMBOLS, FEE_BPS_ROUNDTRIP,
+    TELEGRAM_TOKEN, TELEGRAM_CHAT_ID
+)
 
+# ================== إعدادات عامة ==================
 RIYADH_TZ = timezone(timedelta(hours=3))
 POSITIONS_DIR = "positions"
 CLOSED_POSITIONS_FILE = "closed_positions.json"
 RISK_STATE_FILE = "risk_state.json"
 
-# ===== إعدادات المؤشرات =====
+# أطر زمنية
+HTF_TIMEFRAME = "15m"   # الإطار الأعلى (سياق/اتجاه)
+LTF_TIMEFRAME = "5m"    # الإطار الأدنى (تنفيذ)
+
+# أنماط الدخول
+ENTRY_MODE    = "hybrid"  # "pullback" أو "breakout" أو "hybrid"
+HYBRID_ORDER  = ["pullback", "breakout"]
+
+# مؤشرات أساسية
 EMA_FAST, EMA_SLOW, EMA_TREND = 9, 21, 50
 RSI_MIN, RSI_MAX = 50, 70
 VOL_MA, SR_WINDOW = 20, 50
 RESISTANCE_BUFFER, SUPPORT_BUFFER = 0.005, 0.002
-REQUIRE_MTF = True  # تأكيد إطار 15m
+ATR_PERIOD = 14
 
-# ===== نسب ثابتة للأهداف والوقف =====
-STOP_LOSS_PCT = 0.02   # 2% أسفل الدخول
-TP1_PCT       = 0.03   # 3% فوق الدخول (بيع 50% + نقل SL للتعادل)
-TP2_PCT       = 0.06   # 6% فوق الدخول (إغلاق كامل)
-TP1_FRACTION  = 0.5    # نسبة البيع عند TP1
+# إعدادات HTF إضافية
+HTF_EMA_TREND_PERIOD = 50
+HTF_SR_WINDOW = 50
+HTF_MIN_RES_BUFFER_ATR_LTF = 1.2  # مسافة أمان للمقاومة (بالـ ATR من LTF)
 
-# ===== Telegram helper =====
+# سيولة/تذبذب/فلترة جودة على LTF
+MIN_DOLLAR_VOLUME_LTF = 60000   # close*volume على الشمعة
+RVOL_WINDOW = 20
+RVOL_MIN = 1.2
+NR_WINDOW = 10
+NR_FACTOR = 0.75
+PULLBACK_VALUE_REF = "ema21"        # "ema21" أو "vwap"
+PULLBACK_CONFIRM   = "bullish_engulf"  # أو "bos"
+ATR_MIN_FOR_TREND  = 0.0005        # ATR النسبي/السعر لتجنب الخمول
+
+# ===== نسب ثابتة للأهداف والوقف (افتراضي) =====
+STOP_LOSS_PCT = 0.02
+TP1_PCT       = 0.03
+TP2_PCT       = 0.06
+TP1_FRACTION  = 0.5
+
+# ===== بدائل: ATR-Based SL/TP (اختياري) =====
+USE_ATR_SL_TP   = False   # فعّل للحصول على SL/TP ديناميكيين
+SL_ATR_MULT     = 1.6
+TP1_ATR_MULT    = 1.6
+TP2_ATR_MULT    = 3.2
+
+# ===== تريلينغ بعد TP1 =====
+TRAIL_AFTER_TP1       = True
+TRAIL_ATR_MULT        = 1.0   # SL = max(SL, current - ATR*mult, entry*(1+LOCK_MIN_PROFIT_PCT))
+LOCK_MIN_PROFIT_PCT   = 0.01
+
+# ===== حد أقصى لمدة الصفقة =====
+USE_MAX_HOLD_HOURS    = True
+MAX_HOLD_HOURS        = 12
+
+# ===== Position sizing بالريسك (اختياري) =====
+USE_RISK_POSITION_SIZING = False
+RISK_PER_TRADE_PCT       = 0.01  # 1% من رصيد USDT
+MIN_NOTIONAL_USDT        = 10.0
+
+# ===== حُرّاس المخاطر العامة =====
+MAX_TRADES_PER_DAY       = 20
+MAX_CONSEC_LOSSES        = 3
+DAILY_LOSS_LIMIT_USDT    = 200.0
+BLOCK_AFTER_LOSSES_MIN   = 90
+SYMBOL_COOLDOWN_MIN      = 30
+
+# ================== Telegram helper ==================
 def _tg(text, parse_mode="HTML"):
     try:
         if not TELEGRAM_TOKEN or not TELEGRAM_CHAT_ID:
@@ -37,11 +91,9 @@ def _tg(text, parse_mode="HTML"):
     except Exception:
         pass
 
-def now_riyadh():
-    return datetime.now(RIYADH_TZ)
-
-def _today_str():
-    return now_riyadh().strftime("%Y-%m-%d")
+# ================== Utils ==================
+def now_riyadh(): return datetime.now(RIYADH_TZ)
+def _today_str(): return now_riyadh().strftime("%Y-%m-%d")
 
 def _atomic_write(path, data):
     tmp = path + ".tmp"
@@ -57,17 +109,16 @@ def _read_json(path, default):
     except: pass
     return default
 
-# ============== تخزين الصفقات ==============
+def _df(data):  # OHLCV -> DataFrame
+    return pd.DataFrame(data, columns=["timestamp","open","high","low","close","volume"])
+
+# ================== تخزين الصفقات ==================
 def _pos_path(symbol):
     os.makedirs(POSITIONS_DIR, exist_ok=True)
     return f"{POSITIONS_DIR}/{symbol.replace('/', '_')}.json"
 
-def load_position(symbol):
-    return _read_json(_pos_path(symbol), None)
-
-def save_position(symbol, position):
-    _atomic_write(_pos_path(symbol), position)
-
+def load_position(symbol): return _read_json(_pos_path(symbol), None)
+def save_position(symbol, position): _atomic_write(_pos_path(symbol), position)
 def clear_position(symbol):
     try:
         p = _pos_path(symbol)
@@ -78,15 +129,13 @@ def count_open_positions():
     os.makedirs(POSITIONS_DIR, exist_ok=True)
     return len([f for f in os.listdir(POSITIONS_DIR) if f.endswith(".json")])
 
-def load_closed_positions():
-    return _read_json(CLOSED_POSITIONS_FILE, [])
+def load_closed_positions(): return _read_json(CLOSED_POSITIONS_FILE, [])
+def save_closed_positions(lst): _atomic_write(CLOSED_POSITIONS_FILE, lst)
 
-def save_closed_positions(lst):
-    _atomic_write(CLOSED_POSITIONS_FILE, lst)
-
-# ============== حالة المخاطر اليومية (مختصرة) ==============
+# ================== حالة المخاطر اليومية ==================
 def _default_risk_state():
-    return {"date": _today_str(), "daily_pnl": 0.0, "consecutive_losses": 0, "trades_today": 0, "blocked_until": None}
+    return {"date": _today_str(), "daily_pnl": 0.0, "consecutive_losses": 0,
+            "trades_today": 0, "blocked_until": None}
 
 def load_risk_state():
     s = _read_json(RISK_STATE_FILE, _default_risk_state())
@@ -102,13 +151,59 @@ def register_trade_opened():
     s["trades_today"] = int(s.get("trades_today", 0)) + 1
     save_risk_state(s)
 
+def _set_block(minutes, reason="risk"):
+    s = load_risk_state()
+    until = now_riyadh() + timedelta(minutes=minutes)
+    s["blocked_until"] = until.isoformat(timespec="seconds")
+    save_risk_state(s)
+    _tg(f"⛔️ <b>تم تفعيل حظر مؤقت</b> ({reason}) حتى <code>{until.strftime('%H:%M')}</code>.")
+
+def _clear_block():
+    s = load_risk_state()
+    s["blocked_until"] = None
+    save_risk_state(s)
+
+def _is_blocked():
+    s = load_risk_state()
+    bu = s.get("blocked_until")
+    if not bu: return False
+    try:
+        t = datetime.fromisoformat(bu)
+    except Exception:
+        return False
+    return now_riyadh() < t
+
 def register_trade_result(pnl_usdt):
     s = load_risk_state()
     s["daily_pnl"] = float(s.get("daily_pnl", 0.0)) + float(pnl_usdt)
     s["consecutive_losses"] = 0 if pnl_usdt > 0 else int(s.get("consecutive_losses", 0)) + 1
+
+    # حُرّاس
+    if s["consecutive_losses"] >= MAX_CONSEC_LOSSES:
+        save_risk_state(s)
+        _set_block(BLOCK_AFTER_LOSSES_MIN, reason="خسائر متتالية")
+        return
+    if s["daily_pnl"] <= -abs(DAILY_LOSS_LIMIT_USDT):
+        end_of_day = now_riyadh().replace(hour=23, minute=59, second=0, microsecond=0)
+        minutes = max(1, int((end_of_day - now_riyadh()).total_seconds() // 60))
+        save_risk_state(s)
+        _set_block(minutes, reason="تجاوز حد الخسارة اليومي")
+        return
+
     save_risk_state(s)
 
-# ============== مؤشرات ==============
+def _risk_precheck_allow_new_entry():
+    if _is_blocked():  return False, "blocked"
+    s = load_risk_state()
+    if MAX_TRADES_PER_DAY and s.get("trades_today", 0) >= MAX_TRADES_PER_DAY:
+        return False, "max_trades"
+    if s.get("daily_pnl", 0.0) <= -abs(DAILY_LOSS_LIMIT_USDT):
+        return False, "daily_loss_limit"
+    if s.get("consecutive_losses", 0) >= MAX_CONSEC_LOSSES:
+        return False, "consec_losses"
+    return True, ""
+
+# ================== مؤشرات ==================
 def ema(s, n): return s.ewm(span=n, adjust=False).mean()
 
 def rsi(series, period=14):
@@ -136,104 +231,236 @@ def add_indicators(df):
     df = macd_cols(df)
     return df
 
-def _df(data):  # OHLCV -> DataFrame
-    return pd.DataFrame(data, columns=["timestamp","open","high","low","close","volume"])
+# VWAP/RVol/NR على LTF
+def _ensure_ltf_indicators(df):
+    df = add_indicators(df.copy())
+    ts = pd.to_datetime(df["timestamp"], unit="ms").dt.tz_localize("UTC").dt.tz_convert("Asia/Riyadh")
+    day_changed = ts.dt.date
+    tp = (df["high"] + df["low"] + df["close"]) / 3.0
+    df["tpv"] = tp * df["volume"]
+    df["cum_vol"] = df.groupby(day_changed)["volume"].cumsum()
+    df["cum_tpv"] = df.groupby(day_changed)["tpv"].cumsum()
+    df["vwap"] = (df["cum_tpv"] / df["cum_vol"]).replace([pd.NA, pd.NaT], None)
+    vol_ma = df["volume"].rolling(RVOL_WINDOW).mean()
+    df["rvol"] = df["volume"] / vol_ma.replace(0, 1e-9)
+    rng = df["high"] - df["low"]
+    rng_ma = rng.rolling(NR_WINDOW).mean()
+    df["is_nr"] = rng < (NR_FACTOR * rng_ma)
+    # أجسام
+    df["body"] = (df["close"] - df["open"]).abs()
+    df["avg_body20"] = df["body"].rolling(20).mean()
+    return df
 
-def get_sr_on_closed(df, window=50):
-    if len(df) < window + 3: return (None, None)
-    df_prev = df.iloc[:-2]  # حتى الشمعة المغلقة
-    w = min(window, len(df_prev))
+def _atr_from_df(df, period=ATR_PERIOD):
+    prev_close = df["close"].shift(1)
+    tr1 = df["high"] - df["low"]
+    tr2 = (df["high"] - prev_close).abs()
+    tr3 = (df["low"] - prev_close).abs()
+    tr = pd.concat([tr1, tr2, tr3], axis=1).max(axis=1)
+    atr = tr.ewm(alpha=1/period, adjust=False).mean()
+    return float(atr.iloc[-2])
+
+def _get_atr(symbol, tf, lookback=140, period=ATR_PERIOD):
+    data = fetch_ohlcv(symbol, tf, lookback)
+    if not data: return None
+    df = _df(data)
+    prev_close = df["close"].shift(1)
+    tr1 = df["high"] - df["low"]
+    tr2 = (df["high"] - prev_close).abs()
+    tr3 = (df["low"] - prev_close).abs()
+    tr = pd.concat([tr1, tr2, tr3], axis=1).max(axis=1)
+    atr = tr.ewm(alpha=1/period, adjust=False).mean()
+    if len(atr) < 5: return None
+    return float(atr.iloc[-2])
+
+def _swing_points(df, left=2, right=2):
+    highs = df["high"]; lows = df["low"]
+    idx = len(df) - 3
+    swing_high = None; swing_low = None
+    for i in range(max(0, idx-10), idx+1):
+        if i-left < 0 or i+right >= len(df): continue
+        if highs[i] == max(highs[i-left:i+right+1]):
+            swing_high = float(highs[i])
+        if lows[i] == min(lows[i-left:i+right+1]):
+            swing_low = float(lows[i])
+    return swing_high, swing_low
+
+def _bullish_engulf(prev, cur):
+    return (cur["close"] > cur["open"]) and (prev["close"] < prev["open"]) and \
+           (cur["close"] >= prev["open"]) and (cur["open"] <= prev["close"])
+
+# ================== سياق HTF ==================
+def _get_htf_context(symbol):
+    data = fetch_ohlcv(symbol, HTF_TIMEFRAME, 200)
+    if not data: return None
+    df = _df(data)
+    df["ema50_htf"] = ema(df["close"], HTF_EMA_TREND_PERIOD)
+    if len(df) < HTF_SR_WINDOW + 3: return None
+    df_prev = df.iloc[:-2]
+    w = min(HTF_SR_WINDOW, len(df_prev))
     resistance = df_prev["high"].rolling(w).max().iloc[-1]
     support    = df_prev["low"].rolling(w).min().iloc[-1]
-    return support, resistance
+    closed = df.iloc[-2]
+    ema_now  = float(closed["ema50_htf"])
+    ema_prev = float(df["ema50_htf"].iloc[-7]) if len(df) >= 7 else ema_now
+    return {"close": float(closed["close"]),
+            "ema50_now": ema_now, "ema50_prev": ema_prev,
+            "support": float(support), "resistance": float(resistance)}
 
-_LAST_ENTRY_BAR_TS = {}  # لمنع التكرار على نفس الشمعة
+_LAST_ENTRY_BAR_TS = {}
+_SYMBOL_LAST_TRADE_AT = {}
 
-# ============== فحص الإشارة ==============
+# ================== أنماط الدخول ==================
+def _entry_pullback_logic(df, closed, prev, atr_ltf, htf_ctx):
+    ref_val = closed["ema21"] if PULLBACK_VALUE_REF=="ema21" else closed.get("vwap", closed["ema21"])
+    if pd.isna(ref_val): ref_val = closed["ema21"]
+    near_val = (closed["close"] >= ref_val) and (closed["low"] <= ref_val)
+    if not near_val: return False
+    if PULLBACK_CONFIRM == "bullish_engulf":
+        return _bullish_engulf(prev, closed)
+    elif PULLBACK_CONFIRM == "bos":
+        swing_high, _ = _swing_points(df)
+        return bool(swing_high and closed["close"] > swing_high)
+    return True
+
+def _entry_breakout_logic(df, closed, prev, atr_ltf, htf_ctx):
+    hi_range = float(df["high"].iloc[-NR_WINDOW-2:-2].max())
+    is_nr_recent = bool(df["is_nr"].iloc[-3:-1].all())
+    return (closed["close"] > hi_range) and is_nr_recent
+
+# ================== فحص الإشارة ==================
 def check_signal(symbol):
-    data5 = fetch_ohlcv(symbol, "5m", 200)
-    if not data5: return None
-    df5 = add_indicators(_df(data5))
-    if len(df5) < 60: return None
+    ok, _ = _risk_precheck_allow_new_entry()
+    if not ok:
+        return None
 
-    prev   = df5.iloc[-3]
-    closed = df5.iloc[-2]   # الشمعة المكتملة
+    # تبريد لكل رمز
+    last_t = _SYMBOL_LAST_TRADE_AT.get(symbol)
+    if last_t and (now_riyadh() - last_t) < timedelta(minutes=SYMBOL_COOLDOWN_MIN):
+        return None
+
+    # سياق HTF
+    ctx = _get_htf_context(symbol)
+    if not ctx: return None
+    ema50_slope_up_htf = (ctx["ema50_now"] - ctx["ema50_prev"]) > 0
+    if not (ema50_slope_up_htf and ctx["close"] > ctx["ema50_now"]):
+        return None
+
+    # بيانات LTF
+    data = fetch_ohlcv(symbol, LTF_TIMEFRAME, 260)
+    if not data: return None
+    df = _df(data); df = _ensure_ltf_indicators(df)
+    if len(df) < 120: return None
+
+    prev, closed = df.iloc[-3], df.iloc[-2]
     last_ts_closed = int(closed["timestamp"])
     if _LAST_ENTRY_BAR_TS.get(symbol) == last_ts_closed:
         return None
 
     price = float(closed["close"])
-    ema50_now  = float(closed["ema50"])
-    ema50_prev = float(df5["ema50"].iloc[-7]) if len(df5) >= 7 else ema50_now
-    ema50_slope_up = (ema50_now - ema50_prev) > 0
+    atr_ltf = _atr_from_df(df)
+    if not atr_ltf or atr_ltf <= 0: return None
+    if (atr_ltf / max(1e-9, price)) < ATR_MIN_FOR_TREND: return None
 
-    # اتجاه أقوى حول EMA50
-    if not ema50_slope_up:
+    # مسافات حول EMA50 LTF
+    if price < closed["ema50"] + 0.2 * atr_ltf:  # لا دخول قبل تمايز معقول
         return None
-    if price < ema50_now * 1.001:  # هامش فوق EMA50 (~0.1%)
-        return None
-    if price > ema50_now * 1.03:   # منع التمدد >3%
+    if price > closed["ema50"] + 3.0 * atr_ltf:  # تمدد مبالغ فيه
         return None
 
-    # حجم/شمعة/RSI
-    if not pd.isna(closed["vol_ma20"]) and closed["volume"] < closed["vol_ma20"]:
+    # حجم ورينج
+    if (closed["close"] * closed["volume"]) < MIN_DOLLAR_VOLUME_LTF: return None
+    if pd.isna(closed.get("rvol")) or closed["rvol"] < RVOL_MIN: return None
+    if closed["close"] <= closed["open"]: return None
+    if not (RSI_MIN < closed["rsi"] < RSI_MAX): return None
+
+    # مسافة إلى مقاومة HTF باستخدام ATR LTF
+    if ctx.get("resistance") and (ctx["resistance"] - price) < HTF_MIN_RES_BUFFER_ATR_LTF * atr_ltf:
         return None
-    if closed["close"] <= closed["open"]:
-        return None
-    if not (RSI_MIN < closed["rsi"] < RSI_MAX):
+    if ctx.get("support") and price <= ctx["support"] * (1 + SUPPORT_BUFFER):
         return None
 
-    # دعم/مقاومة
-    support, resistance = get_sr_on_closed(df5, SR_WINDOW)
-    if support and resistance:
-        if price >= resistance * (1 - RESISTANCE_BUFFER): return None
-        if price <= support    * (1 + SUPPORT_BUFFER):    return None
+    # اختيار نمط الدخول
+    mode_ok = False
+    if ENTRY_MODE == "pullback":
+        mode_ok = _entry_pullback_logic(df, closed, prev, atr_ltf, ctx)
+    elif ENTRY_MODE == "breakout":
+        mode_ok = _entry_breakout_logic(df, closed, prev, atr_ltf, ctx)
+    elif ENTRY_MODE == "hybrid":
+        for m in HYBRID_ORDER:
+            if m == "pullback" and _entry_pullback_logic(df, closed, prev, atr_ltf, ctx):
+                mode_ok = True; break
+            if m == "breakout" and _entry_breakout_logic(df, closed, prev, atr_ltf, ctx):
+                mode_ok = True; break
+    else:
+        crossed = (prev["ema9"] < prev["ema21"]) and (closed["ema9"] > closed["ema21"])
+        macd_ok = closed["macd"] > closed["macd_signal"]
+        mode_ok = crossed and macd_ok
 
-    # تقاطع EMA9/21 + MACD
-    crossed = (prev["ema9"] < prev["ema21"]) and (closed["ema9"] > closed["ema21"])
-    macd_ok = closed["macd"] > closed["macd_signal"]
-    if not (crossed and macd_ok):
-        return None
-
-    # تعدد الأطر (15m فوق EMA50)
-    if REQUIRE_MTF:
-        data15 = fetch_ohlcv(symbol, "15m", 150)
-        if not data15: return None
-        df15 = _df(data15)
-        df15["ema50"] = ema(df15["close"], EMA_TREND)
-        if len(df15) < 60: return None
-        closed15 = df15.iloc[-2]
-        if closed15["close"] < closed15["ema50"]:
-            return None
+    if not mode_ok: return None
 
     _LAST_ENTRY_BAR_TS[symbol] = last_ts_closed
     return "buy"
 
-# ============== تنفيذ الشراء ==============
+# ================== حساب SL/TP ==================
+def _compute_sl_tp(entry, atr_val=None):
+    if USE_ATR_SL_TP and atr_val and atr_val > 0:
+        sl  = entry - SL_ATR_MULT  * atr_val
+        tp1 = entry + TP1_ATR_MULT * atr_val
+        tp2 = entry + TP2_ATR_MULT * atr_val
+    else:
+        sl  = entry * (1 - STOP_LOSS_PCT)
+        tp1 = entry * (1 + TP1_PCT)
+        tp2 = entry * (1 + TP2_PCT)
+    return float(sl), float(tp1), float(tp2)
+
+# ================== تنفيذ الشراء ==================
 def execute_buy(symbol):
     if count_open_positions() >= MAX_OPEN_POSITIONS:
         return None, "🚫 الحد الأقصى للصفقات المفتوحة."
+    if _is_blocked():
+        return None, "🚫 ممنوع فتح صفقات الآن (حظر مخاطرة)."
 
-    # السعر الحالي (سنستبدله بسعر التنفيذ الفعلي إن توفر)
     price = float(fetch_price(symbol))
-    usdt  = float(fetch_balance("USDT"))
     if price <= 0: return None, "⚠️ سعر غير صالح."
-    if usdt  < TRADE_AMOUNT_USDT: return None, "🚫 رصيد USDT غير كافٍ."
 
-    amount = TRADE_AMOUNT_USDT / price
+    # ATR على إطار التنفيذ
+    atr_val = _get_atr(symbol, LTF_TIMEFRAME)
+    sl_tmp, tp1_tmp, tp2_tmp = _compute_sl_tp(price, atr_val=atr_val)
+
+    usdt = float(fetch_balance("USDT") or 0)
+    if usdt < MIN_NOTIONAL_USDT:
+        return None, "🚫 رصيد USDT غير كافٍ."
+
+    # Position sizing اختياري
+    if USE_RISK_POSITION_SIZING and atr_val:
+        risk_usdt = float(fetch_balance("USDT") or 0) * RISK_PER_TRADE_PCT
+        per_unit_risk = max(1e-9, price - sl_tmp)
+        qty_by_risk = risk_usdt / per_unit_risk
+        cost = qty_by_risk * price
+        if cost > usdt:
+            qty_by_risk = (usdt / price) * 0.98
+        amount = max(0.0, qty_by_risk)
+    else:
+        if usdt < TRADE_AMOUNT_USDT:
+            return None, "🚫 رصيد USDT غير كافٍ."
+        amount = TRADE_AMOUNT_USDT / price
+
+    if amount * price < MIN_NOTIONAL_USDT:
+        return None, "🚫 قيمة الصفقة أقل من الحد الأدنى."
+
     order = place_market_order(symbol, "buy", amount)
-    if not order: return None, "⚠️ فشل تنفيذ الصفقة."
+    if not order:
+        return None, "⚠️ فشل تنفيذ الصفقة."
 
-    # سعر التنفيذ الفعلي إن توفر
+    # تحديث سعر التنفيذ الفعلي
     try:
         fill_px = float(order.get("average") or order.get("price") or price)
         price = fill_px if fill_px > 0 else price
     except Exception:
         pass
 
-    sl  = price * (1 - STOP_LOSS_PCT)
-    tp1 = price * (1 + TP1_PCT)
-    tp2 = price * (1 + TP2_PCT)
+    sl, tp1, tp2 = _compute_sl_tp(price, atr_val=atr_val)
 
     pos = {
         "symbol": symbol,
@@ -242,25 +469,27 @@ def execute_buy(symbol):
         "stop_loss": float(sl),
         "tp1": float(tp1),
         "tp2": float(tp2),
-        "partial_done": False,  # TP1 لم يُنفذ بعد
+        "partial_done": False,
         "opened_at": now_riyadh().isoformat(timespec="seconds"),
+        "atr_on_entry": float(atr_val or 0.0)
     }
     save_position(symbol, pos)
+    _SYMBOL_LAST_TRADE_AT[symbol] = now_riyadh()
 
-    # Telegram — دخول
     _tg(
         f"✅ <b>دخول BUY</b> {symbol}\n"
-        f"قيمة الشراء: <b>{TRADE_AMOUNT_USDT}$</b>\n"
+        f"قيمة الشراء: <b>{amount*price:,.2f}$</b>\n"
+        f"الكمية: <code>{amount:.6f}</code>\n"
         f"الدخول: <code>{price:.6f}</code>\n"
-        f"SL −2%: <code>{sl:.6f}</code>\n"
-        f"TP1 +3% (50%): <code>{tp1:.6f}</code>\n"
-        f"TP2 +6% (إغلاق): <code>{tp2:.6f}</code>"
+        f"SL: <code>{sl:.6f}</code>\n"
+        f"TP1 ({int((tp1/price-1)*100)}%): <code>{tp1:.6f}</code>\n"
+        f"TP2 ({int((tp2/price-1)*100)}%): <code>{tp2:.6f}</code>"
     )
 
     register_trade_opened()
     return order, f"✅ شراء {symbol} | SL: {sl:.6f} | TP1: {tp1:.6f} | TP2: {tp2:.6f}"
 
-# ============== إدارة الصفقة ==============
+# ================== إدارة الصفقة ==================
 def manage_position(symbol):
     pos = load_position(symbol)
     if not pos: return False
@@ -285,6 +514,24 @@ def manage_position(symbol):
 
     sellable = min(amount, wallet_balance)
 
+    # إغلاق زمني اختياري
+    if USE_MAX_HOLD_HOURS:
+        try:
+            opened_at = datetime.fromisoformat(pos.get("opened_at"))
+            if now_riyadh() - opened_at > timedelta(hours=MAX_HOLD_HOURS):
+                order = place_market_order(symbol, "sell", sellable)
+                if order:
+                    exit_px = float(order.get("average") or order.get("price") or current)
+                    pnl_gross = (exit_px - entry) * sellable
+                    fees = (entry + exit_px) * sellable * (FEE_BPS_ROUNDTRIP / 10000.0)
+                    pnl_net = pnl_gross - fees
+                    _tg(f"⌛️ <b>إغلاق زمني</b> {symbol} @ <code>{exit_px:.6f}</code> • P/L: <b>{pnl_net:.2f}$</b>")
+                    close_trade(symbol, exit_px, pnl_net, reason="TIME")
+                    _SYMBOL_LAST_TRADE_AT[symbol] = now_riyadh()
+                    return True
+        except Exception:
+            pass
+
     # --- TP1: بيع 50% + SL = التعادل ---
     if (not pos.get("partial_done")) and current >= tp1 and sellable > 0:
         part_qty = sellable * TP1_FRACTION
@@ -297,7 +544,7 @@ def manage_position(symbol):
 
             pos["amount"] = float(max(0.0, amount - part_qty))
             pos["partial_done"] = True
-            pos["stop_loss"] = float(entry)  # نقل الوقف للتعادل
+            pos["stop_loss"] = float(max(entry, sl))  # نقل SL للتعادل
             save_position(symbol, pos)
             register_trade_result(pnl_net)
 
@@ -305,16 +552,28 @@ def manage_position(symbol):
                 f"🎯 <b>TP1 تحقق</b> {symbol}\n"
                 f"تم بيع: <code>{part_qty:.6f} {base_asset}</code>\n"
                 f"السعر: <code>{exit_px:.6f}</code>\n"
-                f"نقل SL إلى التعادل."
+                f"SL ← التعادل."
             )
 
-    # تحديث القيم بعد TP1 المحتمل
+    # تحديث بعد TP1
     pos_ref = load_position(symbol)
-    if not pos_ref: 
+    if not pos_ref:
         return True
     amount = float(pos_ref.get("amount", 0.0))
     wallet_balance = float(fetch_balance(base_asset) or 0)
     sellable = min(amount, wallet_balance)
+    sl = float(pos_ref.get("stop_loss", sl))
+
+    # --- تريلينغ بعد TP1 بالـ ATR ---
+    if TRAIL_AFTER_TP1 and pos_ref.get("partial_done") and sellable > 0:
+        atr_val = _get_atr(symbol, LTF_TIMEFRAME)
+        if atr_val and atr_val > 0:
+            new_sl_atr = current - TRAIL_ATR_MULT * atr_val
+            new_sl = max(sl, new_sl_atr, entry * (1 + LOCK_MIN_PROFIT_PCT))
+            if new_sl > sl:
+                pos_ref["stop_loss"] = float(new_sl)
+                save_position(symbol, pos_ref)
+                _tg(f"🧭 <b>Trailing SL</b> {symbol} → <code>{new_sl:.6f}</code>")
 
     # --- TP2: إغلاق كامل ---
     if sellable > 0 and current >= tp2:
@@ -332,7 +591,8 @@ def manage_position(symbol):
                 f"P/L: <b>{pnl_net:.2f}$</b>"
             )
 
-            close_trade(symbol, exit_price=exit_px, pnl_net=pnl_net, reason="TP2")
+            close_trade(symbol, exit_px, pnl_net, reason="TP2")
+            _SYMBOL_LAST_TRADE_AT[symbol] = now_riyadh()
             return True
 
     # --- SL: إغلاق كامل ---
@@ -342,6 +602,7 @@ def manage_position(symbol):
     amount = float(pos_ref.get("amount", 0.0))
     wallet_balance = float(fetch_balance(base_asset) or 0)
     sellable = min(amount, wallet_balance)
+    sl = float(pos_ref.get("stop_loss", sl))
 
     if sellable > 0 and current <= sl:
         order = place_market_order(symbol, "sell", sellable)
@@ -358,12 +619,13 @@ def manage_position(symbol):
                 f"P/L: <b>{pnl_net:.2f}$</b>"
             )
 
-            close_trade(symbol, exit_price=exit_px, pnl_net=pnl_net, reason="SL")
+            close_trade(symbol, exit_px, pnl_net, reason="SL")
+            _SYMBOL_LAST_TRADE_AT[symbol] = now_riyadh()
             return True
 
     return False
 
-# ============== إغلاق وتسجيل ==============
+# ================== إغلاق وتسجيل ==================
 def close_trade(symbol, exit_price, pnl_net, reason="MANUAL"):
     pos = load_position(symbol)
     if not pos: return
@@ -388,7 +650,7 @@ def close_trade(symbol, exit_price, pnl_net, reason="MANUAL"):
     register_trade_result(pnl_net)
     clear_position(symbol)
 
-# ============== ✨ تقرير يومي: يبني النص فقط (الإرسال يتم من run.py) ==============
+# ================== تقرير يومي ==================
 def _fmt_table(rows, headers):
     widths = [len(h) for h in headers]
     for r in rows:
@@ -402,8 +664,11 @@ def build_daily_report_text():
     closed = load_closed_positions()
     today = _today_str()
     todays = [t for t in closed if str(t.get("closed_at", "")).startswith(today)]
+    s = load_risk_state()
+
     if not todays:
-        return f"📊 <b>تقرير اليوم {today}</b>\nلا توجد صفقات اليوم."
+        extra = f"\nوضع المخاطر: {'محظور حتى ' + s.get('blocked_until') if s.get('blocked_until') else 'سماح'} • صفقات اليوم: {s.get('trades_today',0)} • PnL اليومي: {s.get('daily_pnl',0.0):.2f}$"
+        return f"📊 <b>تقرير اليوم {today}</b>\nلا توجد صفقات اليوم.{extra}"
 
     total_pnl = sum(float(t.get("profit", 0.0)) for t in todays)
     wins = [t for t in todays if float(t.get("profit", 0.0)) > 0]
@@ -426,11 +691,15 @@ def build_daily_report_text():
         ])
     table = _fmt_table(rows, headers)
 
+    risk_line = f"وضع المخاطر: {'محظور حتى ' + s.get('blocked_until') if s.get('blocked_until') else 'سماح'} • "\
+                f"اليومي: <b>{s.get('daily_pnl',0.0):.2f}$</b> • "\
+                f"متتالية خسائر: <b>{s.get('consecutive_losses',0)}</b> • "\
+                f"صفقات اليوم: <b>{s.get('trades_today',0)}</b>"
+
     summary = (
         f"📊 <b>تقرير اليوم {today}</b>\n"
         f"عدد الصفقات: <b>{len(todays)}</b> • ربح/خسارة: <b>{total_pnl:.2f}$</b>\n"
         f"نسبة الفوز: <b>{win_rate}%</b> • الرابحة: <b>{len(wins)}</b> • الخاسرة: <b>{len(losses)}</b>\n"
-        f"أفضل صفقة: <b>{best.get('symbol','-')}</b> ({float(best.get('profit',0)):,.2f}$) • "
-        f"أسوأ صفقة: <b>{worst.get('symbol','-')}</b> ({float(worst.get('profit',0)):,.2f}$)\n"
+        f"{risk_line}\n"
     )
     return summary + table
