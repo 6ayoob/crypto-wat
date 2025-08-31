@@ -28,8 +28,8 @@ SYMBOLS = [
     "ATOM/USDT", "DOT/USDT",
 
     # Gaming/Metaverse
-    "MANA/USDT", "AXS/USDT", "ZENT/USTT",  # ← تأكد من "USDT" (لو خطأ مطبعي صحّحه)
-    "CHZ/USDT", "ENJ/USDT", "GALA/USDT", "APE/USDT", "NMR/USDT", "AGLD/USDT"
+    "MANA/USDT", "AXS/USDT", "BIGTIME/USDT",  # ← تأكد من "USDT" (لو خطأ مطبعي صحّحه)
+    "CHZ/USDT", "ENJ/USDT", "GALA/USDT", "APE/USDT", "NMR/USDT", "RON/USDT",
 
     # Layer 2 / Infra
     "OP/USDT", "IMX/USDT", "ARB/USDT",  # أضفت ARB لأنها شائعة
