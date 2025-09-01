@@ -29,16 +29,16 @@ SYMBOLS = [
 
     # Gaming/Metaverse
     "MANA/USDT", "AXS/USDT", "BIGTIME/USDT",  # ← تأكد من "USDT" (لو خطأ مطبعي صحّحه)
-    "CHZ/USDT", "ENJ/USDT", "GALA/USDT", "APE/USDT", "NMR/USDT", "RON/USDT",
+    "CHZ/USDT", "ENJ/USDT", "GALA/USDT", "APE/USDT", "NMR/USDT", "RON/USDT", "SAHARA/USDT", "ARG/USDT", "PYUSD/USDT",
 
     # Layer 2 / Infra
     "OP/USDT", "IMX/USDT", "ARB/USDT",  # أضفت ARB لأنها شائعة
-    "ZIL/USDT", "ZRX/USDT", "SKL/USDT",
+    "ZIL/USDT", "ZRX/USDT", "SKL/USDT", "DAI/USDT", "MAJOR/USDT", "CITY/USDT",
 
     # AI / Render / Web3
-    "BAL/USDT",         # كان RENDER → RNDR
+    "BAL/USDT", "CELR/USDT", "JUP/USDT", "SLP/USDT", "WOO/USDT", "KDA/USDT", "IOTA/USDT", "CHZ/USDT", "YGG/USDT", "BONK/USDT",         # كان RENDER → RNDR
     "MERL/USDT",          # بدل FET (بعد الدمج، لو غير متاح سيتفلتر تلقائياً)
-    "GLMR/USDT", "T/USDT", "BADGER/USDT", "PHA/USDT", "KNC/USDT", "BICO/USDT",
+    "GLMR/USDT", "T/USDT", "BADGER/USDT", "PHA/USDT", "KNC/USDT", "BICO/USDT", "LEO/USDT", "OKSOL/USDT", "NC/USDT", "ATOM/USDT", "EGLD/USDT", "TRB/USDT",
 
     # Meme/Trendy (أبقِ عددها محدوداً لأنها كثيرة الضوضاء)
     "DOGE/USDT", "SHIB/USDT", "PEPE/USDT", "BONK/USDT", "WIF/USDT",
