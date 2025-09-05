@@ -1,7 +1,4 @@
-from pathlib import Path
-
-# Build the final patched file content by embedding the user's original and applying the "minimal-invasive" updates.
-patched_code = r'''# strategy_dual_variants_scalp_applied.py — نسختان منفصلتان برمز واحد (#old كما هو، #new سكالب متكّيف ATR) — هدفان (TP1/TP2)
+# strategy_dual_variants_scalp_applied.py — نسختان منفصلتان برمز واحد (#old كما هو، #new سكالب متكّيف ATR) — هدفان (TP1/TP2)
 # - لا قنوات إضافية ولا قفل نسختين — التنفيذ محلي باستخدام okx_api.
 # - #old: يحافظ على إعداداتك الأصلية (reviewed v2)
 # - #new: سكالب من هدفين مع تكيّف ATR وتضييق فلاتر الدخول
@@ -958,8 +955,3 @@ def build_daily_report_text():
         f"{risk_line}\n"
     )
     return summary + table
-'''
-
-
-out_path.write_text(patched_code, encoding="utf-8")
-out_path.name
