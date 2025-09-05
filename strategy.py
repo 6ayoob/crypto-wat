@@ -1,4 +1,7 @@
-# strategy_dual_variants_scalp_applied.py — نسختان منفصلتان برمز واحد (#old كما هو، #new سكالب متكّيف ATR) — هدفان (TP1/TP2)
+from pathlib import Path
+
+# Build the final patched file content by embedding the user's original and applying the "minimal-invasive" updates.
+patched_code = r'''# strategy_dual_variants_scalp_applied.py — نسختان منفصلتان برمز واحد (#old كما هو، #new سكالب متكّيف ATR) — هدفان (TP1/TP2)
 # - لا قنوات إضافية ولا قفل نسختين — التنفيذ محلي باستخدام okx_api.
 # - #old: يحافظ على إعداداتك الأصلية (reviewed v2)
 # - #new: سكالب من هدفين مع تكيّف ATR وتضييق فلاتر الدخول
@@ -115,6 +118,11 @@ NEW_SCALP_OVERRIDES = {
 # نطاقات RSI حسب النمط (عامّة)
 RSI_MIN_PULLBACK, RSI_MAX_PULLBACK = 45, 65
 RSI_MIN_BREAKOUT, RSI_MAX_BREAKOUT = 50, 80
+
+# ======= تحكم اختياري بالفلترة متعددة الفريمات (يحافظ على الجوهر) =======
+ENABLE_MTF_STRICT = True    # اجعله False للعودة للسلوك الأصلي سريعًا
+MTF_UP_TFS = ("4h", "1h", "15m")  # الفريمات المطلوبة لاعتبار الاتجاه Bullish متوافق
+SCORE_THRESHOLD = 70        # حد أدنى لتنفيذ الإشارة بعد نجاح شروطك (يمكن تغييره)
 
 # ================== Helpers عامة ==================
 
@@ -355,6 +363,8 @@ def macd_rsi_gate(prev_row, closed_row, policy):
 
 def _get_htf_context(symbol):
     base, _ = _split_symbol_variant(symbol)
+
+    # 15m كما هو (السلوك القديم)
     data = fetch_ohlcv(base, HTF_TIMEFRAME, 200)
     if not data: return None
     df = _df(data); df["ema50_htf"] = ema(df["close"], HTF_EMA_TREND_PERIOD)
@@ -365,8 +375,36 @@ def _get_htf_context(symbol):
     closed = df.iloc[-2]
     ema_now  = float(closed["ema50_htf"])
     ema_prev = float(df["ema50_htf"].iloc[-7]) if len(df) >= 7 else ema_now
-    return {"close": float(closed["close"]), "ema50_now": ema_now, "ema50_prev": ema_prev,
-            "support": float(support), "resistance": float(resistance)}
+
+    ctx = {"close": float(closed["close"]), "ema50_now": ema_now, "ema50_prev": ema_prev,
+           "support": float(support), "resistance": float(resistance), "mtf": {}}
+
+    if not ENABLE_MTF_STRICT:
+        return ctx
+
+    # فلتر اتجاهي إضافي من 1h و4h (لا يغيّر مخرجاتك وإنما يضيف حقول معلوماتية)
+    def _tf_info(tf, bars=160):
+        try:
+            d = fetch_ohlcv(base, tf, bars)
+            if not d or len(d) < 80: return None
+            _dfx = _df(d); _dfx[f"ema{HTF_EMA_TREND_PERIOD}"] = ema(_dfx["close"], HTF_EMA_TREND_PERIOD)
+            row = _dfx.iloc[-2]
+            return {"tf": tf, "price": float(row["close"]),
+                    "ema": float(row[f"ema{HTF_EMA_TREND_PERIOD}"]),
+                    "trend_up": bool(row["close"] > row[f"ema{HTF_EMA_TREND_PERIOD}"])}
+        except Exception:
+            return None
+
+    mtf = {}
+    for tf in MTF_UP_TFS:
+        if tf == "15m":
+            mtf["15m"] = {"tf": "15m", "price": ctx["close"], "ema": ctx["ema50_now"],
+                          "trend_up": bool(ctx["close"] > ctx["ema50_now"])}
+        else:
+            info = _tf_info(tf)
+            if info: mtf[tf] = info
+    ctx["mtf"] = mtf
+    return ctx
 
 # ================== منطق الدخول ==================
 
@@ -455,6 +493,50 @@ def check_signal_old(symbol):
     _LAST_ENTRY_BAR_TS[key] = last_ts_closed
     return "buy"
 
+# ================== تقييم الإشارة (إضافة غير مغيرة للجوهر) ==================
+
+def _opportunity_score(df, prev, closed):
+    """تقييم بسيط وشفاف يُستخدم بعد نجاح شروطك الحالية لرفع جودة الفرص."""
+    score, why, pattern = 0, [], ""
+
+    # إغلاق إيجابي
+    if closed["close"] > closed["open"]:
+        score += 10; why.append("BullishClose")
+
+    # فوق EMA21/EMA50
+    try:
+        if closed["close"] > closed.get("ema21", closed["close"]):
+            score += 10; why.append("AboveEMA21")
+        if closed["close"] > closed.get("ema50", closed["close"]):
+            score += 10; why.append("AboveEMA50")
+    except Exception:
+        pass
+
+    # RVOL قوي
+    try:
+        if not pd.isna(closed.get("rvol")) and closed["rvol"] >= 1.5:
+            score += 15; why.append("HighRVOL")
+    except Exception:
+        pass
+
+    # NR-Breakout تأكيدي
+    try:
+        nr_recent = bool(df["is_nr"].iloc[-3:-1].all())
+        hi_range = float(df["high"].iloc[-NR_WINDOW-2:-2].max())
+        if nr_recent and (closed["close"] > hi_range):
+            score += 20; why.append("NR_Breakout"); pattern = "NR_Breakout"
+    except Exception:
+        pass
+
+    # ابتلاع شرائي
+    try:
+        if _bullish_engulf(prev, closed):
+            score += 20; why.append("BullishEngulf"); pattern = pattern or "BullishEngulf"
+    except Exception:
+        pass
+
+    return score, ", ".join(why), (pattern or "Generic")
+
 # ================== فحص الإشارة — NEW (سكالب محسّن) ==================
 
 def check_signal_new(symbol):
@@ -471,6 +553,14 @@ def check_signal_new(symbol):
 
     ctx = _get_htf_context(symbol)
     if not ctx: return None
+
+    # فلتر اتجاه MTF اختياري (يمكن تعطيله من الأعلى)
+    if ENABLE_MTF_STRICT:
+        mtf = ctx.get("mtf") or {}
+        if any(tf not in mtf for tf in MTF_UP_TFS): return None
+        if not all(mtf[tf]["trend_up"] for tf in MTF_UP_TFS): return None
+
+    # شرطك الأصلي (EMA50 15m صاعد + السعر فوقه)
     if not ((ctx["ema50_now"] - ctx["ema50_prev"]) > 0 and ctx["close"] > ctx["ema50_now"]):
         return None
 
@@ -498,10 +588,10 @@ def check_signal_new(symbol):
     if ctx.get("resistance") and (ctx["resistance"] - price) < 1.2 * atr_ltf: return None
     if ctx.get("support") and price <= ctx["support"] * (1 + SUPPORT_BUFFER): return None
 
-    # بوابة MACD/RSI
+    # بوابة MACD/RSI كما هي لديك
     if not macd_rsi_gate(prev, closed, policy=cfg["RSI_GATE_POLICY"]): return None
 
-    # النمط الأساس
+    # اختيار نمط الدخول كما عندك
     chosen_mode = None; mode_ok = False
     if cfg["ENTRY_MODE"] == "pullback":
         chosen_mode = "pullback"; mode_ok = _entry_pullback_logic(df, closed, prev, atr_ltf, ctx, cfg)
@@ -518,7 +608,7 @@ def check_signal_new(symbol):
         macd_ok = float(df["macd"].iloc[-2]) > float(df["macd_signal"].iloc[-2])
         chosen_mode = "crossover"; mode_ok = crossed and macd_ok
 
-    # بدائل محسّنة (SR/Fib)
+    # بدائلك المحسنة كما هي
     if not mode_ok:
         sup_ltf, res_ltf = get_sr_on_closed(df, SR_WINDOW)
         try:
@@ -545,8 +635,14 @@ def check_signal_new(symbol):
     if chosen_mode == "pullback" and not (RSI_MIN_PULLBACK < rsi_val < RSI_MAX_PULLBACK): return None
     if chosen_mode == "breakout" and not (RSI_MIN_BREAKOUT < rsi_val < RSI_MAX_BREAKOUT): return None
 
+    # تقييم بعد نجاح الشروط لزيادة التركيز
+    score, why, patt = _opportunity_score(df, prev, closed)
+    if score < SCORE_THRESHOLD:  # يمنع الفرص الضعيفة
+        return None
+
     _LAST_ENTRY_BAR_TS[key] = last_ts_closed
-    return "buy"
+    # نحافظ على قابلية التوافق: Truthy = buy
+    return {"decision": "buy", "score": score, "reason": why, "pattern": patt, "ts": last_ts_closed}
 
 # ================== Router ==================
 
@@ -591,7 +687,7 @@ def execute_buy(symbol):
     usdt = float(fetch_balance("USDT") or 0)
     if usdt < MIN_NOTIONAL_USDT: return None, "🚫 رصيد USDT غير كافٍ."
 
-    # حجم بسيط ثابت حسب TRADE_AMOUNT_USDT (يمكن تفعيل مخاطرة-لكل-صفقة مستقبلاً)
+    # حجم بسيط ثابت حسب TRADE_AMOUNT_USDT
     if usdt < TRADE_AMOUNT_USDT: return None, "🚫 رصيد USDT غير كافٍ."
     amount = TRADE_AMOUNT_USDT / price
     if amount * price < MIN_NOTIONAL_USDT: return None, "🚫 قيمة الصفقة أقل من الحد الأدنى."
@@ -607,6 +703,15 @@ def execute_buy(symbol):
 
     sl, tp1, tp2 = _compute_sl_tp(price, atr_val, cfg)
 
+    # محاولة التقاط تفاصيل الإشارة (لا تؤثر على شيء إن لم تتوفر)
+    details = None
+    try:
+        sig = check_signal_new(symbol)
+        if isinstance(sig, dict) and sig.get("decision") == "buy":
+            details = {"score": sig.get("score"), "reason": sig.get("reason"), "pattern": sig.get("pattern")}
+    except Exception:
+        details = None
+
     pos = {
         "symbol": symbol,
         "amount": float(amount),
@@ -620,9 +725,15 @@ def execute_buy(symbol):
         "variant": variant,
         "cfg": cfg,  # لأغراض التشخيص
     }
+    if details:
+        pos.update(details)
+
     save_position(symbol, pos)
     _SYMBOL_LAST_TRADE_AT[f"{base}|{variant}"] = now_riyadh()
 
+    extra = ""
+    if details:
+        extra = f"\nScore: <b>{details.get('score')}</b> • {details.get('pattern')} • {details.get('reason')}"
     _tg(
         f"✅ <b>دخول BUY</b> {symbol}\n"
         f"قيمة الشراء: <b>{amount*price:,.2f}$</b>\n"
@@ -630,7 +741,7 @@ def execute_buy(symbol):
         f"الدخول: <code>{price:.6f}</code>\n"
         f"SL: <code>{sl:.6f}</code>\n"
         f"TP1: <code>{tp1:.6f}</code>\n"
-        f"TP2: <code>{tp2:.6f}</code>"
+        f"TP2: <code>{tp2:.6f}</code>{extra}"
     )
 
     register_trade_opened()
@@ -788,6 +899,10 @@ def close_trade(symbol, exit_price, pnl_net, reason="MANUAL"):
         "opened_at": pos.get("opened_at"),
         "closed_at": now_riyadh().isoformat(timespec="seconds"),
         "variant": pos.get("variant"),
+        # تظهر إن وُجدت
+        "score": pos.get("score"),
+        "pattern": pos.get("pattern"),
+        "entry_reason": pos.get("reason"),
     })
     save_closed_positions(closed)
     register_trade_result(pnl_net)
@@ -813,10 +928,9 @@ def build_daily_report_text():
 
     total_pnl = sum(float(t.get("profit", 0.0)) for t in todays)
     wins = [t for t in todays if float(t.get("profit", 0.0)) > 0]
-    losses = [t for t in todays if float(t.get("profit", 0.0)) <= 0]
     win_rate = round(100 * len(wins) / max(1, len(todays)), 2)
 
-    headers = ["الرمز#النسخة", "الكمية", "دخول", "خروج", "P/L$", "P/L%", "سبب"]
+    headers = ["الرمز#النسخة", "الكمية", "دخول", "خروج", "P/L$", "P/L%", "Score", "نمط", "سبب"]
     rows = []
     for t in todays:
         rows.append([
@@ -826,7 +940,9 @@ def build_daily_report_text():
             f"{float(t.get('exit_price',0)):,.6f}",
             f"{float(t.get('profit',0)):,.2f}",
             f"{round(float(t.get('pnl_pct',0))*100,2)}%",
-            t.get("reason","-")
+            str(t.get("score","-")),
+            t.get("pattern","-"),
+            (t.get("entry_reason", t.get('reason','-'))[:40] + ("…" if len(t.get("entry_reason", t.get('reason','')))>40 else "")),
         ])
     table = _fmt_table(rows, headers)
 
@@ -842,3 +958,8 @@ def build_daily_report_text():
         f"{risk_line}\n"
     )
     return summary + table
+'''
+
+out_path = Path("/mnt/data/strategy_dual_variants_scalp_applied_FINAL_patched.py")
+out_path.write_text(patched_code, encoding="utf-8")
+out_path.name
