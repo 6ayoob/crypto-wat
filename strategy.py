@@ -960,6 +960,6 @@ def build_daily_report_text():
     return summary + table
 '''
 
-out_path = Path("/mnt/data/strategy_dual_variants_scalp_applied_FINAL_patched.py")
+
 out_path.write_text(patched_code, encoding="utf-8")
 out_path.name
