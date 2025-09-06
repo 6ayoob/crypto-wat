@@ -1,3 +1,4 @@
+# -*- coding: utf-8 -*-
 # strategy_dual_variants_scalp_applied.py — نسختان منفصلتان برمز واحد (#old كما هو، #new سكالب متكّيف ATR)
 # - التنفيذ محلي باستخدام okx_api.
 # - #old: يحافظ على إعداداتك الأصلية (reviewed v2)
@@ -14,7 +15,8 @@ from config import (
     TELEGRAM_TOKEN, TELEGRAM_CHAT_ID
 )
 
-# (جديد) استيراد محرّك الإشارات
+# (جديد) استيراد محرّك الإشارات من strategy.py
+# تنبيه: لا تقم أبداً بالاستيراد العكسي من هذا الملف داخل strategy.py لتجنب circular import.
 from strategy import check_signal as strat_check
 
 # ================== إعدادات عامة (أساس) ==================
@@ -125,7 +127,6 @@ MTF_UP_TFS = ("4h", "1h", "15m")  # الفريمات المطلوبة لاعتب
 SCORE_THRESHOLD = 70        # حد أدنى لتنفيذ الإشارة بعد نجاح شروطك (يمكن تغييره)
 
 # ================== Helpers عامة ==================
-
 def _tg(text, parse_mode="HTML"):
     try:
         if not TELEGRAM_TOKEN or not TELEGRAM_CHAT_ID:
@@ -395,7 +396,7 @@ def _get_htf_context(symbol):
 
 # ================== منطق الدخول (النسخة القديمة) ==================
 def _entry_pullback_logic(df, closed, prev, atr_ltf, htf_ctx, cfg):
-    ref_val = closed["ema21"] if cfg["PULLBACK_VALUE_REF"]=="ema21" else closed.get("vwap", closed["ema21"]) 
+    ref_val = closed["ema21"] if cfg["PULLBACK_VALUE_REF"]=="ema21" else closed.get("vwap", closed["ema21"])
     if pd.isna(ref_val): ref_val = closed["ema21"]
     near_val = (closed["close"] >= ref_val) and (closed["low"] <= ref_val)
     if not near_val: return False
@@ -465,7 +466,7 @@ def check_signal_old(symbol):
             if m == "breakout" and _entry_breakout_logic(df, closed, prev, atr_ltf, ctx, cfg):
                 chosen_mode = "breakout"; mode_ok = True; break
     else:
-        crossed = (prev["ema9"] < prev["ema21"]) and (closed["ema9"] > closed["ema21"]) 
+        crossed = (prev["ema9"] < prev["ema21"]) and (closed["ema9"] > closed["ema21"])
         macd_ok = float(df["macd"].iloc[-2]) > float(df["macd_signal"].iloc[-2])
         chosen_mode = "crossover"; mode_ok = crossed and macd_ok
 
@@ -571,7 +572,7 @@ def check_signal_new(symbol):
             if m == "pullback" and _entry_pullback_logic(df, closed, prev, atr_ltf, ctx, cfg):
                 chosen_mode = "pullback"; mode_ok = True; break
     else:
-        crossed = (prev["ema9"] < prev["ema21"]) and (closed["ema9"] > closed["ema21"]) 
+        crossed = (prev["ema9"] < prev["ema21"]) and (closed["ema9"] > closed["ema21"])
         macd_ok = float(df["macd"].iloc[-2]) > float(df["macd_signal"].iloc[-2])
         chosen_mode = "crossover"; mode_ok = crossed and macd_ok
 
@@ -689,10 +690,13 @@ def execute_buy(symbol):
     register_trade_opened()
 
     # رسالة دخول
-    _tg(f"{sig['messages']['entry']}\n"
-        f"دخول: <code>{fill_px:.6f}</code>\n"
-        f"SL: <code>{sig['sl']:.6f}</code>\n"
-        f"أهداف: {', '.join(str(round(t,6)) for t in sig['targets'])}")
+    try:
+        _tg(f"{sig['messages']['entry']}\n"
+            f"دخول: <code>{fill_px:.6f}</code>\n"
+            f"SL: <code>{sig['sl']:.6f}</code>\n"
+            f"أهداف: {', '.join(str(round(t,6)) for t in sig['targets'])}")
+    except Exception:
+        pass
 
     return order, f"✅ شراء {symbol} | SL: {sig['sl']:.6f}"
 
@@ -722,13 +726,20 @@ def manage_position(symbol):
         if data_htf:
             dfh = _df(data_htf)
             closed = dfh.iloc[-2]
-            if closed["close"] < stop_rule["level"]:
+            try:
+                level = float(stop_rule.get("level", pos["stop_loss"]))
+            except Exception:
+                level = float(pos["stop_loss"])
+            if float(closed["close"]) < level:
                 order = place_market_order(base, "sell", amount)
                 if order:
                     exit_px = float(order.get("average") or order.get("price") or current)
                     pnl_net = (exit_px - entry) * amount - (entry + exit_px) * amount * (FEE_BPS_ROUNDTRIP/10000.0)
                     close_trade(symbol, exit_px, pnl_net, reason="HTF_STOP")
-                    _tg(f"🛑 وقف HTF {symbol} عند <code>{exit_px:.6f}</code>")
+                    try:
+                        _tg(f"🛑 وقف HTF {symbol} عند <code>{exit_px:.6f}</code>")
+                    except Exception:
+                        pass
                     return True
 
     # (2) الخروج الزمني للوصول لـ TP1
@@ -743,7 +754,10 @@ def manage_position(symbol):
                     exit_px = float(order.get("average") or order.get("price") or current)
                     pnl_net = (exit_px - entry) * amount - (entry + exit_px) * amount * (FEE_BPS_ROUNDTRIP/10000.0)
                     close_trade(symbol, exit_px, pnl_net, reason="TIME_EXIT")
-                    _tg(pos["messages"]["time"] if pos.get("messages") else "⌛ خروج زمني")
+                    try:
+                        _tg(pos["messages"]["time"] if pos.get("messages") else "⌛ خروج زمني")
+                    except Exception:
+                        pass
                     return True
         except Exception:
             pass
@@ -770,8 +784,11 @@ def manage_position(symbol):
                     save_position(symbol, pos)
 
                     register_trade_result(pnl_net)
-                    if pos.get("messages"):
-                        _tg(pos["messages"].get(f"tp{i+1}", f"🎯 TP{i+1} تحقق"))
+                    try:
+                        if pos.get("messages"):
+                            _tg(pos["messages"].get(f"tp{i+1}", f"🎯 TP{i+1} تحقق"))
+                    except Exception:
+                        pass
 
                     # تريلينغ بعد TP2
                     if i >= 1 and pos["amount"] > 0:
@@ -782,7 +799,10 @@ def manage_position(symbol):
                                 new_sl = current - atr_val
                                 if new_sl > pos["stop_loss"] * (1 + TRAIL_MIN_STEP_RATIO):
                                     pos["stop_loss"] = float(new_sl); save_position(symbol, pos)
-                                    _tg(f"🧭 <b>Trailing SL</b> {symbol} → <code>{new_sl:.6f}</code>")
+                                    try:
+                                        _tg(f"🧭 <b>Trailing SL</b> {symbol} → <code>{new_sl:.6f}</code>")
+                                    except Exception:
+                                        pass
 
     # (4) وقف الخسارة
     if current <= pos["stop_loss"] and pos["amount"] > 0:
@@ -794,7 +814,10 @@ def manage_position(symbol):
             fees = (entry + exit_px) * sellable * (FEE_BPS_ROUNDTRIP / 10000.0)
             pnl_net = pnl_gross - fees
             close_trade(symbol, exit_px, pnl_net, reason="SL")
-            if pos.get("messages"): _tg(pos["messages"].get("sl", "🛑 SL"))
+            try:
+                if pos.get("messages"): _tg(pos["messages"].get("sl", "🛑 SL"))
+            except Exception:
+                pass
             return True
 
     return False
