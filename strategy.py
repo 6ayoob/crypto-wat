@@ -15,9 +15,7 @@ from config import (
     TELEGRAM_TOKEN, TELEGRAM_CHAT_ID
 )
 
-# (جديد) استيراد محرّك الإشارات من strategy.py
-# تنبيه: لا تقم أبداً بالاستيراد العكسي من هذا الملف داخل strategy.py لتجنب circular import.
-from strategy import check_signal as strat_check
+
 
 # ================== إعدادات عامة (أساس) ==================
 RIYADH_TZ = timezone(timedelta(hours=3))
