@@ -1,8 +1,9 @@
 # -*- coding: utf-8 -*-
-# strategy_dual_variants_scalp_applied.py — نسختان منفصلتان برمز واحد (#old كما هو، #new سكالب متكّيف ATR)
+# strategy_dual_variants_scalp_applied.py — نسختان برمز واحد (#old كما هو، #new سكالب متكّيف ATR)
+# "نسخة مُخفَّفة الصرامة" وفق طلبك — تعديلات مدروسة لزيادة عدد الإشارات بدون المساس بحماية رأس المال.
 # - التنفيذ محلي باستخدام okx_api.
 # - #old: يحافظ على إعداداتك الأصلية (reviewed v2)
-# - #new: سكالب من هدفين مع تكيّف ATR وتضييق فلاتر الدخول (مع أوتو-تكيّف حسب ريجيم السوق)
+# - #new: سكالب من هدفين مع تكيّف ATR وتخفيف فلاتر الدخول + ضبط آلي حسب ريجيم السوق
 # - (مُحدَّث) دمج strategy.py كمصدر إشارة (5 أهداف + HTF Stop + خروج زمني + TP_hits) عند توفره
 
 import os, json, requests
@@ -97,18 +98,18 @@ BASE_CFG = {
     "SYMBOL_COOLDOWN_MIN": 30,
 }
 
-# تخصيص (#new) — سكالب متكّيف بالـ ATR
+# تخصيص (#new) — سكالب متكّيف بالـ ATR (مخفّف الصرامة)
 NEW_SCALP_OVERRIDES = {
     "HYBRID_ORDER": ["breakout","pullback"],
     "PULLBACK_VALUE_REF": "vwap",
     "PULLBACK_CONFIRM": "bos",
 
-    "RVOL_MIN": 1.6,
+    "RVOL_MIN": 1.4,                 # كان 1.6
     "ATR_MIN_FOR_TREND": 0.003,
 
     "USE_FIB": True,
     "BREAKOUT_BUFFER_LTF": 0.0018,
-    "RSI_GATE_POLICY": "balanced",
+    "RSI_GATE_POLICY": "lenient",  # كان balanced
 
     # إدارة عبر ATR
     "USE_ATR_SL_TP": True,
@@ -119,9 +120,9 @@ NEW_SCALP_OVERRIDES = {
     # تريلينغ/وقت/تبريد
     "TRAIL_AFTER_TP1": True,
     "TRAIL_ATR_MULT": 1.0,
-    "LOCK_MIN_PROFIT_PCT": 0.004,  # 0.4%
+    "LOCK_MIN_PROFIT_PCT": 0.003,   # كان 0.004 (0.4%) → 0.3%
     "MAX_HOLD_HOURS": 6,
-    "SYMBOL_COOLDOWN_MIN": 15,
+    "SYMBOL_COOLDOWN_MIN": 8,       # كان 15 دقيقة
 }
 
 # نطاقات RSI حسب النمط (عامّة)
@@ -131,7 +132,8 @@ RSI_MIN_BREAKOUT, RSI_MAX_BREAKOUT = 50, 80
 # ======= تحكم اختياري بالفلترة متعددة الفريمات =======
 ENABLE_MTF_STRICT = True
 MTF_UP_TFS = ("4h", "1h", "15m")
-SCORE_THRESHOLD = 70  # سيُضبط أوتوماتيكياً حوله حسب الريجيم
+# اجعل None لتعتمد فقط على العتبة المتكيفة حسب الريجيم
+SCORE_THRESHOLD = None
 
 # ================== Helpers عامة ==================
 
@@ -549,7 +551,7 @@ def _auto_tune_thresholds_ltf(df):
             "regime": "mid",
             "rvol_min": 1.35,
             "atr_min_for_trend": 0.0026,
-            "score_threshold": max(64, SCORE_THRESHOLD),
+            "score_threshold": max(64, SCORE_THRESHOLD) if SCORE_THRESHOLD else 64,
             "dist_bounds_to_ema50": (0.45, 3.2),
             "mtf_votes_req": 2,
             "breakout_buffer": 0.0016,
@@ -574,32 +576,32 @@ def _auto_tune_thresholds_ltf(df):
     if regime == "low":
         return {
             "regime": regime,
-            "rvol_min": 1.15,
-            "atr_min_for_trend": 0.0020,
-            "score_threshold": 64,
-            "dist_bounds_to_ema50": (0.35, 3.5),
-            "mtf_votes_req": 2,
-            "breakout_buffer": 0.0012,
+            "rvol_min": 1.10,
+            "atr_min_for_trend": 0.0018,
+            "score_threshold": 62,
+            "dist_bounds_to_ema50": (0.30, 3.80),
+            "mtf_votes_req": 1,
+            "breakout_buffer": 0.0010,
         }
     elif regime == "high":
         return {
             "regime": regime,
-            "rvol_min": 1.60,
-            "atr_min_for_trend": 0.0032,
-            "score_threshold": 72,
-            "dist_bounds_to_ema50": (0.55, 2.8),
-            "mtf_votes_req": 3,   # أقوى عند العنف لتقليل الضوضاء
-            "breakout_buffer": 0.0018,
+            "rvol_min": 1.45,
+            "atr_min_for_trend": 0.0028,
+            "score_threshold": 70,
+            "dist_bounds_to_ema50": (0.50, 3.00),
+            "mtf_votes_req": 2,   # مخفّف قليلًا
+            "breakout_buffer": 0.0016,
         }
     else:  # mid
         return {
             "regime": regime,
-            "rvol_min": 1.35,
-            "atr_min_for_trend": 0.0026,
-            "score_threshold": 68,
-            "dist_bounds_to_ema50": (0.45, 3.2),
-            "mtf_votes_req": 2,
-            "breakout_buffer": 0.0016,
+            "rvol_min": 1.25,
+            "atr_min_for_trend": 0.0022,
+            "score_threshold": 66,
+            "dist_bounds_to_ema50": (0.40, 3.50),
+            "mtf_votes_req": 1,
+            "breakout_buffer": 0.0014,
         }
 
 # ================== فحص الإشارة — NEW (سكالب محسّن مع تكيّف) ==================
@@ -619,7 +621,7 @@ def check_signal_new(symbol):
     ctx = _get_htf_context(symbol)
     if not ctx: return None
 
-    # تصويت MTF (2 من 3 افتراضيًا – قد يصبح 3 من 3 في high-vol)
+    # تصويت MTF (افتراضيًا 2 من 3 — قد يصبح 1 من 3 في low/mid عبر الضبط الآلي)
     mtf_soft_block = False
     if ENABLE_MTF_STRICT and ctx.get("mtf"):
         ups0 = sum(1 for tf in ("15m","1h","4h") if tf in ctx["mtf"] and ctx["mtf"][tf].get("trend_up"))
@@ -638,13 +640,14 @@ def check_signal_new(symbol):
     tune = _auto_tune_thresholds_ltf(df)
     rvol_min = tune["rvol_min"]
     atr_min_for_trend = tune["atr_min_for_trend"]
-    score_threshold = max(tune["score_threshold"], SCORE_THRESHOLD) if SCORE_THRESHOLD else tune["score_threshold"]
+    # إذا كانت SCORE_THRESHOLD = None نستخدم العتبة المتكيفة فقط، وإلا نأخذ الأدنى بينهما
+    score_threshold = tune["score_threshold"] if SCORE_THRESHOLD is None else min(tune["score_threshold"], SCORE_THRESHOLD)
     dist_lo, dist_hi = tune["dist_bounds_to_ema50"]
 
     if ENABLE_MTF_STRICT and ctx.get("mtf"):
         ups = ups0
         if ups < tune["mtf_votes_req"]:
-            mtf_soft_block = True  # نسمح لاحقًا فقط لـ Breakout القوي
+            mtf_soft_block = True  # نسمح لاحقًا إذا تحققت شروط أخف
 
     prev, closed = df.iloc[-3], df.iloc[-2]
     last_ts_closed = int(closed["timestamp"])
@@ -661,17 +664,18 @@ def check_signal_new(symbol):
 
     # سيولة/حجم مرنين
     if (closed["close"] * closed["volume"]) < 60000: return None
-    need_rvol = max(cfg["RVOL_MIN"] * 0.90, rvol_min)
+    # تخفيف بسيط لمتطلب RVOL
+    need_rvol = max(cfg["RVOL_MIN"] * 0.85, rvol_min * 0.95)
     if pd.isna(closed.get("rvol")) or closed["rvol"] < need_rvol: return None
     if closed["close"] <= closed["open"]: return None
 
-    # قرب مقاومة — شرط لين
+    # قرب مقاومة — شرط ليّن
     near_res = False
     if ctx.get("resistance"):
         near_res = (ctx["resistance"] - price) < (0.8 * atr_ltf)  # كان 1.2 ATR
 
-    # بوابة MACD/RSI — ليّنة في Low‑Vol
-    policy = "lenient" if tune["regime"] == "low" else cfg["RSI_GATE_POLICY"]
+    # بوابة MACD/RSI — ليّنة افتراضيًا
+    policy = cfg["RSI_GATE_POLICY"] or "lenient"
     if not macd_rsi_gate(prev, closed, policy=policy): return None
 
     # اختيار النمط
@@ -721,11 +725,12 @@ def check_signal_new(symbol):
     # سكّور الفرصة + استثناء ذكي قرب المقاومة
     score, why, patt = _opportunity_score(df, prev, closed)
     if near_res:
-        if not (score >= (score_threshold + 6) or float(closed.get("rvol", 0)) >= (need_rvol + 0.3)):
+        # ليّن: يكفي score أعلى بـ +3 أو RVOL أعلى بـ +0.15، أو السماح للـ Breakout
+        if not (score >= (score_threshold + 3) or float(closed.get("rvol", 0)) >= (need_rvol + 0.15) or chosen_mode == "breakout"):
             return None
 
-    # تصويت MTF ضعيف؟ اسمح فقط للـ Breakout القوي
-    if ENABLE_MTF_STRICT and mtf_soft_block and not (chosen_mode == "breakout" and score >= (score_threshold + 6)):
+    # تصويت MTF ضعيف؟ اسمح إذا كان score كافيًا أو كان النمط Breakout
+    if ENABLE_MTF_STRICT and mtf_soft_block and not (score >= score_threshold or chosen_mode == "breakout"):
         return None
 
     if score < score_threshold:
