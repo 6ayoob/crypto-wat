@@ -53,8 +53,14 @@ OKX_TICKERS_URL = f"{OKX_BASE}/api/v5/market/tickers?instType=SPOT"
 
 # ================ أدوات مساعدة عامة ================
 def _fmt_symbol(symbol: str) -> str:
-    # يدعم صيغ مثل BTC-USDT, BTC_USDT → BTC/USDT
-    return symbol.replace("-", "/").replace("_", "/").upper()
+    """
+    يطبع رموز مثل BTC-USDT, BTC_USDT, BTC/USDT#new → BTC/USDT
+    (يزيل لاحقة الاستراتيجية مثل #old/#new إن وُجدت).
+    """
+    s = (symbol or "").strip()
+    if "#" in s:
+        s = s.split("#", 1)[0]
+    return s.replace("-", "/").replace("_", "/").upper()
 
 def _okx_error_hint(e: Exception) -> str:
     msg = str(e)
