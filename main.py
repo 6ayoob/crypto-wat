@@ -16,6 +16,16 @@ from strategy import (
     count_open_positions, build_daily_report_text
 )
 
+# (جديد) استيراد اختياري للتشخيص من الاستراتيجية
+# إن لم تكن الدوال موجودة في strategy.py ستُعرّف بدائل صامتة.
+try:
+    from strategy import maybe_emit_reject_summary, check_signal_debug  # قد لا تكون متوفرة
+except Exception:
+    def maybe_emit_reject_summary(): 
+        pass
+    def check_signal_debug(symbol): 
+        return None, []
+
 # كاش أسعار جماعي من okx_api لتقليل الضغط
 try:
     from okx_api import start_tickers_cache, stop_tickers_cache
@@ -28,8 +38,8 @@ except Exception:
 MAX_OPEN_POSITIONS_OVERRIDE = None  # مثال: 2 أو 3 … أو None لإيقافه
 
 # فواصل التكرار
-SCAN_INTERVAL_SEC    = int(os.getenv("SCAN_INTERVAL_SEC", "25"))  # فحص إشارات الدخول
-MANAGE_INTERVAL_SEC  = int(os.getenv("MANAGE_INTERVAL_SEC", "10"))  # إدارة المراكز
+SCAN_INTERVAL_SEC    = int(os.getenv("SCAN_INTERVAL_SEC", "25"))   # فحص إشارات الدخول
+MANAGE_INTERVAL_SEC  = int(os.getenv("MANAGE_INTERVAL_SEC", "10")) # إدارة المراكز
 LOOP_SLEEP_SEC       = 1.0  # نوم قصير داخل الحلقة
 
 # تقرير يومي تلقائي (بتوقيت الرياض)
@@ -147,7 +157,10 @@ if __name__ == "__main__":
                                 print(f"[check_signal] {symbol} error: {e}")
                             continue
 
-                        if sig == "buy":
+                        # دعم نوعين من النتيجة: "buy" أو dict(decision="buy")
+                        is_buy = (sig == "buy") or (isinstance(sig, dict) and str(sig.get("decision", "")).lower() == "buy")
+
+                        if is_buy:
                             try:
                                 order, msg = execute_buy(symbol)
                                 if msg:
@@ -157,9 +170,23 @@ if __name__ == "__main__":
                             except Exception as e:
                                 send_telegram_message(f"❌ فشل تنفيذ شراء {symbol}:\n{e}")
                                 continue
+                        else:
+                            # (اختياري) عندما لا توجد إشارة، نفحص أسباب الرفض (لو الدالة موجودة)
+                            try:
+                                _, reasons = check_signal_debug(symbol)
+                                if reasons:
+                                    print(f"[debug] {symbol} reject reasons: {reasons[:5]}")
+                            except Exception:
+                                pass
 
                         # مهلة قصيرة بين الرموز لتخفيف الضغط
                         time.sleep(0.2)
+
+                    # (جديد) إرسال ملخص أسباب الرفض كل ~30 دقيقة كحد أقصى — إن كانت الدالة مفعلة في الاستراتيجية
+                    try:
+                        maybe_emit_reject_summary()
+                    except Exception:
+                        pass
 
                 except Exception as e:
                     send_telegram_message(f"⚠️ خطأ عام أثناء فحص الإشارات:\n{traceback.format_exc()}")
