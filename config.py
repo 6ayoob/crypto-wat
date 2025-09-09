@@ -15,6 +15,9 @@ PASSPHRASE = "Ta123456&"
 TELEGRAM_TOKEN = "8300868885:AAEx8Zxdkz9CRUHmjJ0vvn6L3kC2kOPCHuk"
 TELEGRAM_CHAT_ID = "658712542"
 # ===============================
+# 🔑 مفاتيح API لـ OKX (استخدم متغيرات بيئة للأمان)
+# ===============================
+# ===============================
 # 📈 الرموز — قائمة منقّحة (سيتم فلترتها وإكمالها تلقائياً من OKX عند الإقلاع)
 # ملاحظة: لا تعتمد على هذه القائمة فقط؛ سيتم التحقق من دعم OKX وإكمالها حتى 100.
 # ===============================
@@ -285,3 +288,18 @@ except Exception:
 
 if DEBUG_CONFIG_SYMBOLS:
     print(f"[config] SYMBOLS ready: {len(SYMBOLS)} | first 10: {SYMBOLS[:10]}")
+
+# ===============================
+# 🎯 نسختين لأول 20 عملة والباقي نسخة واحدة
+# ===============================
+FIRST_N_FOR_BOTH = 20
+_final_symbols = []
+for idx, s in enumerate(SYMBOLS):
+    _final_symbols.append(s)                 # النسخة الافتراضية (#new)
+    if idx < FIRST_N_FOR_BOTH:
+        _final_symbols.append(f"{s}#old")    # أضف نسخة #old لأول 20
+
+SYMBOLS = _final_symbols
+
+if DEBUG_CONFIG_SYMBOLS:
+    print(f"[config] final SYMBOLS: {len(SYMBOLS)} | first 12: {SYMBOLS[:12]}")
