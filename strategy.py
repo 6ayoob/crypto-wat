@@ -179,6 +179,23 @@ VBR_OVERRIDES = {
 RSI_MIN_PULLBACK, RSI_MAX_PULLBACK = 45, 65
 RSI_MIN_BREAKOUT, RSI_MAX_BREAKOUT = 50, 80
 
+# ===== إدارة صفقة حسب الاستراتيجية =====
+PER_STRAT_MGMT = {
+    "new": {"SL":"atr", "SL_MULT":0.9, "TP1":"sr_or_atr", "TP1_ATR":1.2, "TP2_ATR":2.2,
+             "TRAIL_AFTER_TP1":True, "TRAIL_ATR":1.0, "TIME_HRS":6},
+    "old": {"SL":"pct", "SL_PCT":0.02, "TP1_PCT":0.03, "TP2_PCT":0.06,
+             "TRAIL_AFTER_TP1":False, "TIME_HRS":12},
+    "srr": {"SL":"atr_below_sweep", "SL_MULT":0.8, "TP1":"sr_or_atr", "TP1_ATR":1.0, "TP2_ATR":2.2,
+             "TRAIL_AFTER_TP1":True, "TRAIL_ATR":1.0, "TIME_HRS":4},
+    "brt": {"SL":"atr_below_retest", "SL_MULT":1.0, "TP1":"range_or_atr", "TP1_ATR":1.5, "TP2_ATR":2.5,
+             "TRAIL_AFTER_TP1":True, "TRAIL_ATR":0.9, "TIME_HRS":8},
+    "vbr": {"SL":"atr", "SL_MULT":1.0, "TP1":"vwap_or_sr", "TP2_ATR":1.8,
+             "TRAIL_AFTER_TP1":True, "TRAIL_ATR":0.8, "TIME_HRS":3},
+}
+
+def _mgmt(variant: str):
+    return PER_STRAT_MGMT.get(variant, PER_STRAT_MGMT["new"])
+
 # ======= فلترة متعددة الفريمات =======
 ENABLE_MTF_STRICT = True
 MTF_UP_TFS = ("4h", "1h", "15m")
@@ -1039,15 +1056,111 @@ def check_signal(symbol):
 
 # ================== SL/TP ==================
 
-def _compute_sl_tp(entry, atr_val, cfg):
-    if cfg.get("USE_ATR_SL_TP") and atr_val and atr_val > 0:
-        sl  = entry - cfg.get("SL_ATR_MULT", 1.6)  * atr_val
-        tp1 = entry + cfg.get("TP1_ATR_MULT", 1.6) * atr_val
-        tp2 = entry + cfg.get("TP2_ATR_MULT", 3.2) * atr_val
-    else:
-        sl  = entry * (1 - cfg.get("STOP_LOSS_PCT", 0.02))
-        tp1 = entry * (1 + cfg.get("TP1_PCT", 0.03))
-        tp2 = entry * (1 + cfg.get("TP2_PCT", 0.06))
+def _compute_sl_tp(entry, atr_val, cfg, variant, symbol=None, df=None, ctx=None, closed=None):
+    """يحسِب SL/TP1/TP2 وفق سياسة الاستراتيجية (PER_STRAT_MGMT).
+    يعتمد على ATR وطبقات SR وVWAP إن لزم. يُفضَّل تمرير df/closed والسِمبل لتحسين TP1 الذكي.
+    """
+    mg = _mgmt(variant)
+
+    # 1) وقف الخسارة
+    sl = None
+    try:
+        if mg.get("SL") == "atr":
+            sl = entry - mg.get("SL_MULT", 1.0) * atr_val
+        elif mg.get("SL") == "pct":
+            sl = entry * (1 - float(mg.get("SL_PCT", cfg.get("STOP_LOSS_PCT", 0.02))))
+        elif mg.get("SL") in ("atr_below_sweep", "atr_below_retest"):
+            base_level = None
+            # تقدير قاع السويب/منطقة الريتست
+            try:
+                if df is not None and len(df) > 10:
+                    # للسويب: أدنى قاع سوينغ حديث
+                    _, sw_low = _swing_points(df, left=2, right=2)
+                    _, llv = recent_swing(df, lookback=60)
+                    base_level = max(float(sw_low or 0), float(llv or 0)) or None
+            except Exception:
+                base_level = None
+            if base_level and base_level < entry:
+                sl = float(base_level) - mg.get("SL_MULT", 1.0) * atr_val
+            else:
+                sl = entry - mg.get("SL_MULT", 1.0) * atr_val
+        else:
+            # رجوع لإعدادات cfg الافتراضية
+            if cfg.get("USE_ATR_SL_TP") and atr_val and atr_val > 0:
+                sl  = entry - cfg.get("SL_ATR_MULT", 1.6)  * atr_val
+            else:
+                sl  = entry * (1 - cfg.get("STOP_LOSS_PCT", 0.02))
+    except Exception:
+        sl = entry - 1.0 * atr_val
+
+    # 2) حساب TP1/TP2
+    tp1 = None; tp2 = None
+
+    # تحضير SR متعدد الطبقات للحصول على أقرب مقاومة فوق السعر
+    nearest_res = None
+    try:
+        if symbol:
+            sr_multi = get_sr_multi(symbol)
+            for name, ent in sr_multi.items():
+                res = ent.get("resistance")
+                if res and res > entry:
+                    nearest_res = res if nearest_res is None else min(nearest_res, res)
+    except Exception:
+        pass
+
+    # VWAP من الشمعة المغلقة
+    vwap_val = None
+    try:
+        if closed is None and df is not None:
+            closed = df.iloc[-2]
+        vwap_val = float(closed.get("vwap")) if closed is not None else None
+    except Exception:
+        vwap_val = None
+
+    # ATR TP defaults
+    atr_tp1 = entry + float(mg.get("TP1_ATR", 1.2)) * atr_val
+    atr_tp2 = entry + float(mg.get("TP2_ATR", cfg.get("TP2_ATR_MULT", 2.2))) * atr_val if mg.get("TP2_ATR") else entry + 2.2 * atr_val
+
+    mode = mg.get("TP1")
+    try:
+        if mode == "sr_or_atr":
+            sr_tp = nearest_res if (nearest_res and nearest_res > entry) else None
+            tp1 = float(min(sr_tp, atr_tp1)) if sr_tp else float(atr_tp1)
+        elif mode == "range_or_atr":
+            # تقدير قمة الرينج/المقاومة
+            sr_tp = None
+            try:
+                if df is not None and len(df) > 20:
+                    hhv = float(df.iloc[:-1]["high"].rolling(SR_WINDOW, min_periods=10).max().iloc[-1])
+                    sr_tp = hhv if hhv > entry else None
+            except Exception:
+                sr_tp = None
+            sr_tp = nearest_res if (nearest_res and nearest_res > entry) else sr_tp
+            tp1 = float(min(sr_tp, atr_tp1)) if sr_tp else float(atr_tp1)
+        elif mode == "vwap_or_sr":
+            candidates = []
+            if vwap_val and vwap_val > entry:
+                candidates.append(float(vwap_val))
+            if nearest_res and nearest_res > entry:
+                candidates.append(float(nearest_res))
+            tp1 = float(min(candidates)) if candidates else float(atr_tp1)
+        else:
+            # نسب/افتراضيات cfg
+            if mg.get("TP1_PCT"):
+                tp1 = entry * (1 + float(mg.get("TP1_PCT")))
+            else:
+                if cfg.get("USE_ATR_SL_TP") and atr_val and atr_val > 0:
+                    tp1 = entry + cfg.get("TP1_ATR_MULT", 1.6) * atr_val
+                    tp2 = entry + cfg.get("TP2_ATR_MULT", 3.2) * atr_val
+                else:
+                    tp1 = entry * (1 + cfg.get("TP1_PCT", 0.03))
+                    tp2 = entry * (1 + cfg.get("TP2_PCT", 0.06))
+    except Exception:
+        tp1 = atr_tp1
+
+    if tp2 is None:
+        tp2 = atr_tp2
+
     return float(sl), float(tp1), float(tp2)
 
 # ================== تنفيذ الشراء ==================
