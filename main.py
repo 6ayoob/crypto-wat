@@ -8,7 +8,7 @@ from datetime import datetime, timezone, timedelta
 
 import requests
 
-from config import TELEGRAM_TOKEN, TELEGRAM_CHAT_ID, SYMBOLS
+from config import TELEGRAM_TOKEN, TELEGRAM_CHAT_ID, SYMBOLS, STRAT_LTF_TIMEFRAME, STRAT_HTF_TIMEFRAME
 
 # الاستراتيجية
 from strategy import (
@@ -21,9 +21,9 @@ from strategy import (
 try:
     from strategy import maybe_emit_reject_summary, check_signal_debug  # قد لا تكون متوفرة
 except Exception:
-    def maybe_emit_reject_summary(): 
+    def maybe_emit_reject_summary():
         pass
-    def check_signal_debug(symbol): 
+    def check_signal_debug(symbol):
         return None, []
 
 # كاش أسعار جماعي من okx_api لتقليل الضغط
@@ -71,6 +71,7 @@ def send_telegram_message(text, parse_mode=None, disable_notification=False):
 
 # ================== أدوات ==================
 _stop_flag = False
+
 def _handle_stop(signum, frame):
     global _stop_flag
     _stop_flag = True
@@ -110,9 +111,12 @@ if __name__ == "__main__":
         except Exception:
             pass
 
-    # معلومات بدء
+    # معلومات بدء مع عرض الإطارات الزمنية الفعلية
     try:
-        send_telegram_message(f"🚀 تشغيل البوت — {len(SYMBOLS)} رمز | استراتيجية 15m/5m بدأت ✅", disable_notification=True)
+        send_telegram_message(
+            f"🚀 تشغيل البوت — {len(SYMBOLS)} رمز | HTF={STRAT_HTF_TIMEFRAME} / LTF={STRAT_LTF_TIMEFRAME} ✅",
+            disable_notification=True
+        )
     except Exception:
         print("🚀 تشغيل البوت")
 
@@ -188,7 +192,7 @@ if __name__ == "__main__":
                     except Exception:
                         pass
 
-                except Exception as e:
+                except Exception:
                     send_telegram_message(f"⚠️ خطأ عام أثناء فحص الإشارات:\n{traceback.format_exc()}")
                 finally:
                     last_scan_ts = now
@@ -225,9 +229,12 @@ if __name__ == "__main__":
                         try:
                             report = build_daily_report_text()
                             if report:
-                                send_telegram_message(report, parse_mode="HTML", disable_notification=True)
+                                try:
+                                    send_telegram_message(report, parse_mode="HTML", disable_notification=True)
+                                except Exception as tg_err:
+                                    print(f"[daily_report] telegram error: {tg_err}")
                         except Exception as e:
-                            print(f"[daily_report] error: {e}")
+                            print(f"[daily_report] build error: {e}")
                         last_report_day = day_key
                 except Exception:
                     pass
