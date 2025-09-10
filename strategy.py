@@ -797,134 +797,40 @@ def check_signal_new(symbol):
         chosen_mode = "crossover"; mode_ok = crossed
 
     if not mode_ok:
-        # فرصة Breakout إضافية إن كانت فوق أعلى SR داخلي وغير مصطدمة بمقاومة دقيقة
-        sup_ltf, res_ltf = get_sr_on_closed(df, SR_WINDOW)
-        try:
-            hhv = float(df.iloc[:-1]["high"].rolling(SR_WINDOW, min_periods=10).max().iloc[-1])
-        except Exception:
-            hhv = None
-        if hhv:
-            breakout_ok = price > hhv * (1.0 + tune["breakout_buffer"])
-            near_res_block = (res_ltf is not None) and (res_ltf * (1 - RESISTANCE_BUFFER) <= price <= res_ltf * (1 + RESISTANCE_BUFFER))
-            if breakout_ok and not near_res_block:
-                chosen_mode = chosen_mode or "breakout"; mode_ok = True
-
-    if not mode_ok: 
-        return _rej("entry_mode", mode=cfg["ENTRY_MODE"])
-
-    # السماح للـ breakout حتى لو الشمعة ليست خضراء
-    if chosen_mode != "breakout" and closed["close"] <= closed["open"]:
-        return _rej("close_not_green", mode=chosen_mode)
-
-    # نطاقات RSI — ليّنة قليلاً
-    rsi_val = float(closed["rsi"])
-    if chosen_mode == "pullback" and not (RSI_MIN_PULLBACK - 3 < rsi_val < RSI_MAX_PULLBACK + 2):
-        return _rej("rsi_pullback", rsi=rsi_val)
-    if chosen_mode == "breakout" and not (RSI_MIN_BREAKOUT - 2 < rsi_val < RSI_MAX_BREAKOUT + 2):
-        return _rej("rsi_breakout", rsi=rsi_val)
-
-    # سكّور الفرصة + استثناء قرب المقاومة
-    score, why, patt = _opportunity_score(df, prev, closed)
-    if near_res_any:
-        if not (score >= (score_threshold - 2) or float(closed.get("rvol", 0)) >= need_rvol or chosen_mode == "breakout"):
-            return _rej("near_res_block", score=score, need=score_threshold-2)
-
-    # تصويت MTF ضعيف؟ اسمح إذا كان score كافيًا أو كان النمط Breakout
-    if ENABLE_MTF_STRICT and ('mtf' in ctx) and ctx['mtf'] and mtf_soft_block and not (score >= score_threshold or chosen_mode == "breakout"):
-        return _rej("mtf_votes", needed=tune["mtf_votes_req"])
-
-    if score < score_threshold:
-        return _rej("score_low", score=score, need=score_threshold)
-
-    # TP1 ذكي نحو أقرب مقاومة معقولة
-    tp1_hint = None
-    if nearest_res and (nearest_res > price) and ((nearest_res - price) < 2.5 * atr_ltf):
-        tp1_hint = float(nearest_res)
-
-    _LAST_ENTRY_BAR_TS[key] = last_ts_closed
-    _pass("signal_ok", mode=chosen_mode, score=score, rvol=round(float(closed.get("rvol",0)),2), atrp=round(atrp,4))
-    return {"decision": "buy", "score": score, "reason": why, "pattern": patt, "ts": last_ts_closed,
-            "custom": {"tp1": tp1_hint} if tp1_hint else {} }
-
-# ================== SRR — Sweep & Reclaim ==================
-
-def check_signal_srr(symbol):
-    ok, reason = _risk_precheck_allow_new_entry()
-    if not ok: return None
-
-    base, variant = _split_symbol_variant(symbol); cfg = get_cfg(variant)
-    key = f"{base}|{variant}"
-    if _SYMBOL_LAST_TRADE_AT.get(key) and (now_riyadh() - _SYMBOL_LAST_TRADE_AT[key]) < timedelta(minutes=cfg["SYMBOL_COOLDOWN_MIN"]):
-        return None
-    if load_position(symbol): return None
-
-    # سياق HTF
-    ctx = _get_htf_context(symbol)
-    if not ctx: return None
-    if not ((ctx["ema50_now"] - ctx["ema50_prev"]) > 0 and ctx["close"] > ctx["ema50_now"]):
-        return None
-
-    # LTF
-    data = fetch_ohlcv(base, LTF_TIMEFRAME, 260)
-    if not data: return None
-    df = _df(data); df = _ensure_ltf_indicators(df)
-    if len(df) < 120: return None
-
-    prev, closed = df.iloc[-3], df.iloc[-2]
-    last_ts_closed = int(closed["timestamp"])
-    if _LAST_ENTRY_BAR_TS.get(key) == last_ts_closed: return None
-
-    price = float(closed["close"]); atr = _atr_from_df(df)
-    if not atr or atr <= 0: return None
-    atrp = atr / max(1e-9, price)
-    if atrp < cfg["ATR_MIN_FOR_TREND"]: return None
-
-    # LLV للسويب
-    hhv, llv = recent_swing(df, lookback=60)
-    if llv is None: return None
-    swept = (float(closed["low"]) < llv * 0.9995) and (price > llv)
-    reclaimed = (price > float(closed.get("vwap", closed.get("ema21", price)))) and (price > float(closed.get("ema21", price)))
-    if not (swept and reclaimed): return None
-
-    # حجم/زخم
-    if pd.isna(closed.get("rvol")) or float(closed["rvol"]) < max(1.2, cfg["RVOL_MIN"]): return None
-    if not macd_rsi_gate(prev, closed, policy=cfg["RSI_GATE_POLICY"]): return None
-
-    # منع سقف قريب
-    sup_ltf, res_ltf = get_sr_on_closed(df, SR_WINDOW)
+        # فرصة Breakout إضافية إن كانت فوق أعلى SR داخلي وغير مصطدمة بمقاومة دقيقة    sup_ltf, res_ltf = get_sr_on_closed(df, SR_WINDOW)
     # قرب مقاومة/دعم من طبقات متعددة + LTF/HTF
-sr_multi = get_sr_multi(symbol)
-near_res_any = False
-nearest_res = None
-for name, ent in sr_multi.items():
-    res = ent.get("resistance")
-    if res:
-        if nearest_res is None or res < nearest_res:
-            nearest_res = res
-        if (res - price) < (ent["near_mult"] * atr):
-            near_res_any = True
+    sr_multi = get_sr_multi(symbol)
+    near_res_any = False
+    nearest_res = None
+    for name, ent in sr_multi.items():
+        res = ent.get("resistance")
+        if res:
+            if nearest_res is None or res < nearest_res:
+                nearest_res = res
+            if (res - price) < (ent["near_mult"] * atr):
+                near_res_any = True
 
-near_res_ltf = bool(res_ltf and (res_ltf - price) < 0.8 * atr)
-near_res_htf = bool(ctx.get("resistance") and (ctx["resistance"] - price) < 1.3 * atr)
+    near_res_ltf = bool(res_ltf and (res_ltf - price) < 0.8 * atr)
+    near_res_htf = bool(ctx.get("resistance") and (ctx["resistance"] - price) < 1.3 * atr)
 
     # سكّور بسيط
     score, why, patt = _opportunity_score(df, prev, closed)
-score += 15; patt = "SweepReclaim"; why = (why + ", SRR")
-# إذا قرب مقاومة قوية، اسمح فقط إذا السكور قوي أو RVOL مرتفع
-if (near_res_ltf or near_res_htf or near_res_any) and not (score >= 62 or float(closed.get("rvol",0)) >= max(1.2, cfg["RVOL_MIN"]) * 1.05):
-    return None
+    score += 15; patt = "SweepReclaim"; why = (why + ", SRR")
+    # إذا قرب مقاومة قوية، اسمح فقط إذا السكور قوي أو RVOL مرتفع
+    if (near_res_ltf or near_res_htf or near_res_any) and not (score >= 62 or float(closed.get("rvol",0)) >= max(1.2, cfg["RVOL_MIN"]) * 1.05):
+        return None
 
     # تلميحات SL/TP
     sl_hint = min(float(closed["low"]), llv) * 0.999
     tp1_hint = None
-if res_ltf and (res_ltf - price) > 0 and (res_ltf - price) < 2.5 * atr:
-    tp1_hint = float(res_ltf)
-if nearest_res and (nearest_res > price) and ((nearest_res - price) < 2.5 * atr):
-    tp1_hint = float(min(tp1_hint, nearest_res)) if tp1_hint else float(nearest_res)
+    if res_ltf and (res_ltf - price) > 0 and (res_ltf - price) < 2.5 * atr:
+        tp1_hint = float(res_ltf)
+    if nearest_res and (nearest_res > price) and ((nearest_res - price) < 2.5 * atr):
+        tp1_hint = float(min(tp1_hint, nearest_res)) if tp1_hint else float(nearest_res)
 
     _LAST_ENTRY_BAR_TS[key] = last_ts_closed
     return {"decision": "buy", "score": score, "reason": why, "pattern": patt,
-            "ts": last_ts_closed, "custom": {"sl": sl_hint, "tp1": tp1_hint} }
+            "ts": last_ts_closed, "custom": {"sl": sl_hint, "tp1": tp1_hint} } }
 
 # ================== BRT — Break & Retest ==================
 
@@ -959,19 +865,18 @@ def check_signal_brt(symbol):
     reclaimed = (price > hi_range) and (price > float(closed.get("vwap", closed.get("ema21", price))))
     if not (retest_touched and reclaimed): return None
 
-    if not macd_rsi_gate(prev, closed, policy=cfg["RSI_GATE_POLICY"]): return None
+    if not macd_rsi_gate(prev, closed, policy=cfg["RSI_GATE_POLICY"]): return None    sup_ltf, res_ltf = get_sr_on_closed(df, SR_WINDOW)
+    # تشديد: منع الإشارات إذا قرب أي مقاومة متعددة الطبقات
+    sr_multi = get_sr_multi(symbol)
+    near_res_any = False
+    for name, ent in sr_multi.items():
+        res = ent.get("resistance")
+        if res and (res - price) < (ent["near_mult"] * atr):
+            near_res_any = True
+            break
 
-    sup_ltf, res_ltf = get_sr_on_closed(df, SR_WINDOW)
-# تشديد: منع الإشارات إذا قرب أي مقاومة متعددة الطبقات
-sr_multi = get_sr_multi(symbol)
-near_res_any = False
-for name, ent in sr_multi.items():
-    res = ent.get("resistance")
-    if res and (res - price) < (ent["near_mult"] * atr):
-        near_res_any = True; break
-
-near_res = (res_ltf and (res_ltf - price) < 0.8*atr) or (ctx.get("resistance") and (ctx["resistance"] - price) < 1.3*atr) or near_res_any
-if near_res: return None
+    near_res = (res_ltf and (res_ltf - price) < 0.8*atr) or (ctx.get("resistance") and (ctx["resistance"] - price) < 1.3*atr) or near_res_any
+    if near_res: return None
 
     _LAST_ENTRY_BAR_TS[key] = ts
     score, why, patt = _opportunity_score(df, prev, closed); patt = "Break&Retest"; why = (why + ", BRT")
@@ -1012,21 +917,19 @@ def check_signal_vbr(symbol):
     if not (oversold_band and reclaimed): return None
 
     if (closed.get("rvol", 0) < cfg["RVOL_MIN"]): return None
-    if not macd_rsi_gate(prev, closed, policy=cfg["RSI_GATE_POLICY"]): return None
-
-    sup_ltf, res_ltf = get_sr_on_closed(df, SR_WINDOW)
-sr_multi = get_sr_multi(symbol)
-nearest_res = None
-near_res_any = False
-for name, ent in sr_multi.items():
-    res = ent.get("resistance")
-    if res:
-        if nearest_res is None or res < nearest_res:
-            nearest_res = res
-        if (res - price) < (ent["near_mult"] * atr):
-            near_res_any = True
-near_res_vbr = (res_ltf and (res_ltf - price) < 0.7*atr) or near_res_any
-if near_res_vbr: return None
+    if not macd_rsi_gate(prev, closed, policy=cfg["RSI_GATE_POLICY"]): return None    sup_ltf, res_ltf = get_sr_on_closed(df, SR_WINDOW)
+    sr_multi = get_sr_multi(symbol)
+    nearest_res = None
+    near_res_any = False
+    for name, ent in sr_multi.items():
+        res = ent.get("resistance")
+        if res:
+            if nearest_res is None or res < nearest_res:
+                nearest_res = res
+            if (res - price) < (ent["near_mult"] * atr):
+                near_res_any = True
+    near_res_vbr = (res_ltf and (res_ltf - price) < 0.7*atr) or near_res_any
+    if near_res_vbr: return None
 
     _LAST_ENTRY_BAR_TS[key] = ts
     score, why, patt = _opportunity_score(df, prev, closed)
@@ -1034,12 +937,11 @@ if near_res_vbr: return None
     swing_hi, swing_lo = _swing_points(df, left=2, right=2)
     sl_hint = (swing_lo * 0.999) if swing_lo else (price - 0.9*atr)
     tp1_vwap = float(closed.get("vwap", price + 1.2*atr))
-tp1_hint = tp1_vwap
-if nearest_res and nearest_res > price:
-    tp1_hint = float(min(tp1_vwap, nearest_res))
+    tp1_hint = tp1_vwap
+    if nearest_res and nearest_res > price:
+        tp1_hint = float(min(tp1_vwap, nearest_res))
     return {"decision": "buy", "score": score+8, "reason": why, "pattern": patt, "ts": ts,
             "custom": {"sl": float(sl_hint), "tp1": float(tp1_hint)}}
-
 # ================== Router ==================
 
 def check_signal(symbol):
@@ -1190,10 +1092,13 @@ def execute_buy(symbol):
     df_exec = _df(ohlcv)
     df_exec = _ensure_ltf_indicators(df_exec)
     price_fallback = float(df_exec.iloc[-2]["close"])
+    closed = df_exec.iloc[-2]
     atr_val = _atr_from_df(df_exec)
     cfg = get_cfg(variant)
+    ctx = _get_htf_context(symbol)
 
-    sl, tp1, tp2 = _compute_sl_tp(price_fallback, atr_val, cfg)
+    sl, tp1, tp2 = _compute_sl_tp(price_fallback, atr_val, cfg, variant, symbol=symbol, df=df_exec, ctx=ctx, closed=closed)
+    mg = _mgmt(variant)
     custom = (_sig_inner.get("custom") if isinstance(_sig_inner, dict) else {}) or {}
     if "sl" in custom and isinstance(custom["sl"], (int, float)):
         sl = float(custom["sl"])
@@ -1209,6 +1114,7 @@ def execute_buy(symbol):
         "score": _sig_inner.get("score"),
         "pattern": _sig_inner.get("pattern"),
         "reason": _sig_inner.get("reason"),
+        "max_hold_hours": mg.get("TIME_HRS"),
         # يمكن لاحقًا تمرير stop_rule/max_bars_to_tp1 من الاستراتيجية إن رغبت
     }
 
@@ -1282,6 +1188,8 @@ def manage_position(symbol):
     amount  = float(pos["amount"])
     targets = pos.get("targets")
     partials = pos.get("partials")
+    variant = pos.get("variant", "new")
+    mgmt = _mgmt(variant)
 
     if amount <= 0:
         clear_position(symbol); return False
@@ -1328,6 +1236,26 @@ def manage_position(symbol):
                         _tg(pos["messages"]["time"] if pos.get("messages") else "⌛ خروج زمني")
                     except Exception:
                         pass
+                    return True
+        except Exception:
+            pass
+
+    # (2b) خروج بسبب أقصى مدة احتفاظ عامة حسب الاستراتيجية
+    try:
+        max_hold_hours = float(pos.get("max_hold_hours") or mgmt.get("TIME_HRS") or 0)
+    except Exception:
+        max_hold_hours = 0
+    if max_hold_hours:
+        try:
+            opened_at = datetime.fromisoformat(pos["opened_at"])
+            if (now_riyadh() - opened_at) >= timedelta(hours=max_hold_hours):
+                order = place_market_order(base, "sell", amount)
+                if order:
+                    exit_px = float(order.get("average") or order.get("price") or current)
+                    pnl_net = (exit_px - entry) * amount - (entry + exit_px) * amount * (FEE_BPS_ROUNDTRIP/10000.0)
+                    close_trade(symbol, exit_px, pnl_net, reason="TIME_HOLD_MAX")
+                    try: _tg("⌛ خروج لانتهاء مدة الاحتفاظ")
+                    except Exception: pass
                     return True
         except Exception:
             pass
@@ -1387,6 +1315,19 @@ def manage_position(symbol):
                                         _tg(f"🧭 <b>Trailing SL</b> {symbol} → <code>{new_sl:.6f}</code>")
                                     except Exception:
                                         pass
+
+    # (3b) تريلينغ عام حسب سياسة الاستراتيجية بعد تحقق أي TP
+    if mgmt.get("TRAIL_AFTER_TP1") and pos["amount"] > 0 and any(pos.get("tp_hits", [])):
+        data_for_atr = fetch_ohlcv(base, LTF_TIMEFRAME, 140)
+        if data_for_atr:
+            df_atr = _df(data_for_atr)
+            atr_val = _atr_from_df(df_atr)
+            if atr_val and atr_val > 0:
+                new_sl = current - mgmt.get("TRAIL_ATR", 1.0) * atr_val
+                if new_sl > pos["stop_loss"] * (1 + TRAIL_MIN_STEP_RATIO):
+                    pos["stop_loss"] = float(new_sl); save_position(symbol, pos)
+                    try: _tg(f"🧭 <b>Trailing SL</b> {symbol} → <code>{new_sl:.6f}</code>")
+                    except Exception: pass
 
     # (4) وقف الخسارة
     if current <= pos["stop_loss"] and pos["amount"] > 0:
