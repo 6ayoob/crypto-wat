@@ -115,7 +115,7 @@ if __name__ == "__main__":
     try:
         send_telegram_message(
             f"🚀 تشغيل البوت — {len(SYMBOLS)} رمز | HTF={STRAT_HTF_TIMEFRAME} / LTF={STRAT_LTF_TIMEFRAME} ✅",
-            disable_notification=True
+            disable_notification=False
         )
     except Exception:
         print("🚀 تشغيل البوت")
