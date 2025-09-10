@@ -1,71 +1,50 @@
-# main.py — resilient loop (ignore stop signals + auto-respawn + optional TG stacktraces)
-import os
-import time
-import random
-import signal
-import traceback
-from datetime import datetime, timezone, timedelta
+# main.py — Always-On loop (ignore stop signals + auto-recover on errors)
 
+import os, time, random, traceback, signal
+from datetime import datetime, timezone, timedelta
 import requests
 
 from config import TELEGRAM_TOKEN, TELEGRAM_CHAT_ID, SYMBOLS, STRAT_LTF_TIMEFRAME, STRAT_HTF_TIMEFRAME
 
-# الاستراتيجية
 from strategy import (
     check_signal, execute_buy, manage_position, load_position,
     count_open_positions, build_daily_report_text
 )
 
-# (اختياري) تشخيصات من الاستراتيجية — لو غير موجودة لا مشكلة
+# اختياري: دوال تشخيصية إن وُجدت
 try:
     from strategy import maybe_emit_reject_summary, check_signal_debug
 except Exception:
     def maybe_emit_reject_summary(): pass
     def check_signal_debug(symbol): return None, []
 
-# كاش أسعار جماعي من okx_api
+# كاش الأسعار الجماعي (اختياري)
 try:
     from okx_api import start_tickers_cache, stop_tickers_cache
     _HAS_CACHE = True
 except Exception:
     _HAS_CACHE = False
 
-# ================== إعدادات السلوك المرن ==================
-# تجاهل إشارات الإيقاف الافتراضيًا (لا توقَف إلا لو غيّرت المتغير)
-IGNORE_SIGNALS        = os.getenv("IGNORE_SIGNALS", "1").lower() in ("1","true","yes","y")
-# إعادة التشغيل تلقائياً عند الخروج غير المقصود
-AUTORESPAWN           = os.getenv("AUTORESPAWN", "1").lower() in ("1","true","yes","y")
-RESPAWN_DELAY_SEC     = int(os.getenv("RESPAWN_DELAY_SEC", "3"))
-
-# كتم إشعارات الإيقاف حتى لا تربكك
-MUTE_STOP_NOTICES     = os.getenv("MUTE_STOP_NOTICES", "1").lower() in ("1","true","yes","y")
-
-# تقليل ضجيج تيليجرام لبعض الأخطاء المؤقتة
-MUTE_NOISEY_ALERTS    = os.getenv("MUTE_NOISEY_ALERTS", "1").lower() in ("1","true","yes","y")
-
-# إرسال تتبّع الاستثناءات المفاجئة إلى تيليجرام (Stacktrace مختصر)
-TG_EXCEPTIONS         = os.getenv("TG_EXCEPTIONS", "1").lower() in ("1","true","yes","y")
-TG_TRACE_MAX_CHARS    = int(os.getenv("TG_TRACE_MAX_CHARS", "1400"))
-
-# إذا أردت فرض حد مؤقت محلي (غير إلزامي)
-MAX_OPEN_POSITIONS_OVERRIDE = os.getenv("MAX_OPEN_POSITIONS_OVERRIDE")
-if MAX_OPEN_POSITIONS_OVERRIDE not in (None, "",):
-    try:
-        MAX_OPEN_POSITIONS_OVERRIDE = int(MAX_OPEN_POSITIONS_OVERRIDE)
-    except Exception:
-        MAX_OPEN_POSITIONS_OVERRIDE = None
-
-# فواصل التكرار
-SCAN_INTERVAL_SEC    = int(os.getenv("SCAN_INTERVAL_SEC", "25"))   # فحص إشارات الدخول
-MANAGE_INTERVAL_SEC  = int(os.getenv("MANAGE_INTERVAL_SEC", "10")) # إدارة المراكز
+# ================== إعدادات ==================
+MAX_OPEN_POSITIONS_OVERRIDE = None  # أو رقم لتقييد محلي
+SCAN_INTERVAL_SEC    = int(os.getenv("SCAN_INTERVAL_SEC", "25"))
+MANAGE_INTERVAL_SEC  = int(os.getenv("MANAGE_INTERVAL_SEC", "10"))
 LOOP_SLEEP_SEC       = 1.0
 
-# تقرير يومي تلقائي (بتوقيت الرياض)
-ENABLE_DAILY_REPORT  = os.getenv("ENABLE_DAILY_REPORT", "1").lower() in ("1","true","yes","y")
+ENABLE_DAILY_REPORT  = True
 DAILY_REPORT_HOUR    = int(os.getenv("DAILY_REPORT_HOUR", "23"))
 DAILY_REPORT_MINUTE  = int(os.getenv("DAILY_REPORT_MINUTE", "58"))
 
+MUTE_NOISEY_ALERTS   = True
+
+# “لا يوقف” = تجاهل الإشارات
+IGNORE_SIGNALS       = os.getenv("IGNORE_SIGNALS", "1").lower() in ("1","true","yes","y")
+# تحكم برسائل الخطأ
+MAX_TG_TRACE_CHARS   = int(os.getenv("MAX_TG_TRACE_CHARS", "900"))
+
 RIYADH_TZ = timezone(timedelta(hours=3))
+
+def _now_riyadh(): return datetime.now(RIYADH_TZ)
 
 # ================== Telegram ==================
 def send_telegram_message(text, parse_mode=None, disable_notification=False):
@@ -73,33 +52,25 @@ def send_telegram_message(text, parse_mode=None, disable_notification=False):
         return
     url = f"https://api.telegram.org/bot{TELEGRAM_TOKEN}/sendMessage"
     payload = {"chat_id": TELEGRAM_CHAT_ID, "text": text}
-    if parse_mode:
-        payload["parse_mode"] = parse_mode
-    if disable_notification:
-        payload["disable_notification"] = True
+    if parse_mode: payload["parse_mode"] = parse_mode
+    if disable_notification: payload["disable_notification"] = True
     try:
         r = requests.post(url, data=payload, timeout=10)
-        if not r.ok:
-            print(f"[TG] Failed: {r.status_code} {r.text}")
+        if not r.ok: print(f"[TG] Failed: {r.status_code} {r.text}")
     except Exception as e:
         print(f"[TG] Error: {e}")
 
-def _send_exception_to_tg(context: str):
-    if not TG_EXCEPTIONS:
-        return
-    tb = traceback.format_exc()
-    tb_short = tb[-TG_TRACE_MAX_CHARS:]
+# ================== سلوك الإشارات ==================
+def _ignore_system_signals():
     try:
-        send_telegram_message(f"⚠️ {context}\n{tb_short}", disable_notification=True)
-    except Exception:
-        pass
+        signal.signal(signal.SIGINT, signal.SIG_IGN)
+    except Exception: pass
+    try:
+        signal.signal(signal.SIGTERM, signal.SIG_IGN)
+    except Exception: pass
 
-# ================== أدوات ==================
-def _now_riyadh():
-    return datetime.now(RIYADH_TZ)
-
+# ================== Helpers ==================
 def _get_open_positions_count_safe():
-    """يرجع عدد الصفقات المفتوحة من الاستراتيجية (مع fallback بسيط)."""
     try:
         return int(count_open_positions())
     except Exception:
@@ -109,67 +80,39 @@ def _get_open_positions_count_safe():
             return 0
 
 def _can_open_new_position(current_open: int) -> bool:
-    """يقرّر محليًا إن كنا نسمح بإشارات شراء جديدة بناءً على override فقط."""
     if MAX_OPEN_POSITIONS_OVERRIDE is None:
         return True
     return current_open < int(MAX_OPEN_POSITIONS_OVERRIDE)
 
-# ================== حلقة جلسة واحدة ==================
-_stop_flag = False
-_start_ts  = time.time()
-
-def _handle_stop(signum, frame):
-    """
-    إن كان IGNORE_SIGNALS=1 → نتجاهل الإشارة ونستمر.
-    إن كان =0 → نغلق بهدوء.
-    """
-    global _stop_flag
+# ================== الحلقة الرئيسية ==================
+def run_forever():
     if IGNORE_SIGNALS:
-        try:
-            send_telegram_message("⏹️ استلمنا إشارة نظام… تم تجاهلها والاستمرار ✅", disable_notification=True)
-        except Exception:
-            pass
-        # لا نغيّر _stop_flag → نستمر
-        return
-    else:
-        _stop_flag = True
-        try:
-            send_telegram_message("⏹️ تم استلام إشارة إيقاف من النظام… إنهاء بهدوء.", disable_notification=True)
-        except Exception:
-            pass
+        _ignore_system_signals()
 
-signal.signal(signal.SIGINT, _handle_stop)
-signal.signal(signal.SIGTERM, _handle_stop)
-
-def run_bot_session():
-    global _stop_flag, _start_ts
-    _stop_flag = False
-    _start_ts = time.time()
-
-    # بدء كاش الأسعار الجماعي (طلب واحد كل عدة ثواني) إن توفر
+    # بدء كاش الأسعار
     if _HAS_CACHE:
         try:
             start_tickers_cache(period=int(os.getenv("OKX_CACHE_PERIOD", "3")), usdt_only=True)
         except Exception:
             pass
 
-    # رسالة تشغيل مختصرة
+    # إشعار تشغيل “وضع عدم التوقف”
     try:
         send_telegram_message(
-            f"🚀 تشغيل البوت — {len(SYMBOLS)} رمز | HTF={STRAT_HTF_TIMEFRAME} / LTF={STRAT_LTF_TIMEFRAME} ✅",
+            f"🚀 تشغيل البوت (Always-On) — {len(SYMBOLS)} رمز | HTF={STRAT_HTF_TIMEFRAME} / LTF={STRAT_LTF_TIMEFRAME} ✅",
             disable_notification=True
         )
     except Exception:
-        print("🚀 تشغيل البوت")
+        print("🚀 تشغيل البوت (Always-On)")
 
     last_scan_ts   = 0.0
     last_manage_ts = 0.0
     last_report_day = None
 
-    # Jitter أولي لتوزيع الأحمال إذا كان لديك أكثر من عملية
+    # توزيع حمل أولي
     time.sleep(random.uniform(0.5, 1.5))
 
-    while not _stop_flag:
+    while True:
         now = time.time()
 
         # 1) فحص إشارات الدخول
@@ -178,45 +121,39 @@ def run_bot_session():
                 open_positions_count = _get_open_positions_count_safe()
 
                 for symbol in SYMBOLS:
-                    if _stop_flag:
-                        break
-
-                    # إذا امتلأ حدّنا المحلي (إن فُعِّل)، لا نحاول شراء جديد
+                    # لو امتلأ الحد المحلي، توقف عن محاولة فتح صفقات جديدة
                     if not _can_open_new_position(open_positions_count):
                         break
 
-                    # لا تفتح صفقة على رمز لديه مركز قائم
+                    # تخطي إن كان على الرمز صفقة مفتوحة
                     try:
                         if load_position(symbol) is not None:
-                            continue  # يُدار لاحقًا
+                            continue
                     except Exception:
                         pass
 
-                    # فحص الإشارة
+                    # فحص إشارة
                     try:
                         sig = check_signal(symbol)
                     except Exception as e:
                         if not MUTE_NOISEY_ALERTS:
-                            send_telegram_message(f"⚠️ check_signal خطأ في {symbol}:\n{e}")
+                            t = (traceback.format_exc() or str(e))[:MAX_TG_TRACE_CHARS]
+                            send_telegram_message(f"⚠️ check_signal خطأ في {symbol}:\n{t}")
                         else:
                             print(f"[check_signal] {symbol} error: {e}")
                         continue
 
-                    # دعم نوعين من النتيجة
-                    is_buy = (sig == "buy") or (isinstance(sig, dict) and str(sig.get("decision", "")).lower() == "buy")
-
+                    is_buy = (sig == "buy") or (isinstance(sig, dict) and str(sig.get("decision","")).lower()=="buy")
                     if is_buy:
                         try:
                             order, msg = execute_buy(symbol)
-                            if msg:
-                                send_telegram_message(msg)
-                            # تحديث العدّ من المصدر بعد كل محاولة شراء
+                            if msg: send_telegram_message(msg)
                             open_positions_count = _get_open_positions_count_safe()
-                        except Exception:
-                            _send_exception_to_tg(f"execute_buy فشل ({symbol})")
-                            continue
+                        except Exception as e:
+                            t = (traceback.format_exc() or str(e))[:MAX_TG_TRACE_CHARS]
+                            send_telegram_message(f"❌ فشل تنفيذ شراء {symbol}:\n{t}")
                     else:
-                        # (اختياري) لماذا رُفضت الإشارة؟
+                        # تشخيص اختياري
                         try:
                             _, reasons = check_signal_debug(symbol)
                             if reasons:
@@ -224,42 +161,42 @@ def run_bot_session():
                         except Exception:
                             pass
 
-                    # مهلة قصيرة بين الرموز لتخفيف الضغط
                     time.sleep(0.2)
 
-                # ملخص أسباب الرفض كل ~30 دقيقة كحد أقصى — إن كانت الدالة مفعلة
+                # ملخص أسباب الرفض (اختياري)
                 try:
                     maybe_emit_reject_summary()
                 except Exception:
                     pass
 
-            except Exception:
-                _send_exception_to_tg("خطأ عام أثناء فحص الإشارات")
+            except Exception as outer_scan_e:
+                t = (traceback.format_exc() or str(outer_scan_e))[:MAX_TG_TRACE_CHARS]
+                send_telegram_message(f"⚠️ خطأ عام أثناء فحص الإشارات:\n{t}")
             finally:
                 last_scan_ts = now
 
-        # 2) إدارة الصفقات المفتوحة (TP/SL/Trailing)
+        # 2) إدارة الصفقات المفتوحة
         if now - last_manage_ts >= MANAGE_INTERVAL_SEC:
             try:
                 for symbol in SYMBOLS:
-                    if _stop_flag:
-                        break
                     try:
                         closed = manage_position(symbol)
                         if closed:
                             print(f"[manage] {symbol} closed by TP/SL/TIME")
                     except Exception as e:
                         if not MUTE_NOISEY_ALERTS:
-                            send_telegram_message(f"⚠️ خطأ إدارة {symbol}:\n{e}")
+                            t = (traceback.format_exc() or str(e))[:MAX_TG_TRACE_CHARS]
+                            send_telegram_message(f"⚠️ خطأ إدارة {symbol}:\n{t}")
                         else:
                             print(f"[manage_position] {symbol} error: {e}")
                     time.sleep(0.1)
-            except Exception:
-                _send_exception_to_tg("خطأ عام أثناء إدارة الصفقات")
+            except Exception as outer_mng_e:
+                t = (traceback.format_exc() or str(outer_mng_e))[:MAX_TG_TRACE_CHARS]
+                send_telegram_message(f"⚠️ خطأ عام أثناء إدارة الصفقات:\n{t}")
             finally:
                 last_manage_ts = now
 
-        # 3) تقرير يومي تلقائي (23:58 الرياض افتراضيًا)
+        # 3) تقرير يومي تلقائي
         if ENABLE_DAILY_REPORT:
             try:
                 now_r = _now_riyadh()
@@ -268,49 +205,31 @@ def run_bot_session():
                     try:
                         report = build_daily_report_text()
                         if report:
-                            try:
-                                send_telegram_message(report, parse_mode="HTML", disable_notification=True)
-                            except Exception as tg_err:
-                                print(f"[daily_report] telegram error: {tg_err}")
-                    except Exception:
-                        _send_exception_to_tg("daily_report build error")
+                            send_telegram_message(report, parse_mode="HTML", disable_notification=True)
+                    except Exception as e:
+                        print(f"[daily_report] build error: {e}")
                     last_report_day = day_key
             except Exception:
                 pass
 
-        # نوم قصير
         time.sleep(LOOP_SLEEP_SEC)
 
-    # خرجنا من الحلقة (فقط إن IGNORE_SIGNALS=0 وتم استلام إشارة/أو إيقاف يدوي)
-    if _HAS_CACHE:
-        try:
-            stop_tickers_cache()
-        except Exception:
-            pass
-    # لا ترسل “إيقاف” إلا إذا لم نكتمها وكان إيقافًا حقيقيًا وليس إعادة تشغيل
-    if not MUTE_STOP_NOTICES:
-        if time.time() - _start_ts >= 10:
-            send_telegram_message("🛑 تم إيقاف البوت — إلى اللقاء.", disable_notification=True)
-
-# ================== المشرف الخارجي (Auto-Respawn) ==================
+# ================== الحارس الخارجي ==================
 if __name__ == "__main__":
-    attempt = 0
+    # غلاف يحمي من أي انهيار غير متوقع (ويُكمل التشغيل)
+    # backoff بسيط عند الأخطاء المتتالية
+    consecutive_errors = 0
     while True:
         try:
-            run_bot_session()
-            # إن خرجنا بشكل طبيعي (_stop_flag=True و IGNORE_SIGNALS=0) ولم نفعّل AUTORESPAWN — انهِ.
-            if not AUTORESPAWN:
-                break
-            # إن خرجنا طبيعيًا مع AUTORESPAWN=1 → أعد التشغيل أيضًا (للاستمرارية التامة)
-        except Exception:
-            attempt += 1
-            _send_exception_to_tg(f"🚨 تعطل غير متوقع — إعادة تشغيل (محاولة {attempt})")
-        # مهلة قصيرة قبل إعادة التشغيل
-        if AUTORESPAWN:
-            try:
-                send_telegram_message(f"🔁 إعادة تشغيل تلقائي… (محاولة {attempt})", disable_notification=True)
-            except Exception:
-                pass
-            time.sleep(max(1, RESPAWN_DELAY_SEC))
+            run_forever()  # لا ينبغي أن تعود
+        except Exception as e:
+            consecutive_errors += 1
+            wait_s = min(60, 2 ** min(consecutive_errors, 6))  # 1,2,4,8,16,32,60...
+            t = (traceback.format_exc() or str(e))[:MAX_TG_TRACE_CHARS]
+            send_telegram_message(f"🔥 تعطل غير متوقع — سيُعاد التشغيل تلقائياً بعد {wait_s}s\n{t}")
+            time.sleep(wait_s)
+            # ثم يُعاد تشغيل الحلقة تلقائياً
         else:
-            break
+            # لو خرجت run_forever لسبب ما، أعد تشغيلها فوراً
+            consecutive_errors = 0
+            time.sleep(1)
