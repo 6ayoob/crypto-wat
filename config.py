@@ -14,19 +14,36 @@ PASSPHRASE = "Ta123456&"
 
 TELEGRAM_TOKEN = "8300868885:AAEx8Zxdkz9CRUHmjJ0vvn6L3kC2kOPCHuk"
 TELEGRAM_CHAT_ID = "658712542"
-# ===============================
-# 🔑 مفاتيح API لـ OKX (استخدم متغيرات بيئة للأمان)
-# ===============================
-# ===============================
-# 📈 الرموز — قائمة منقّحة (سيتم فلترتها وإكمالها تلقائياً من OKX عند الإقلاع)
-# ملاحظة: لا تعتمد على هذه القائمة فقط؛ سيتم التحقق من دعم OKX وإكمالها حتى 100.
-# ===============================
+# -*- coding: utf-8 -*-
+"""
+config_pro_v3.py — إعدادات موسّعة متوافقة مع strategy_pro_v3.py
+- توسيع تلقائي لقائمة الرموز حسب سيولة OKX
+- توزيع الاستراتيجيات (#new/#old/#srr/#brt/#vbr) على أعلى الرموز سيولة
+- مفاتيح تيليغرام (اختيارية)
+- إطارات زمنية قابلة للتهيئة وتُقرأ من البيئة، وتستخدمها الاستراتيجية
+"""
 
 import os, time, random, re
 import requests
 from typing import List, Tuple, Optional
 
-# قائمتك الأصلية (ستُطبّع للأحرف الكبيرة وتزال التكرارات)
+# ===============================
+# 🔔 Telegram (اختياري)
+# ===============================
+TELEGRAM_TOKEN = os.getenv("TELEGRAM_TOKEN", "")
+TELEGRAM_CHAT_ID = os.getenv("TELEGRAM_CHAT_ID", "")
+
+# ===============================
+# ⏱ إطارات زمنية تستخدمها الاستراتيجية
+# ===============================
+# يمكن تعديلها عبر البيئة بدون لمس الكود: HTF_TIMEFRAME=15m LTF_TIMEFRAME=5m
+STRAT_HTF_TIMEFRAME = os.getenv("HTF_TIMEFRAME", "15m")  # إطار السياق (HTF)
+STRAT_LTF_TIMEFRAME = os.getenv("LTF_TIMEFRAME", "5m")   # إطار التنفيذ (LTF)
+
+# ===============================
+# 📈 الرموز — قائمة منقّحة (سيتم فلترتها وإكمالها تلقائياً من OKX عند الإقلاع)
+# ملاحظة: لا تعتمد على هذه القائمة فقط؛ سيتم التحقق من دعم OKX وإكمالها حتى 100.
+# ===============================
 SEED_SYMBOLS = [
     "BTC/USDT","ETH/USDT","BNB/USDT","SOL/USDT","XRP/USDT","ADA/USDT","DOGE/USDT","TRX/USDT","TON/USDT","DOT/USDT",
     "AVAX/USDT","MAJOR/USDT","LINK/USDT","LTC/USDT","BCH/USDT","ETC/USDT","NEAR/USDT","ATOM/USDT","TIA/USDT","ARB/USDT",
@@ -51,9 +68,9 @@ SEED_SYMBOLS = [
 ]
 
 # ===============================
-# ⏱ إعدادات التداول (تبقى كما هي)
+# ⏱ إعدادات التداول العامة
 # ===============================
-TIMEFRAME = "5m"
+TIMEFRAME = "5m"  # (غير مستخدم مباشرة في الاستراتيجية الجديدة)
 TRADE_AMOUNT_USDT = 45
 MAX_OPEN_POSITIONS = 3
 
@@ -65,17 +82,17 @@ FEE_BPS_ROUNDTRIP = 16
 # ===============================
 # ⚙️ خيارات التوسيع التلقائي
 # ===============================
-AUTO_EXPAND_SYMBOLS = bool(int(os.getenv("AUTO_EXPAND_SYMBOLS", "1")))  # عطّلها بوضع 0
+AUTO_EXPAND_SYMBOLS = bool(int(os.getenv("AUTO_EXPAND_SYMBOLS", "1")))
 TARGET_SYMBOLS_COUNT = int(os.getenv("TARGET_SYMBOLS_COUNT", "100"))
 DEBUG_CONFIG_SYMBOLS = bool(int(os.getenv("DEBUG_CONFIG_SYMBOLS", "0")))
 
 # === خيارات فلترة/سيولة قابلة للتهيئة (اختياري) ===
-ALLOWED_QUOTE = os.getenv("ALLOWED_QUOTE", "USDT").upper()         # الاقتباس المسموح (افتراضي USDT)
-MIN_USDT_VOL_24H = float(os.getenv("MIN_USDT_VOL_24H", "1000000")) # حد السيولة الأدنى بالدولار (افتراضي 1M)
+ALLOWED_QUOTE = os.getenv("ALLOWED_QUOTE", "USDT").upper()
+MIN_USDT_VOL_24H = float(os.getenv("MIN_USDT_VOL_24H", "1000000"))
 
 # ✅ استبعاد يعتمد على BASE فقط (بدون ضرب أزواج /USDT)
 EXCLUDE_BASE_REGEX = os.getenv("EXCLUDE_BASE_REGEX", r"(TEST|IOU)")
-INCLUDE_REGEX = os.getenv("INCLUDE_REGEX", "")  # لتضمين رموز قسراً إن لزم
+INCLUDE_REGEX = os.getenv("INCLUDE_REGEX", "")
 
 # قواعد استبعاد إضافية للـ BASE
 _STABLE_BASES = {"USDT","USDC","DAI","FDUSD","TUSD","PYUSD","EUR","TRY","BRL","AED","GBP","JPY"}
@@ -84,8 +101,8 @@ _LEVERAGED_SUFFIXES = ("3L","3S","5L","5S")
 OKX_TICKERS_CACHE_SEC = int(os.getenv("OKX_TICKERS_CACHE_SEC", "90"))
 
 OKX_BASE = "https://www.okx.com"
-TICKERS_URL = f"{OKX_BASE}/api/v5/market/tickers?instType=SPOT"     # يحوي vol24h/last... وهو كافٍ لرتبة السيولة
-INSTR_URL  = f"{OKX_BASE}/api/v5/public/instruments?instType=SPOT"  # مسار احتياطي للتأكد من الدعم
+TICKERS_URL = f"{OKX_BASE}/api/v5/market/tickers?instType=SPOT"
+INSTR_URL  = f"{OKX_BASE}/api/v5/public/instruments?instType=SPOT"
 TIMEOUT_SEC = 12
 
 # ============ أدوات مساعدة ============
@@ -100,8 +117,8 @@ def _dedupe_keep_order(seq):
             out.append(x); seen.add(x)
     return out
 
-# جلسة Requests واحدة مع UA وتوقيت
 _REQ_SESSION: Optional[requests.Session] = None
+
 def _get_session() -> requests.Session:
     global _REQ_SESSION
     if _REQ_SESSION is None:
@@ -113,7 +130,6 @@ def _get_session() -> requests.Session:
         _REQ_SESSION = s
     return _REQ_SESSION
 
-# كاش بسيط للتيكرز
 _TICKERS_CACHE: Tuple[float, Optional[dict]] = (0.0, None)
 
 def _okx_get_json(url, attempts=3):
@@ -122,7 +138,7 @@ def _okx_get_json(url, attempts=3):
         try:
             r = sess.get(url, timeout=TIMEOUT_SEC)
             if r.status_code == 429:
-                time.sleep((2 ** a) + random.random())  # backoff مع jitter
+                time.sleep((2 ** a) + random.random())
                 continue
             r.raise_for_status()
             j = r.json()
@@ -149,39 +165,28 @@ _BASE_EXCLUDE_RE = re.compile(EXCLUDE_BASE_REGEX, re.IGNORECASE) if EXCLUDE_BASE
 _INCLUDE_FORCE = re.compile(INCLUDE_REGEX, re.IGNORECASE) if INCLUDE_REGEX else None
 
 def _looks_stable_or_exotic(symbol: str) -> bool:
-    """فلترة تستهدف BASE فقط حتى لا نستبعد أزواج /USDT بالخطأ."""
-    # تضمين قسري إن طابق INCLUDE_REGEX
     if _INCLUDE_FORCE and _INCLUDE_FORCE.search(symbol):
         return False
     try:
         base, quote = symbol.split("/", 1)
     except ValueError:
         base, quote = symbol, ""
-    base = base.upper().strip()
-    quote = quote.upper().strip()
-
-    # استبعاد إذا كان الـ BASE نفسه ستايبل/فيات
+    base = base.upper().strip(); quote = quote.upper().strip()
     if base in _STABLE_BASES:
         return True
-
-    # استبعاد توكنات مرفوعة مثل BTC3L/USDT
     if any(base.endswith(suf) for suf in _LEVERAGED_SUFFIXES):
         return True
-
-    # استبعاد أسماء BASE الغريبة (TEST|IOU...) إن طابقت
     if _BASE_EXCLUDE_RE and _BASE_EXCLUDE_RE.search(base):
         return True
-
     return False
 
 def _fetch_okx_spot_supported() -> List[str]:
-    """قائمة جميع أزواج SPOT المدعومة (بدون ترتيب)."""
     j = _okx_get_json(INSTR_URL, attempts=2)
     if not j:
         return []
     out = []
     for it in j.get("data", []):
-        inst = (it.get("instId") or "").upper()  # BTC-USDT
+        inst = (it.get("instId") or "").upper()
         if not inst or f"-{ALLOWED_QUOTE}" not in inst:
             continue
         sym = inst.replace("-", "/")
@@ -190,20 +195,14 @@ def _fetch_okx_spot_supported() -> List[str]:
     return out
 
 def _fetch_okx_usdt_spot_ranked(min_usd_vol: float) -> List[Tuple[str, float]]:
-    """
-    يرجع [(symbol, score)] مرتبة تقريبياً حسب السيولة (vol/last).
-    يتم تجاهل الأزواج المستبعدة، ولا تُرجع رموز تحت حد السيولة.
-    """
     j = _okx_get_tickers_cached()
     if not j:
         return []
     rows: List[Tuple[str, float]] = []
     for it in j.get("data", []):
-        inst = (it.get("instId") or "").upper()  # مثل BTC-USDT
+        inst = (it.get("instId") or "").upper()
         if not inst.endswith(f"-{ALLOWED_QUOTE}"):
             continue
-
-        # حساب تقدير الحجم/السيولة بالدولار
         vol = 0.0
         for key in ("volUsd", "volCcy24h", "vol24h"):
             v = it.get(key)
@@ -221,40 +220,28 @@ def _fetch_okx_usdt_spot_ranked(min_usd_vol: float) -> List[Tuple[str, float]]:
                 vol = float(it.get("vol24h", 0)) * float(it.get("last", 0))
             except Exception:
                 vol = 0.0
-
         sym = inst.replace("-", "/")
         if _looks_stable_or_exotic(sym):
             continue
         if vol < min_usd_vol:
             continue
         rows.append((sym, vol))
-
     rows.sort(key=lambda x: x[1], reverse=True)
     return rows
 
 def _expand_symbols_to_target(existing: List[str], target=100) -> List[str]:
-    # طبّع وأزل التكرارات
     base = _dedupe_keep_order(_normalize_symbol(s) for s in existing)
-
-    # 1) ترتيب بالسيولة
     ranked = _fetch_okx_usdt_spot_ranked(MIN_USDT_VOL_24H)
     if ranked:
         okx_ranked = [s for s, _ in ranked]
         okx_set = set(okx_ranked)
-
-        # احتفظ بما لديك إن كان مدعومًا ومقبولًا
         kept = [s for s in base if (s in okx_set) and not _looks_stable_or_exotic(s)]
-
-        # أكمل من الأعلى سيولةً مع استبعاد الموجود
         extras = [s for s in okx_ranked if s not in kept]
         out = (kept + extras)[:target]
-
         if DEBUG_CONFIG_SYMBOLS:
             missing = [s for s in base if s not in okx_set or _looks_stable_or_exotic(s)]
             print(f"[config] kept {len(kept)}, added {len(out)-len(kept)}, missing_or_filtered: {missing[:10]}")
         return out
-
-    # 2) مسار احتياطي: instruments (بدون ترتيب)
     supported = set(_fetch_okx_spot_supported())
     if supported:
         kept = [s for s in base if s in supported and not _looks_stable_or_exotic(s)]
@@ -263,26 +250,21 @@ def _expand_symbols_to_target(existing: List[str], target=100) -> List[str]:
         if DEBUG_CONFIG_SYMBOLS:
             print(f"[config] tickers failed; used instruments. kept={len(kept)} total={len(out)}")
         return out
-
-    # 3) فشل كامل: التزم بما لديك بعد الفلترة
     out = [s for s in base if not _looks_stable_or_exotic(s)][:target]
     if DEBUG_CONFIG_SYMBOLS:
         print(f"[config] OKX fetch failed; using existing ({len(out)})")
     return out
 
 # ============ التنفيذ ============
-
 try:
     if AUTO_EXPAND_SYMBOLS:
         SYMBOLS = _expand_symbols_to_target(SEED_SYMBOLS, TARGET_SYMBOLS_COUNT)
     else:
-        # حتى بدون جلب، نظّف التكرارات وطبّع الرموز واقصّها واستبعد الـ BASE غير المرغوب
         SYMBOLS = [
             s for s in _dedupe_keep_order(_normalize_symbol(s) for s in SEED_SYMBOLS)
             if not _looks_stable_or_exotic(s)
         ][:TARGET_SYMBOLS_COUNT]
 except Exception:
-    # لو حدث خطأ غير متوقع: حافظ على قائمتك بعد إزالة التكرارات واقصّها
     SYMBOLS = _dedupe_keep_order(_normalize_symbol(s) for s in SEED_SYMBOLS)
     SYMBOLS = list(SYMBOLS)[:TARGET_SYMBOLS_COUNT]
 
@@ -290,16 +272,26 @@ if DEBUG_CONFIG_SYMBOLS:
     print(f"[config] SYMBOLS ready: {len(SYMBOLS)} | first 10: {SYMBOLS[:10]}")
 
 # ===============================
-# 🎯 نسختين لأول 20 عملة والباقي نسخة واحدة
+# 🎯 توزيع الاستراتيجيات على أعلى الرموز سيولة
 # ===============================
-FIRST_N_FOR_BOTH = 20
-_final_symbols = []
-for idx, s in enumerate(SYMBOLS):
-    _final_symbols.append(s)                 # النسخة الافتراضية (#new)
-    if idx < FIRST_N_FOR_BOTH:
-        _final_symbols.append(f"{s}#old")    # أضف نسخة #old لأول 20
+ENABLE_OLD_FOR_TOP_N = int(os.getenv("ENABLE_OLD_FOR_TOP_N", "20"))  # أضف #old لأعلى N
+ADD_SRR_TOP_N = int(os.getenv("ADD_SRR_TOP_N", "15"))                # أضف #srr لأعلى N
+ADD_BRT_TOP_N = int(os.getenv("ADD_BRT_TOP_N", "15"))                # أضف #brt لأعلى N
+ADD_VBR_TOP_N = int(os.getenv("ADD_VBR_TOP_N", "15"))                # أضف #vbr لأعلى N
 
-SYMBOLS = _final_symbols
+_final_symbols: List[str] = []
+for idx, s in enumerate(SYMBOLS):
+    _final_symbols.append(s)  # النسخة الافتراضية (#new)
+    if idx < ENABLE_OLD_FOR_TOP_N:
+        _final_symbols.append(f"{s}#old")
+    if idx < ADD_SRR_TOP_N:
+        _final_symbols.append(f"{s}#srr")
+    if idx < ADD_BRT_TOP_N:
+        _final_symbols.append(f"{s}#brt")
+    if idx < ADD_VBR_TOP_N:
+        _final_symbols.append(f"{s}#vbr")
+
+SYMBOLS = _dedupe_keep_order(_final_symbols)
 
 if DEBUG_CONFIG_SYMBOLS:
     print(f"[config] final SYMBOLS: {len(SYMBOLS)} | first 12: {SYMBOLS[:12]}")
