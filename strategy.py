@@ -1,9 +1,23 @@
 # -*- coding: utf-8 -*-
-#  — نسختان برمز واحد (#old كما هو، #new سكالب متكّيف ATR)
-# "نسخة مُخفَّفة الصرامة" — زيادة إشارات بدون المساس بحماية رأس المال.
+"""
+strategy_pro_v3.py — ثلاث استراتيجيات مجرَّبة + تحسينات:
+- #old: Hybrid كلاسيكي مع فلترة SR محسّنة
+- #new: Scalp متكّف بالـ ATR + Regime-aware + TP1 ذكي
+- #srr: Sweep & Reclaim (كسر سيولة واستعادة المستوى)
+- #brt: Break & Retest (اختراق + إعادة اختبار)
+- #vbr: VWAP-Band Reversion (ارتداد من نطاق VWAP)
+
+الملف يوفّر:
+- check_signal(symbol) — Router يُعيد None أو dict يحوي decision/score/…
+- execute_buy(symbol), manage_position(symbol), close_trade(...), build_daily_report_text()
+
+يعتمد على okx_api (fetch_ohlcv, fetch_price, place_market_order, fetch_balance)
+وعلى config (TRADE_AMOUNT_USDT, MAX_OPEN_POSITIONS, SYMBOLS, FEE_BPS_ROUNDTRIP, TELEGRAM_TOKEN, TELEGRAM_CHAT_ID)
+"""
 
 import os, json, requests, logging
 from datetime import datetime, timedelta, timezone
+from typing import Optional, Tuple, Dict, Any, List
 import pandas as pd
 import numpy as np
 
@@ -13,14 +27,11 @@ from config import (
     TELEGRAM_TOKEN, TELEGRAM_CHAT_ID
 )
 
-# استيراد آمن لـ strategy.py كخارجية إن وُجدت
-try:
-    from strategy import check_signal as strat_check  # يُتوقَّع dict يحوي entry/sl/targets/partials/messages
-except Exception:
-    strat_check = None
-
 # ===== لوج الاستراتيجية =====
 logger = logging.getLogger("strategy")
+if not logging.getLogger().hasHandlers():
+    logging.basicConfig(level=logging.INFO, format="%(asctime)s [%(levelname)s] %(name)s: %(message)s")
+
 DEBUG_LOG_SIGNALS = os.getenv("DEBUG_LOG_SIGNALS", "0").lower() in ("1","true","yes","y")
 
 # ================== إعدادات عامة (أساس) ==================
@@ -55,15 +66,15 @@ MAX_CONSEC_LOSSES        = 3
 DAILY_LOSS_LIMIT_USDT    = 200.0
 
 # تتبُّع
-_LAST_REJECT = {}
-_LAST_ENTRY_BAR_TS = {}      # key: f"{base}|{variant}"
-_SYMBOL_LAST_TRADE_AT = {}   # key: f"{base}|{variant}"
+_LAST_REJECT: Dict[str, Any] = {}
+_LAST_ENTRY_BAR_TS: Dict[str, int] = {}      # key: f"{base}|{variant}"
+_SYMBOL_LAST_TRADE_AT: Dict[str, datetime] = {}   # key: f"{base}|{variant}"
 
 # كاش بسيط لسياق HTF
-_HTF_CACHE = {}          # key = base symbol, val={"t": datetime, "ctx": {...}}
+_HTF_CACHE: Dict[str, Dict[str, Any]] = {}          # key = base symbol, val={"t": datetime, "ctx": {...}}
 _HTF_TTL_SEC = 150       # ~ دقيقتين ونصف
 
-# ================== إعدادات النسختين ==================
+# ================== إعدادات النسختين + Overrides إضافية ==================
 # قاعدة (#old)
 BASE_CFG = {
     # نمط الدخول
@@ -81,7 +92,7 @@ BASE_CFG = {
     "SWING_LOOKBACK": 60,
     "FIB_TOL": 0.004,
     "BREAKOUT_BUFFER_LTF": 0.0015,
-    "RSI_GATE_POLICY": None,  # لا بوابة في #old
+    "RSI_GATE_POLICY": None,  # None=بدون بوابة
 
     # إدارة الصفقة (نِسَب ثابتة)
     "USE_ATR_SL_TP": False,
@@ -97,18 +108,18 @@ BASE_CFG = {
     "SYMBOL_COOLDOWN_MIN": 30,
 }
 
-# تخصيص (#new) — سكالب متكّيف بالـ ATR (مخفّف الصرامة)
+# تخصيص (#new) — سكالب متكّيف بالـ ATR
 NEW_SCALP_OVERRIDES = {
     "HYBRID_ORDER": ["breakout","pullback"],
     "PULLBACK_VALUE_REF": "vwap",
     "PULLBACK_CONFIRM": "bos",
 
-    "RVOL_MIN": 1.4,                 # كان 1.6
+    "RVOL_MIN": 1.4,
     "ATR_MIN_FOR_TREND": 0.003,
 
     "USE_FIB": True,
     "BREAKOUT_BUFFER_LTF": 0.0018,
-    "RSI_GATE_POLICY": "lenient",  # كان balanced
+    "RSI_GATE_POLICY": "lenient",
 
     # إدارة عبر ATR
     "USE_ATR_SL_TP": True,
@@ -119,9 +130,48 @@ NEW_SCALP_OVERRIDES = {
     # تريلينغ/وقت/تبريد
     "TRAIL_AFTER_TP1": True,
     "TRAIL_ATR_MULT": 1.0,
-    "LOCK_MIN_PROFIT_PCT": 0.003,   # 0.3%
+    "LOCK_MIN_PROFIT_PCT": 0.003,
     "MAX_HOLD_HOURS": 6,
-    "SYMBOL_COOLDOWN_MIN": 8,       # كان 15 دقيقة
+    "SYMBOL_COOLDOWN_MIN": 8,
+}
+
+# SRR — Sweep & Reclaim
+SRR_OVERRIDES = {
+    "ENTRY_MODE": "pullback",
+    "RVOL_MIN": 1.2,
+    "ATR_MIN_FOR_TREND": 0.0016,
+    "RSI_GATE_POLICY": "balanced",
+    "USE_ATR_SL_TP": True,
+    "SL_ATR_MULT": 0.8,
+    "TP1_ATR_MULT": 1.2,
+    "TP2_ATR_MULT": 2.2,
+    "TRAIL_AFTER_TP1": True,
+    "TRAIL_ATR_MULT": 1.1,
+    "LOCK_MIN_PROFIT_PCT": 0.004,
+    "MAX_HOLD_HOURS": 6,
+    "SYMBOL_COOLDOWN_MIN": 8,
+}
+
+# BRT — Break & Retest
+BRT_OVERRIDES = {
+    "ENTRY_MODE": "breakout",
+    "RVOL_MIN": 1.4,
+    "ATR_MIN_FOR_TREND": 0.0022,
+    "RSI_GATE_POLICY": "balanced",
+    "USE_ATR_SL_TP": True, "SL_ATR_MULT": 0.9, "TP1_ATR_MULT": 1.4, "TP2_ATR_MULT": 2.4,
+    "TRAIL_AFTER_TP1": True, "TRAIL_ATR_MULT": 1.1,
+    "LOCK_MIN_PROFIT_PCT": 0.004, "MAX_HOLD_HOURS": 8, "SYMBOL_COOLDOWN_MIN": 10,
+}
+
+# VBR — VWAP Band Reversion
+VBR_OVERRIDES = {
+    "ENTRY_MODE": "pullback",
+    "RVOL_MIN": 1.2,
+    "ATR_MIN_FOR_TREND": 0.0018,
+    "RSI_GATE_POLICY": "balanced",
+    "USE_ATR_SL_TP": True, "SL_ATR_MULT": 0.8, "TP1_ATR_MULT": 1.2, "TP2_ATR_MULT": 2.0,
+    "TRAIL_AFTER_TP1": True, "TRAIL_ATR_MULT": 1.0,
+    "LOCK_MIN_PROFIT_PCT": 0.003, "MAX_HOLD_HOURS": 6, "SYMBOL_COOLDOWN_MIN": 8,
 }
 
 # نطاقات RSI حسب النمط (عامّة)
@@ -131,8 +181,15 @@ RSI_MIN_BREAKOUT, RSI_MAX_BREAKOUT = 50, 80
 # ======= فلترة متعددة الفريمات =======
 ENABLE_MTF_STRICT = True
 MTF_UP_TFS = ("4h", "1h", "15m")
-# خفّفنا العتبة الافتراضية لتسهيل المرور
-SCORE_THRESHOLD = 60  # كان None
+SCORE_THRESHOLD = 60  # يمكن تقويته/تليينه
+
+# --------- طبقات SR متعددة ---------
+SR_LEVELS_CFG = [
+    ("micro", "5m",  50, 0.8),   # (اسم, TF, نافذة رولينغ, مضاعِف ATR_LTF للقرب)
+    ("meso",  "1h",  50, 1.0),
+    ("macro", "4h",  50, 1.3),
+    # ("macro2","1d", 60, 1.6),  # فعّلها لو تريد اليومي
+]
 
 # ================== Helpers عامة ==================
 
@@ -149,6 +206,7 @@ def _tg(text, parse_mode="HTML"):
         pass
 
 def now_riyadh(): return datetime.now(RIYADH_TZ)
+
 def _today_str(): return now_riyadh().strftime("%Y-%m-%d")
 
 def _atomic_write(path, data):
@@ -162,7 +220,7 @@ def _read_json(path, default):
         if os.path.exists(path):
             with open(path, "r", encoding="utf-8") as f:
                 return json.load(f)
-    except:
+    except Exception:
         pass
     return default
 
@@ -176,12 +234,13 @@ def _df(data):
         pass
     return df
 
-# تقسيم الرمز إلى أساس/نسخة (#old/#new)
+# تقسيم الرمز إلى أساس/نسخة (#old/#new/#srr/#brt/#vbr)
 def _split_symbol_variant(symbol: str):
     if "#" in symbol:
         base, variant = symbol.split("#", 1)
         variant = (variant or "new").lower()
-        if variant not in ("old","new"): variant = "new"
+        if variant not in ("old","new","srr","brt","vbr"):
+            variant = "new"
         return base, variant
     return symbol, "new"
 
@@ -190,21 +249,29 @@ def get_cfg(variant: str):
     cfg = dict(BASE_CFG)
     if variant == "new":
         cfg.update(NEW_SCALP_OVERRIDES)
+    elif variant == "srr":
+        cfg.update(SRR_OVERRIDES)
+    elif variant == "brt":
+        cfg.update(BRT_OVERRIDES)
+    elif variant == "vbr":
+        cfg.update(VBR_OVERRIDES)
     return cfg
 
 # ================== تخزين الصفقات ==================
+
 def _pos_path(symbol):
-    os.makedirs(POSIONS_DIR := POSITIONS_DIR, exist_ok=True)
-    return f"{POSIONS_DIR}/{symbol.replace('/', '_')}.json"
+    os.makedirs(POSITIONS_DIR, exist_ok=True)
+    return f"{POSITIONS_DIR}/{symbol.replace('/', '_')}.json"
 
 def load_position(symbol): return _read_json(_pos_path(symbol), None)
+
 def save_position(symbol, position): _atomic_write(_pos_path(symbol), position)
 
 def clear_position(symbol):
     try:
         p = _pos_path(symbol)
         if os.path.exists(p): os.remove(p)
-    except:
+    except Exception:
         pass
 
 def count_open_positions():
@@ -212,9 +279,11 @@ def count_open_positions():
     return len([f for f in os.listdir(POSITIONS_DIR) if f.endswith(".json")])
 
 def load_closed_positions(): return _read_json(CLOSED_POSITIONS_FILE, [])
+
 def save_closed_positions(lst): _atomic_write(CLOSED_POSITIONS_FILE, lst)
 
 # ================== حالة المخاطر اليومية ==================
+
 def _default_risk_state():
     return {"date": _today_str(), "daily_pnl": 0.0, "consecutive_losses": 0,
             "trades_today": 0, "blocked_until": None}
@@ -264,6 +333,7 @@ def _risk_precheck_allow_new_entry():
     return True, ""
 
 # ================== مؤشرات ==================
+
 def ema(s, n): return s.ewm(span=n, adjust=False).mean()
 
 def rsi(series, period=14):
@@ -303,13 +373,15 @@ def _ensure_ltf_indicators(df):
     return df
 
 # ===== ATR =====
+
 def _atr_from_df(df, period=ATR_PERIOD):
     c = df["close"].shift(1)
     tr = pd.concat([(df["high"]-df["low"]).abs(), (df["high"]-c).abs(), (df["low"]-c).abs()], axis=1).max(axis=1)
     atr = tr.ewm(alpha=1/period, adjust=False).mean()
     return float(atr.iloc[-2])
 
-# ===== Swing/SR/Fib =====
+# ===== Swing/SR =====
+
 def _swing_points(df, left=2, right=2):
     highs, lows = df["high"], df["low"]
     idx = len(df) - 3
@@ -338,17 +410,36 @@ def recent_swing(df, lookback=60):
     if pd.isna(hhv) or pd.isna(llv) or hhv <= llv: return None, None
     return float(hhv), float(llv)
 
-def near_any_fib(price: float, hhv: float, llv: float, tol: float):
-    rng = hhv - llv
-    if rng <= 0: return False, ""
-    fib382 = hhv - rng * 0.382; fib618 = hhv - rng * 0.618
-    for lvl, name in ((fib382, "Fib 0.382"), (fib618, "Fib 0.618")):
-        if abs(price - lvl) / max(lvl, 1e-9) <= tol: return True, name
-    return False, ""
+# -------- SR متعددة الطبقات --------
+
+def _rolling_sr(symbol, tf: str, window: int, bars: int = 300):
+    data = fetch_ohlcv(symbol, tf, bars)
+    if not data: return None, None
+    df = _df(data)
+    if len(df) < window + 3: return None, None
+    df_prev = df.iloc[:-1]
+    w = min(window, len(df_prev))
+    res = df_prev["high"].rolling(w, min_periods=max(5, w//3)).max().iloc[-1]
+    sup = df_prev["low"].rolling(w,  min_periods=max(5, w//3)).min().iloc[-1]
+    if pd.isna(res) or pd.isna(sup): return None, None
+    return float(sup), float(res)
+
+def get_sr_multi(symbol: str):
+    levels: Dict[str, Dict[str, Any]] = {}
+    base = symbol.split("#")[0]
+    for name, tf, window, near_mult in SR_LEVELS_CFG:
+        try:
+            sup, res = _rolling_sr(base, tf, window)
+            if sup or res:
+                levels[name] = {"tf": tf, "support": sup, "resistance": res, "near_mult": near_mult}
+        except Exception:
+            pass
+    return levels
 
 # ===== MACD/RSI Gate =====
+
 def macd_rsi_gate(prev_row, closed_row, policy):
-    if not policy:  # معناه بوابة متوقفة (#old)
+    if not policy:  # None → بوابة متوقفة
         return True
     rsi_now = float(closed_row.get("rsi", 50.0))
     rsi_up  = rsi_now > float(prev_row.get("rsi", rsi_now))
@@ -367,6 +458,7 @@ def macd_rsi_gate(prev_row, closed_row, policy):
     return k >= 2  # balanced
 
 # ================== سياق HTF (مع كاش) ==================
+
 def _get_htf_context(symbol):
     base, _ = _split_symbol_variant(symbol)
 
@@ -387,7 +479,7 @@ def _get_htf_context(symbol):
     ema_now  = float(closed["ema50_htf"])
     ema_prev = float(df["ema50_htf"].iloc[-7]) if len(df) >= 7 else ema_now
 
-    ctx = {"close": float(closed["close"]), "ema50_now": ema_now, "ema50_prev": ema_prev,
+    ctx: Dict[str, Any] = {"close": float(closed["close"]), "ema50_now": ema_now, "ema50_prev": ema_prev,
            "support": float(support), "resistance": float(resistance), "mtf": {}}
 
     # فلتر اتجاهي إضافي (تصويتي)
@@ -415,6 +507,7 @@ def _get_htf_context(symbol):
     return ctx
 
 # ================== منطق الدخول (النسخة القديمة) ==================
+
 def _entry_pullback_logic(df, closed, prev, atr_ltf, htf_ctx, cfg):
     ref_val = closed["ema21"] if cfg["PULLBACK_VALUE_REF"]=="ema21" else closed.get("vwap", closed["ema21"])
     if pd.isna(ref_val): ref_val = closed["ema21"]
@@ -433,6 +526,7 @@ def _entry_breakout_logic(df, closed, prev, atr_ltf, htf_ctx, cfg):
     return (closed["close"] > hi_range) and is_nr_recent and vwap_ok
 
 # ================== فحص الإشارة — OLD ==================
+
 def check_signal_old(symbol):
     ok, _ = _risk_precheck_allow_new_entry()
     if not ok: return None
@@ -468,10 +562,11 @@ def check_signal_old(symbol):
     if dist > 3.0 * atr_ltf: return None
 
     if (closed["close"] * closed["volume"]) < 60000: return None
-    if pd.isna(closed.get("rvol")) or closed["rvol"] < cfg["RVOL_MIN"]: return None
+    if pd.isna(closed.get("rvol")) or closed["rvol"] < max(cfg["RVOL_MIN"], 1.2): return None
     if closed["close"] <= closed["open"]: return None
 
-    if ctx.get("resistance") and (ctx["resistance"] - price) < 1.2 * atr_ltf: return None
+    # قرب مقاومة (أشد قليلًا في OLD)
+    if ctx.get("resistance") and (ctx["resistance"] - price) < 1.4 * atr_ltf: return None
     if ctx.get("support") and price <= ctx["support"] * (1 + SUPPORT_BUFFER): return None
 
     chosen_mode = None; mode_ok = False
@@ -497,9 +592,10 @@ def check_signal_old(symbol):
     if chosen_mode == "breakout" and not (RSI_MIN_BREAKOUT < rsi_val < RSI_MAX_BREAKOUT): return None
 
     _LAST_ENTRY_BAR_TS[key] = last_ts_closed
-    return "buy"
+    return {"decision": "buy", "score": 60, "reason": "OLD", "pattern": chosen_mode, "ts": last_ts_closed}
 
 # ================== تقييم الإشارة ==================
+
 def _opportunity_score(df, prev, closed):
     score, why, pattern = 0, [], ""
     if closed["close"] > closed["open"]:
@@ -531,18 +627,12 @@ def _opportunity_score(df, prev, closed):
     return score, ", ".join(why), (pattern or "Generic")
 
 # ================== Auto-Tune بحسب ريجيم السوق ==================
+
 def _auto_tune_thresholds_ltf(df):
-    """يشتق ريجيم السوق من ATR% و RVOL، ويُرجع عتبات ديناميكية للاستخدام داخل check_signal_new."""
     if len(df) < 160:
-        return {
-            "regime": "mid",
-            "rvol_min": 1.35,
-            "atr_min_for_trend": 0.0026,
-            "score_threshold": max(64, SCORE_THRESHOLD) if SCORE_THRESHOLD else 64,
-            "dist_bounds_to_ema50": (0.45, 3.2),
-            "mtf_votes_req": 2,
-            "breakout_buffer": 0.0016,
-        }
+        return {"regime": "mid", "rvol_min": 1.35, "atr_min_for_trend": 0.0026,
+                "score_threshold": max(64, SCORE_THRESHOLD) if SCORE_THRESHOLD else 64,
+                "dist_bounds_to_ema50": (0.45, 3.2), "mtf_votes_req": 2, "breakout_buffer": 0.0016}
 
     c = df["close"]; c_shift = c.shift(1)
     tr = pd.concat([(df["high"]-df["low"]).abs(), (df["high"]-c_shift).abs(), (df["low"]-c_shift).abs()], axis=1).max(axis=1)
@@ -559,37 +649,17 @@ def _auto_tune_thresholds_ltf(df):
     regime = "low" if last <= p30 else ("high" if last >= p70 else "mid")
 
     if regime == "low":
-        return {
-            "regime": regime,
-            "rvol_min": 1.10,
-            "atr_min_for_trend": 0.0018,
-            "score_threshold": 62,
-            "dist_bounds_to_ema50": (0.30, 3.80),
-            "mtf_votes_req": 1,
-            "breakout_buffer": 0.0010,
-        }
+        return {"regime": regime, "rvol_min": 1.10, "atr_min_for_trend": 0.0018,
+                "score_threshold": 62, "dist_bounds_to_ema50": (0.30, 3.80), "mtf_votes_req": 2, "breakout_buffer": 0.0010}
     elif regime == "high":
-        return {
-            "regime": regime,
-            "rvol_min": 1.30,             # خفّضنا قليلًا
-            "atr_min_for_trend": 0.0024,  # خفّضنا قليلًا
-            "score_threshold": 70,
-            "dist_bounds_to_ema50": (0.45, 3.20),
-            "mtf_votes_req": 2,
-            "breakout_buffer": 0.0016,
-        }
+        return {"regime": regime, "rvol_min": 1.30, "atr_min_for_trend": 0.0024,
+                "score_threshold": 70, "dist_bounds_to_ema50": (0.45, 3.20), "mtf_votes_req": 2, "breakout_buffer": 0.0016}
     else:  # mid
-        return {
-            "regime": regime,
-            "rvol_min": 1.15,             # خفّضنا
-            "atr_min_for_trend": 0.0018,  # خفّضنا
-            "score_threshold": 66,
-            "dist_bounds_to_ema50": (0.30, 4.00),  # وسّعنا
-            "mtf_votes_req": 1,
-            "breakout_buffer": 0.0014,
-        }
+        return {"regime": regime, "rvol_min": 1.15, "atr_min_for_trend": 0.0018,
+                "score_threshold": 66, "dist_bounds_to_ema50": (0.30, 4.00), "mtf_votes_req": 1, "breakout_buffer": 0.0014}
 
-# ================== فحص الإشارة — NEW (سكالب محسّن مع تكيّف) ==================
+# ================== فحص الإشارة — NEW (سكالب محسّن مع تكيّف + SR متعددة) ==================
+
 def check_signal_new(symbol):
     def _rej(stage, **kv):
         if DEBUG_LOG_SIGNALS:
@@ -642,7 +712,7 @@ def check_signal_new(symbol):
     if ENABLE_MTF_STRICT and ctx.get("mtf"):
         ups = ups0
         if ups < tune["mtf_votes_req"]:
-            mtf_soft_block = True  # قد نسمح لاحقًا
+            mtf_soft_block = True
 
     prev, closed = df.iloc[-3], df.iloc[-2]
     last_ts_closed = int(closed["timestamp"])
@@ -667,10 +737,17 @@ def check_signal_new(symbol):
     if pd.isna(closed.get("rvol")) or closed["rvol"] < need_rvol:
         return _rej("rvol", rvol=round(float(closed.get("rvol",0)),2), need=round(need_rvol,2))
 
-    # قرب مقاومة — شرط ليّن
-    near_res = False
-    if ctx.get("resistance"):
-        near_res = (ctx["resistance"] - price) < (0.8 * atr_ltf)  # كان 1.2 ATR
+    # طبقات SR متعددة
+    sr_multi = get_sr_multi(symbol)
+    near_res_any = False
+    nearest_res = None
+    for name, ent in sr_multi.items():
+        res = ent.get("resistance")
+        if res:
+            if nearest_res is None or res < nearest_res:
+                nearest_res = res
+            if (res - price) < (ent["near_mult"] * atr_ltf):
+                near_res_any = True
 
     # بوابة MACD/RSI — ليّنة افتراضيًا
     policy = cfg["RSI_GATE_POLICY"] or "lenient"
@@ -697,9 +774,9 @@ def check_signal_new(symbol):
             if m == "pullback" and _entry_pullback_logic(df, closed, prev, atr_ltf, ctx, cfg):
                 chosen_mode = "pullback"; mode_ok = True; break
     else:
-        crossed = (prev["ema9"] < prev["ema21"]) and (closed["ema9"] > closed["ema21"])
-        macd_ok = float(df["macd"].iloc[-2]) > float(df["macd_signal"].iloc[-2])
-        chosen_mode = "crossover"; mode_ok = crossed and macd_ok
+        crossed = (prev["ema9"] < prev["ema21"]) and (closed["ema9"] > closed["ema21"]) \
+                  and float(df["macd"].iloc[-2]) > float(df["macd_signal"].iloc[-2])
+        chosen_mode = "crossover"; mode_ok = crossed
 
     if not mode_ok:
         # فرصة Breakout إضافية إن كانت فوق أعلى SR داخلي وغير مصطدمة بمقاومة دقيقة
@@ -730,8 +807,7 @@ def check_signal_new(symbol):
 
     # سكّور الفرصة + استثناء قرب المقاومة
     score, why, patt = _opportunity_score(df, prev, closed)
-    if near_res:
-        # ليّن: اسمح إن كان score >= (threshold - 2) أو RVOL كافٍ أو breakout
+    if near_res_any:
         if not (score >= (score_threshold - 2) or float(closed.get("rvol", 0)) >= need_rvol or chosen_mode == "breakout"):
             return _rej("near_res_block", score=score, need=score_threshold-2)
 
@@ -742,18 +818,188 @@ def check_signal_new(symbol):
     if score < score_threshold:
         return _rej("score_low", score=score, need=score_threshold)
 
+    # TP1 ذكي نحو أقرب مقاومة معقولة
+    tp1_hint = None
+    if nearest_res and (nearest_res > price) and ((nearest_res - price) < 2.5 * atr_ltf):
+        tp1_hint = float(nearest_res)
+
     _LAST_ENTRY_BAR_TS[key] = last_ts_closed
-    _pass("signal_ok", mode=chosen_mode, score=score,
-          rvol=round(float(closed.get("rvol",0)),2),
-          atrp=round(atrp,4))
-    return {"decision": "buy", "score": score, "reason": why, "pattern": patt, "ts": last_ts_closed}
+    _pass("signal_ok", mode=chosen_mode, score=score, rvol=round(float(closed.get("rvol",0)),2), atrp=round(atrp,4))
+    return {"decision": "buy", "score": score, "reason": why, "pattern": patt, "ts": last_ts_closed,
+            "custom": {"tp1": tp1_hint} if tp1_hint else {} }
+
+# ================== SRR — Sweep & Reclaim ==================
+
+def check_signal_srr(symbol):
+    ok, reason = _risk_precheck_allow_new_entry()
+    if not ok: return None
+
+    base, variant = _split_symbol_variant(symbol); cfg = get_cfg(variant)
+    key = f"{base}|{variant}"
+    if _SYMBOL_LAST_TRADE_AT.get(key) and (now_riyadh() - _SYMBOL_LAST_TRADE_AT[key]) < timedelta(minutes=cfg["SYMBOL_COOLDOWN_MIN"]):
+        return None
+    if load_position(symbol): return None
+
+    # سياق HTF
+    ctx = _get_htf_context(symbol)
+    if not ctx: return None
+    if not ((ctx["ema50_now"] - ctx["ema50_prev"]) > 0 and ctx["close"] > ctx["ema50_now"]):
+        return None
+
+    # LTF
+    data = fetch_ohlcv(base, LTF_TIMEFRAME, 260)
+    if not data: return None
+    df = _df(data); df = _ensure_ltf_indicators(df)
+    if len(df) < 120: return None
+
+    prev, closed = df.iloc[-3], df.iloc[-2]
+    last_ts_closed = int(closed["timestamp"])
+    if _LAST_ENTRY_BAR_TS.get(key) == last_ts_closed: return None
+
+    price = float(closed["close"]); atr = _atr_from_df(df)
+    if not atr or atr <= 0: return None
+    atrp = atr / max(1e-9, price)
+    if atrp < cfg["ATR_MIN_FOR_TREND"]: return None
+
+    # LLV للسويب
+    hhv, llv = recent_swing(df, lookback=60)
+    if llv is None: return None
+    swept = (float(closed["low"]) < llv * 0.9995) and (price > llv)
+    reclaimed = (price > float(closed.get("vwap", closed.get("ema21", price)))) and (price > float(closed.get("ema21", price)))
+    if not (swept and reclaimed): return None
+
+    # حجم/زخم
+    if pd.isna(closed.get("rvol")) or float(closed["rvol"]) < max(1.2, cfg["RVOL_MIN"]): return None
+    if not macd_rsi_gate(prev, closed, policy=cfg["RSI_GATE_POLICY"]): return None
+
+    # منع سقف قريب
+    sup_ltf, res_ltf = get_sr_on_closed(df, SR_WINDOW)
+    near_res_ltf = bool(res_ltf and (res_ltf - price) < 0.8 * atr)
+    near_res_htf = bool(ctx.get("resistance") and (ctx["resistance"] - price) < 1.3 * atr)
+    # نسمح إذا كان السكور قويًا لاحقًا
+
+    # سكّور بسيط
+    score, why, patt = _opportunity_score(df, prev, closed)
+    score += 15; patt = "SweepReclaim"; why = (why + ", SRR")
+
+    # تلميحات SL/TP
+    sl_hint = min(float(closed["low"]), llv) * 0.999
+    tp1_hint = None
+    if res_ltf and (res_ltf - price) > 0 and (res_ltf - price) < 2.5 * atr:
+        tp1_hint = float(res_ltf)
+
+    _LAST_ENTRY_BAR_TS[key] = last_ts_closed
+    return {"decision": "buy", "score": score, "reason": why, "pattern": patt,
+            "ts": last_ts_closed, "custom": {"sl": sl_hint, "tp1": tp1_hint} }
+
+# ================== BRT — Break & Retest ==================
+
+def check_signal_brt(symbol):
+    ok, reason = _risk_precheck_allow_new_entry()
+    if not ok: return None
+    base, variant = _split_symbol_variant(symbol); cfg = get_cfg(variant)
+    key = f"{base}|{variant}"
+    if _SYMBOL_LAST_TRADE_AT.get(key) and (now_riyadh() - _SYMBOL_LAST_TRADE_AT[key]) < timedelta(minutes=cfg["SYMBOL_COOLDOWN_MIN"]): return None
+    if load_position(symbol): return None
+
+    ctx = _get_htf_context(symbol)
+    if not ctx or not ((ctx["ema50_now"] - ctx["ema50_prev"]) > 0 and ctx["close"] > ctx["ema50_now"]): return None
+
+    data = fetch_ohlcv(base, LTF_TIMEFRAME, 260)
+    if not data: return None
+    df = _df(data); df = _ensure_ltf_indicators(df)
+    if len(df) < 140: return None
+    prev, closed = df.iloc[-3], df.iloc[-2]
+    ts = int(closed["timestamp"])
+    if _LAST_ENTRY_BAR_TS.get(key) == ts: return None
+
+    price = float(closed["close"]); atr = _atr_from_df(df)
+    if not atr or atr <= 0: return None
+    if (atr / max(1e-9, price)) < cfg["ATR_MIN_FOR_TREND"]: return None
+
+    hi_range = float(df["high"].iloc[-SR_WINDOW-2:-2].max())
+    breakout = price > hi_range * (1.0 + 0.0015) and (closed.get("rvol", 0) >= cfg["RVOL_MIN"])
+    if not breakout: return None
+
+    retest_touched = (float(prev["low"]) <= hi_range * 1.002) or (float(closed["low"]) <= hi_range * 1.002)
+    reclaimed = (price > hi_range) and (price > float(closed.get("vwap", closed.get("ema21", price))))
+    if not (retest_touched and reclaimed): return None
+
+    if not macd_rsi_gate(prev, closed, policy=cfg["RSI_GATE_POLICY"]): return None
+
+    sup_ltf, res_ltf = get_sr_on_closed(df, SR_WINDOW)
+    near_res = (res_ltf and (res_ltf - price) < 0.8*atr) or (ctx.get("resistance") and (ctx["resistance"] - price) < 1.3*atr)
+    if near_res: return None
+
+    _LAST_ENTRY_BAR_TS[key] = ts
+    score, why, patt = _opportunity_score(df, prev, closed); patt = "Break&Retest"; why = (why + ", BRT")
+    return {"decision": "buy", "score": score+10, "reason": why, "pattern": patt, "ts": ts}
+
+# ================== VBR — VWAP Band Reversion ==================
+
+def check_signal_vbr(symbol):
+    ok, reason = _risk_precheck_allow_new_entry()
+    if not ok: return None
+    base, variant = _split_symbol_variant(symbol); cfg = get_cfg(variant)
+    key = f"{base}|{variant}"
+    if _SYMBOL_LAST_TRADE_AT.get(key) and (now_riyadh() - _SYMBOL_LAST_TRADE_AT[key]) < timedelta(minutes=cfg["SYMBOL_COOLDOWN_MIN"]): return None
+    if load_position(symbol): return None
+
+    ctx = _get_htf_context(symbol)
+    if not ctx: return None  # نسمح حتى لو الميل خفيف
+
+    data = fetch_ohlcv(base, LTF_TIMEFRAME, 260)
+    if not data: return None
+    df = _df(data); df = _ensure_ltf_indicators(df)
+    if len(df) < 120: return None
+    prev, closed = df.iloc[-3], df.iloc[-2]
+    ts = int(closed["timestamp"])
+    if _LAST_ENTRY_BAR_TS.get(key) == ts: return None
+
+    price = float(closed["close"]); atr = _atr_from_df(df)
+    if not atr or atr <= 0: return None
+    if (atr / max(1e-9, price)) < cfg["ATR_MIN_FOR_TREND"]: return None
+
+    # Z-score لانحراف السعر عن VWAP (60 شمعة)
+    dev = (df["close"] - df["vwap"]).rolling(60).apply(lambda x: (x.iloc[-1] - x.mean())/max(x.std(),1e-9), raw=False)
+    z = float(dev.iloc[-2]) if not pd.isna(dev.iloc[-2]) else 0.0
+
+    # LONG: تشبّع سفلي ثم استعادة فوق EMA21/VWAP
+    oversold_band = (z <= -2.0)
+    reclaimed = (price > float(closed.get("ema21", price))) and (price > float(closed.get("vwap", price)))
+    if not (oversold_band and reclaimed): return None
+
+    if (closed.get("rvol", 0) < cfg["RVOL_MIN"]): return None
+    if not macd_rsi_gate(prev, closed, policy=cfg["RSI_GATE_POLICY"]): return None
+
+    sup_ltf, res_ltf = get_sr_on_closed(df, SR_WINDOW)
+    if res_ltf and (res_ltf - price) < 0.7*atr: return None
+
+    _LAST_ENTRY_BAR_TS[key] = ts
+    score, why, patt = _opportunity_score(df, prev, closed)
+    patt = "VWAP_Reversion"; why = (why + f", z={round(z,2)}")
+    swing_hi, swing_lo = _swing_points(df, left=2, right=2)
+    sl_hint = (swing_lo * 0.999) if swing_lo else (price - 0.9*atr)
+    tp1_hint = float(closed.get("vwap", price + 1.2*atr))
+    return {"decision": "buy", "score": score+8, "reason": why, "pattern": patt, "ts": ts,
+            "custom": {"sl": float(sl_hint), "tp1": float(tp1_hint)}}
 
 # ================== Router ==================
+
 def check_signal(symbol):
     base, variant = _split_symbol_variant(symbol)
-    return check_signal_old(symbol) if variant == "old" else check_signal_new(symbol)
+    if variant == "old":
+        return check_signal_old(symbol)
+    if variant == "srr":
+        return check_signal_srr(symbol)
+    if variant == "brt":
+        return check_signal_brt(symbol)
+    if variant == "vbr":
+        return check_signal_vbr(symbol)
+    return check_signal_new(symbol)  # الافتراضي
 
 # ================== SL/TP ==================
+
 def _compute_sl_tp(entry, atr_val, cfg):
     if cfg.get("USE_ATR_SL_TP") and atr_val and atr_val > 0:
         sl  = entry - cfg.get("SL_ATR_MULT", 1.6)  * atr_val
@@ -766,6 +1012,7 @@ def _compute_sl_tp(entry, atr_val, cfg):
     return float(sl), float(tp1), float(tp2)
 
 # ================== تنفيذ الشراء ==================
+
 def execute_buy(symbol):
     base, variant = _split_symbol_variant(symbol)
 
@@ -780,38 +1027,41 @@ def execute_buy(symbol):
     ohlcv = fetch_ohlcv(base, LTF_TIMEFRAME, 200)
     if not ohlcv:
         return None, "⚠️ فشل جلب بيانات الشموع."
-    htf = {
-        "H1": fetch_ohlcv(base, "1h", 200),
-        "H4": fetch_ohlcv(base, "4h", 200),
-        "D1": fetch_ohlcv(base, "1d", 200)
+    htf = {"H1": fetch_ohlcv(base, "1h", 200), "H4": fetch_ohlcv(base, "4h", 200), "D1": fetch_ohlcv(base, "1d", 200)}
+
+    # فحص الإشارة عبر الراوتر الداخلي
+    _sig_inner = check_signal(symbol)
+    if not _sig_inner:
+        return None, "❌ لا توجد إشارة مطابقة."
+
+    # تجهيز SL/TP عبر ATR، مع التقاط تلميحات الاستراتيجية
+    df_exec = _df(ohlcv)
+    df_exec = _ensure_ltf_indicators(df_exec)
+    price_fallback = float(df_exec.iloc[-2]["close"])
+    atr_val = _atr_from_df(df_exec)
+    cfg = get_cfg(variant)
+
+    sl, tp1, tp2 = _compute_sl_tp(price_fallback, atr_val, cfg)
+    custom = (_sig_inner.get("custom") if isinstance(_sig_inner, dict) else {}) or {}
+    if "sl" in custom and isinstance(custom["sl"], (int, float)):
+        sl = float(custom["sl"])
+    if "tp1" in custom and isinstance(custom["tp1"], (int, float)):
+        tp1 = min(tp1, float(custom["tp1"]))
+
+    sig = {
+        "entry": price_fallback,
+        "sl": sl,
+        "targets": [tp1, tp2],
+        "partials": [TP1_FRACTION, 1.0 - TP1_FRACTION],
+        "messages": {"entry": f"🚀 دخول {_sig_inner.get('pattern','Opportunity')}"},
+        "score": _sig_inner.get("score"),
+        "pattern": _sig_inner.get("pattern"),
+        "reason": _sig_inner.get("reason"),
+        # يمكن لاحقًا تمرير stop_rule/max_bars_to_tp1 من الاستراتيجية إن رغبت
     }
 
-    # فحص الإشارة من strategy.py (إن توفّرت) وإلا فالس-باك للمنطق الداخلي NEW
-    sig = None
-    try:
-        if strat_check:
-            sig = strat_check(base, ohlcv, htf)
-    except Exception:
-        sig = None
-
-    if not sig:
-        _sig_inner = check_signal_new(symbol)
-        if not _sig_inner:
-            return None, "❌ لا توجد إشارة مطابقة."
-        # تجهيز SL/TP2 عبر ATR لو ما عندك 5 أهداف من strategy.py
-        df_exec = _df(ohlcv)
-        df_exec = _ensure_ltf_indicators(df_exec)
-        price_fallback = float(df_exec.iloc[-2]["close"])
-        atr_val = _atr_from_df(df_exec)
-        cfg = get_cfg(variant)
-        sl, tp1, tp2 = _compute_sl_tp(price_fallback, atr_val, cfg)
-        sig = {
-            "entry": price_fallback,
-            "sl": sl,
-            "targets": [tp1, tp2],
-            "partials": [TP1_FRACTION, 1.0 - TP1_FRACTION],
-            "messages": {"entry": f"🚀 دخول {_sig_inner.get('pattern','Opportunity')}"},
-        }
+    # قفل زمني افتراضي للوصول لـ TP1 — 12 شمعة 5m
+    sig["max_bars_to_tp1"] = 12
 
     # تنفيذ شراء
     price = float(sig["entry"]) if isinstance(sig, dict) else None
@@ -834,18 +1084,18 @@ def execute_buy(symbol):
         "amount": float(amount),
         "entry_price": float(fill_px),
         "stop_loss": float(sig["sl"]),
-        "targets": sig["targets"],           # 2 أو 5 أهداف
-        "partials": sig["partials"],         # تقسيمات
+        "targets": sig["targets"],
+        "partials": sig["partials"],
         "opened_at": now_riyadh().isoformat(timespec="seconds"),
         "variant": variant,
-        "htf_stop": sig.get("stop_rule") if isinstance(sig, dict) else None,
-        "max_bars_to_tp1": sig.get("max_bars_to_tp1") if isinstance(sig, dict) else None,
-        "messages": sig.get("messages") if isinstance(sig, dict) else None,
+        "htf_stop": sig.get("stop_rule"),
+        "max_bars_to_tp1": sig.get("max_bars_to_tp1"),
+        "messages": sig.get("messages"),
         "tp_hits": [False] * len(sig["targets"]),
         # معلومات إضافية اختيارية
-        "score": sig.get("score") if isinstance(sig, dict) else None,
-        "pattern": (sig.get("features", {}).get("setup") if isinstance(sig, dict) and sig.get("features") else None),
-        "reason": (", ".join(sig.get("confluence", [])[:4]) if isinstance(sig, dict) and sig.get("confluence") else None),
+        "score": sig.get("score"),
+        "pattern": sig.get("pattern"),
+        "reason": sig.get("reason"),
     }
     save_position(symbol, pos)
     register_trade_opened()
@@ -868,6 +1118,7 @@ def execute_buy(symbol):
     return order, f"✅ شراء {symbol} | SL: {pos['stop_loss']:.6f}"
 
 # ================== إدارة الصفقة ==================
+
 def manage_position(symbol):
     pos = load_position(symbol)
     if not pos:
@@ -1004,6 +1255,7 @@ def manage_position(symbol):
     return False
 
 # ================== إغلاق وتسجيل ==================
+
 def close_trade(symbol, exit_price, pnl_net, reason="MANUAL"):
     pos = load_position(symbol)
     if not pos: return
@@ -1044,6 +1296,7 @@ def close_trade(symbol, exit_price, pnl_net, reason="MANUAL"):
     clear_position(symbol)
 
 # ================== تقرير يومي ==================
+
 def _fmt_table(rows, headers):
     widths = [len(h) for h in headers]
     for r in rows:
@@ -1105,6 +1358,7 @@ def build_daily_report_text():
 if __name__ == "__main__":
     if DEBUG_LOG_SIGNALS:
         logger.setLevel("INFO")
+    # جرّب أول 10 رموز
     test = [s if "#" in s else s+"#new" for s in SYMBOLS[:10]]
     for sym in test:
         r = check_signal(sym)
