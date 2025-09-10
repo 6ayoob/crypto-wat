@@ -24,7 +24,8 @@ import numpy as np
 from okx_api import fetch_ohlcv, fetch_price, place_market_order, fetch_balance
 from config import (
     TRADE_AMOUNT_USDT, MAX_OPEN_POSITIONS, SYMBOLS, FEE_BPS_ROUNDTRIP,
-    TELEGRAM_TOKEN, TELEGRAM_CHAT_ID
+    TELEGRAM_TOKEN, TELEGRAM_CHAT_ID,
+    STRAT_LTF_TIMEFRAME, STRAT_HTF_TIMEFRAME
 )
 
 # ===== لوج الاستراتيجية =====
@@ -40,9 +41,9 @@ POSITIONS_DIR = "positions"
 CLOSED_POSITIONS_FILE = "closed_positions.json"
 RISK_STATE_FILE = "risk_state.json"
 
-# أطر زمنية
-HTF_TIMEFRAME = "15m"   # إطار الاتجاه (سياق)
-LTF_TIMEFRAME = "5m"    # إطار التنفيذ (سكالب)
+# أطر زمنية (من config)
+HTF_TIMEFRAME = STRAT_HTF_TIMEFRAME   # إطار الاتجاه (سياق)
+LTF_TIMEFRAME = STRAT_LTF_TIMEFRAME   # إطار التنفيذ (سكالب)
 
 # مؤشرات أساسية و نوافذ ثابتة
 EMA_FAST, EMA_SLOW, EMA_TREND = 9, 21, 50
@@ -185,7 +186,7 @@ SCORE_THRESHOLD = 60  # يمكن تقويته/تليينه
 
 # --------- طبقات SR متعددة ---------
 SR_LEVELS_CFG = [
-    ("micro", "5m",  50, 0.8),   # (اسم, TF, نافذة رولينغ, مضاعِف ATR_LTF للقرب)
+    ("micro", LTF_TIMEFRAME,  50, 0.8),   # (اسم, TF, نافذة رولينغ, مضاعِف ATR_LTF للقرب)
     ("meso",  "1h",  50, 1.0),
     ("macro", "4h",  50, 1.3),
     # ("macro2","1d", 60, 1.6),  # فعّلها لو تريد اليومي
@@ -496,7 +497,7 @@ def _get_htf_context(symbol):
             except Exception:
                 return None
 
-        mtf = {"15m": {"tf": "15m", "price": ctx["close"], "ema": ctx["ema50_now"],
+        mtf = {HTF_TIMEFRAME: {"tf": HTF_TIMEFRAME, "price": ctx["close"], "ema": ctx["ema50_now"],
                          "trend_up": bool(ctx["close"] > ctx["ema50_now"])}}
         for tf in ("1h","4h"):
             info = _tf_info(tf)
@@ -689,7 +690,7 @@ def check_signal_new(symbol):
 
     # تصويت MTF
     if ENABLE_MTF_STRICT and ctx.get("mtf"):
-        ups0 = sum(1 for tf in ("15m","1h","4h") if tf in ctx["mtf"] and ctx["mtf"][tf].get("trend_up"))
+        ups0 = sum(1 for ent in ctx["mtf"].values() if ent.get("trend_up"))
     else:
         ups0 = 3
 
@@ -874,19 +875,35 @@ def check_signal_srr(symbol):
 
     # منع سقف قريب
     sup_ltf, res_ltf = get_sr_on_closed(df, SR_WINDOW)
-    near_res_ltf = bool(res_ltf and (res_ltf - price) < 0.8 * atr)
-    near_res_htf = bool(ctx.get("resistance") and (ctx["resistance"] - price) < 1.3 * atr)
-    # نسمح إذا كان السكور قويًا لاحقًا
+    # قرب مقاومة/دعم من طبقات متعددة + LTF/HTF
+sr_multi = get_sr_multi(symbol)
+near_res_any = False
+nearest_res = None
+for name, ent in sr_multi.items():
+    res = ent.get("resistance")
+    if res:
+        if nearest_res is None or res < nearest_res:
+            nearest_res = res
+        if (res - price) < (ent["near_mult"] * atr):
+            near_res_any = True
+
+near_res_ltf = bool(res_ltf and (res_ltf - price) < 0.8 * atr)
+near_res_htf = bool(ctx.get("resistance") and (ctx["resistance"] - price) < 1.3 * atr)
 
     # سكّور بسيط
     score, why, patt = _opportunity_score(df, prev, closed)
-    score += 15; patt = "SweepReclaim"; why = (why + ", SRR")
+score += 15; patt = "SweepReclaim"; why = (why + ", SRR")
+# إذا قرب مقاومة قوية، اسمح فقط إذا السكور قوي أو RVOL مرتفع
+if (near_res_ltf or near_res_htf or near_res_any) and not (score >= 62 or float(closed.get("rvol",0)) >= max(1.2, cfg["RVOL_MIN"]) * 1.05):
+    return None
 
     # تلميحات SL/TP
     sl_hint = min(float(closed["low"]), llv) * 0.999
     tp1_hint = None
-    if res_ltf and (res_ltf - price) > 0 and (res_ltf - price) < 2.5 * atr:
-        tp1_hint = float(res_ltf)
+if res_ltf and (res_ltf - price) > 0 and (res_ltf - price) < 2.5 * atr:
+    tp1_hint = float(res_ltf)
+if nearest_res and (nearest_res > price) and ((nearest_res - price) < 2.5 * atr):
+    tp1_hint = float(min(tp1_hint, nearest_res)) if tp1_hint else float(nearest_res)
 
     _LAST_ENTRY_BAR_TS[key] = last_ts_closed
     return {"decision": "buy", "score": score, "reason": why, "pattern": patt,
@@ -928,8 +945,16 @@ def check_signal_brt(symbol):
     if not macd_rsi_gate(prev, closed, policy=cfg["RSI_GATE_POLICY"]): return None
 
     sup_ltf, res_ltf = get_sr_on_closed(df, SR_WINDOW)
-    near_res = (res_ltf and (res_ltf - price) < 0.8*atr) or (ctx.get("resistance") and (ctx["resistance"] - price) < 1.3*atr)
-    if near_res: return None
+# تشديد: منع الإشارات إذا قرب أي مقاومة متعددة الطبقات
+sr_multi = get_sr_multi(symbol)
+near_res_any = False
+for name, ent in sr_multi.items():
+    res = ent.get("resistance")
+    if res and (res - price) < (ent["near_mult"] * atr):
+        near_res_any = True; break
+
+near_res = (res_ltf and (res_ltf - price) < 0.8*atr) or (ctx.get("resistance") and (ctx["resistance"] - price) < 1.3*atr) or near_res_any
+if near_res: return None
 
     _LAST_ENTRY_BAR_TS[key] = ts
     score, why, patt = _opportunity_score(df, prev, closed); patt = "Break&Retest"; why = (why + ", BRT")
@@ -973,14 +998,28 @@ def check_signal_vbr(symbol):
     if not macd_rsi_gate(prev, closed, policy=cfg["RSI_GATE_POLICY"]): return None
 
     sup_ltf, res_ltf = get_sr_on_closed(df, SR_WINDOW)
-    if res_ltf and (res_ltf - price) < 0.7*atr: return None
+sr_multi = get_sr_multi(symbol)
+nearest_res = None
+near_res_any = False
+for name, ent in sr_multi.items():
+    res = ent.get("resistance")
+    if res:
+        if nearest_res is None or res < nearest_res:
+            nearest_res = res
+        if (res - price) < (ent["near_mult"] * atr):
+            near_res_any = True
+near_res_vbr = (res_ltf and (res_ltf - price) < 0.7*atr) or near_res_any
+if near_res_vbr: return None
 
     _LAST_ENTRY_BAR_TS[key] = ts
     score, why, patt = _opportunity_score(df, prev, closed)
     patt = "VWAP_Reversion"; why = (why + f", z={round(z,2)}")
     swing_hi, swing_lo = _swing_points(df, left=2, right=2)
     sl_hint = (swing_lo * 0.999) if swing_lo else (price - 0.9*atr)
-    tp1_hint = float(closed.get("vwap", price + 1.2*atr))
+    tp1_vwap = float(closed.get("vwap", price + 1.2*atr))
+tp1_hint = tp1_vwap
+if nearest_res and nearest_res > price:
+    tp1_hint = float(min(tp1_vwap, nearest_res))
     return {"decision": "buy", "score": score+8, "reason": why, "pattern": patt, "ts": ts,
             "custom": {"sl": float(sl_hint), "tp1": float(tp1_hint)}}
 
