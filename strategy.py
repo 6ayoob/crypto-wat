@@ -1,6 +1,6 @@
 # -*- coding: utf-8 -*-
 """
-strategy_pro_v3.py — ثلاث استراتيجيات مجرَّبة + تحسينات:
+strategy.py — ثلاث استراتيجيات مجرَّبة + تحسينات:
 - #old: Hybrid كلاسيكي مع فلترة SR محسّنة
 - #new: Scalp متكّف بالـ ATR + Regime-aware + TP1 ذكي
 - #srr: Sweep & Reclaim (كسر سيولة واستعادة المستوى)
@@ -34,6 +34,17 @@ if not logging.getLogger().hasHandlers():
     logging.basicConfig(level=logging.INFO, format="%(asctime)s [%(levelname)s] %(name)s: %(message)s")
 
 DEBUG_LOG_SIGNALS = os.getenv("DEBUG_LOG_SIGNALS", "0").lower() in ("1","true","yes","y")
+
+def _rej(stage, **kv):
+    if DEBUG_LOG_SIGNALS:
+        kvs = " ".join(f"{k}={v}" for k, v in kv.items())
+        logger.info(f"[REJECT] {stage} | {kvs}")
+    return None
+
+def _pass(stage, **kv):
+    if DEBUG_LOG_SIGNALS:
+        kvs = " ".join(f"{k}={v}" for k, v in kv.items())
+        logger.info(f"[PASS]   {stage} | {kvs}")
 
 # ================== إعدادات عامة (أساس) ==================
 RIYADH_TZ = timezone(timedelta(hours=3))
@@ -224,7 +235,6 @@ def _tg(text, parse_mode="HTML"):
         pass
 
 def now_riyadh(): return datetime.now(RIYADH_TZ)
-
 def _today_str(): return now_riyadh().strftime("%Y-%m-%d")
 
 def _atomic_write(path, data):
@@ -282,7 +292,6 @@ def _pos_path(symbol):
     return f"{POSITIONS_DIR}/{symbol.replace('/', '_')}.json"
 
 def load_position(symbol): return _read_json(_pos_path(symbol), None)
-
 def save_position(symbol, position): _atomic_write(_pos_path(symbol), position)
 
 def clear_position(symbol):
@@ -297,11 +306,9 @@ def count_open_positions():
     return len([f for f in os.listdir(POSITIONS_DIR) if f.endswith(".json")])
 
 def load_closed_positions(): return _read_json(CLOSED_POSITIONS_FILE, [])
-
 def save_closed_positions(lst): _atomic_write(CLOSED_POSITIONS_FILE, lst)
 
 # ================== حالة المخاطر اليومية ==================
-
 def _default_risk_state():
     return {"date": _today_str(), "daily_pnl": 0.0, "consecutive_losses": 0,
             "trades_today": 0, "blocked_until": None}
@@ -351,7 +358,6 @@ def _risk_precheck_allow_new_entry():
     return True, ""
 
 # ================== مؤشرات ==================
-
 def ema(s, n): return s.ewm(span=n, adjust=False).mean()
 
 def rsi(series, period=14):
@@ -391,7 +397,6 @@ def _ensure_ltf_indicators(df):
     return df
 
 # ===== ATR =====
-
 def _atr_from_df(df, period=ATR_PERIOD):
     c = df["close"].shift(1)
     tr = pd.concat([(df["high"]-df["low"]).abs(), (df["high"]-c).abs(), (df["low"]-c).abs()], axis=1).max(axis=1)
@@ -399,7 +404,6 @@ def _atr_from_df(df, period=ATR_PERIOD):
     return float(atr.iloc[-2])
 
 # ===== Swing/SR =====
-
 def _swing_points(df, left=2, right=2):
     highs, lows = df["high"], df["low"]
     idx = len(df) - 3
@@ -429,7 +433,6 @@ def recent_swing(df, lookback=60):
     return float(hhv), float(llv)
 
 # -------- SR متعددة الطبقات --------
-
 def _rolling_sr(symbol, tf: str, window: int, bars: int = 300):
     data = fetch_ohlcv(symbol, tf, bars)
     if not data: return None, None
@@ -455,7 +458,6 @@ def get_sr_multi(symbol: str):
     return levels
 
 # ===== MACD/RSI Gate =====
-
 def macd_rsi_gate(prev_row, closed_row, policy):
     if not policy:  # None → بوابة متوقفة
         return True
@@ -476,7 +478,6 @@ def macd_rsi_gate(prev_row, closed_row, policy):
     return k >= 2  # balanced
 
 # ================== سياق HTF (مع كاش) ==================
-
 def _get_htf_context(symbol):
     base, _ = _split_symbol_variant(symbol)
 
@@ -525,7 +526,6 @@ def _get_htf_context(symbol):
     return ctx
 
 # ================== منطق الدخول (النسخة القديمة) ==================
-
 def _entry_pullback_logic(df, closed, prev, atr_ltf, htf_ctx, cfg):
     ref_val = closed["ema21"] if cfg["PULLBACK_VALUE_REF"]=="ema21" else closed.get("vwap", closed["ema21"])
     if pd.isna(ref_val): ref_val = closed["ema21"]
@@ -544,7 +544,6 @@ def _entry_breakout_logic(df, closed, prev, atr_ltf, htf_ctx, cfg):
     return (closed["close"] > hi_range) and is_nr_recent and vwap_ok
 
 # ================== فحص الإشارة — OLD ==================
-
 def check_signal_old(symbol):
     ok, _ = _risk_precheck_allow_new_entry()
     if not ok: return None
@@ -643,8 +642,127 @@ def check_signal_old(symbol):
         return {"decision": "buy", "score": score, "reason": why, "pattern": patt,
                 "ts": last_ts_closed, "custom": {"sl": sl_hint, "tp1": tp1_hint}}
 
-# ================== BRT — Break & Retest ==================
+# ---------- Scoring ----------
+def _opportunity_score(df, prev, closed):
+    score, why, pattern = 0, [], ""
+    try:
+        if closed["close"] > closed["open"]:
+            score += 10; why.append("BullishClose")
+        if closed["close"] > closed.get("ema21", closed["close"]):
+            score += 10; why.append("AboveEMA21")
+        if closed["close"] > closed.get("ema50", closed["close"]):
+            score += 10; why.append("AboveEMA50")
+        rvol = float(closed.get("rvol", 0) or 0)
+        if rvol >= 1.5:
+            score += 15; why.append("HighRVOL")
+        nr_recent = bool(df["is_nr"].iloc[-3:-1].all())
+        hi_range = float(df["high"].iloc[-NR_WINDOW-2:-2].max())
+        if nr_recent and (closed["close"] > hi_range):
+            score += 20; why.append("NR_Breakout"); pattern = "NR_Breakout"
+        if _bullish_engulf(prev, closed):
+            score += 20; why.append("BullishEngulf"); pattern = pattern or "BullishEngulf"
+    except Exception:
+        pass
+    return score, ", ".join(why), (pattern or "Generic")
 
+# ================== NEW/SRR — متكّيف بالـ ATR + فلترة MTF/SR ==================
+def check_signal_new(symbol):
+    ok, reason = _risk_precheck_allow_new_entry()
+    if not ok: return _rej("risk_precheck", reason=reason)
+
+    base, variant = _split_symbol_variant(symbol); cfg = get_cfg(variant)
+    key = f"{base}|{variant}"
+
+    last_t = _SYMBOL_LAST_TRADE_AT.get(key)
+    if last_t and (now_riyadh() - last_t) < timedelta(minutes=cfg["SYMBOL_COOLDOWN_MIN"]):
+        return _rej("cooldown")
+    if load_position(symbol):
+        return _rej("already_open")
+
+    ctx = _get_htf_context(symbol)
+    if not ctx: return _rej("htf_none")
+    if not ((ctx["ema50_now"] - ctx["ema50_prev"]) > 0 and ctx["close"] > ctx["ema50_now"]):
+        return _rej("htf_trend")
+
+    data = fetch_ohlcv(base, LTF_TIMEFRAME, 260)
+    if not data: return _rej("ltf_fetch")
+    df = _df(data); df = _ensure_ltf_indicators(df)
+    if len(df) < 120: return _rej("ltf_len", n=len(df))
+
+    prev, closed = df.iloc[-3], df.iloc[-2]
+    ts = int(closed["timestamp"])
+    if _LAST_ENTRY_BAR_TS.get(key) == ts: return _rej("dup_bar")
+
+    price = float(closed["close"]); atr = _atr_from_df(df)
+    if not atr or atr <= 0: return _rej("atr_nan")
+    atrp = atr / max(price, 1e-9)
+    if atrp < float(cfg.get("ATR_MIN_FOR_TREND", 0.002)): return _rej("atr_low", atrp=round(atrp,5))
+
+    # مسافة عن EMA50 — متساهلة قليلاً
+    dist = price - float(closed["ema50"])
+    if not (0.30*atr <= dist <= 4.00*atr):
+        return _rej("dist_to_ema50", dist_atr=round(dist/atr,3))
+
+    # سيولة/حجم + RVOL
+    notional = price * float(closed["volume"])
+    if notional < 60000: return _rej("notional_low", notional=int(notional))
+    rvol = float(closed.get("rvol", 0) or 0)
+    need_rvol = float(cfg.get("RVOL_MIN", 1.2)) * 0.95
+    if pd.isna(rvol) or rvol < need_rvol: return _rej("rvol", rvol=round(rvol,2), need=round(need_rvol,2))
+
+    # بوابة MACD/RSI
+    policy = cfg.get("RSI_GATE_POLICY") or "lenient"
+    if not macd_rsi_gate(prev, closed, policy=policy): return _rej("macd_rsi_gate", policy=policy)
+
+    # اختيار النمط
+    def _brk_ok():
+        hi_range = float(df["high"].iloc[-NR_WINDOW-2:-2].max())
+        is_nr_recent = bool(df["is_nr"].iloc[-3:-1].all())
+        vwap_ok = price > float(closed.get("vwap", closed.get("ema21", price)))
+        return (price > hi_range * (1.0 + float(cfg.get("BREAKOUT_BUFFER_LTF", 0.0015)))) and (is_nr_recent or vwap_ok)
+
+    chosen_mode = None; mode_ok = False
+    entry_mode = cfg.get("ENTRY_MODE", "hybrid")
+    if entry_mode == "pullback":
+        chosen_mode = "pullback"; mode_ok = _entry_pullback_logic(df, closed, prev, atr, ctx, cfg)
+    elif entry_mode == "breakout":
+        chosen_mode = "breakout"; mode_ok = _brk_ok()
+    else:
+        for m in cfg.get("HYBRID_ORDER", ["breakout","pullback"]):
+            if m == "breakout" and _brk_ok():
+                chosen_mode = "breakout"; mode_ok = True; break
+            if m == "pullback" and _entry_pullback_logic(df, closed, prev, atr, ctx, cfg):
+                chosen_mode = "pullback"; mode_ok = True; break
+    if not mode_ok: return _rej("entry_mode", mode=entry_mode)
+
+    # نطاقات RSI حسب النمط — بهوامش
+    rsi_val = float(closed.get("rsi", 50))
+    if chosen_mode == "pullback" and not (RSI_MIN_PULLBACK - 3 < rsi_val < RSI_MAX_PULLBACK + 2):
+        return _rej("rsi_pullback", rsi=rsi_val)
+    if chosen_mode == "breakout" and not (RSI_MIN_BREAKOUT - 2 < rsi_val < RSI_MAX_BREAKOUT + 2):
+        return _rej("rsi_breakout", rsi=rsi_val)
+
+    # قرب مقاومة من طبقات متعددة + LTF/HTF
+    sup_ltf, res_ltf = get_sr_on_closed(df, SR_WINDOW)
+    sr_multi = get_sr_multi(symbol)
+    near_res_any = False
+    for name, ent in sr_multi.items():
+        res = ent.get("resistance")
+        if res and (res - price) < (ent["near_mult"] * atr):
+            near_res_any = True; break
+    near_res = (res_ltf and (res_ltf - price) < 0.8*atr) or (ctx.get("resistance") and (ctx["resistance"] - price) < 1.2*atr) or near_res_any
+
+    score, why, patt = _opportunity_score(df, prev, closed)
+    if near_res and not (score >= (SCORE_THRESHOLD-2) or chosen_mode == "breakout" or rvol >= need_rvol*1.05):
+        return _rej("near_res_block", score=score)
+
+    if score < SCORE_THRESHOLD: return _rej("score_low", score=score)
+
+    _LAST_ENTRY_BAR_TS[key] = ts
+    _pass("signal_ok", mode=chosen_mode, score=score, rvol=round(rvol,2), atrp=round(atrp,4))
+    return {"decision": "buy", "score": score, "reason": why, "pattern": (patt if chosen_mode!="breakout" else "NR_Breakout"), "ts": ts}
+
+# ================== BRT — Break & Retest ==================
 def check_signal_brt(symbol):
     ok, reason = _risk_precheck_allow_new_entry()
     if not ok: return None
@@ -695,7 +813,6 @@ def check_signal_brt(symbol):
     return {"decision": "buy", "score": score+10, "reason": why, "pattern": patt, "ts": ts}
 
 # ================== VBR — VWAP Band Reversion ==================
-
 def check_signal_vbr(symbol):
     ok, reason = _risk_precheck_allow_new_entry()
     if not ok: return None
@@ -755,8 +872,8 @@ def check_signal_vbr(symbol):
         tp1_hint = float(min(tp1_vwap, nearest_res))
     return {"decision": "buy", "score": score+8, "reason": why, "pattern": patt, "ts": ts,
             "custom": {"sl": float(sl_hint), "tp1": float(tp1_hint)}}
-# ================== Router ==================
 
+# ================== Router ==================
 def check_signal(symbol):
     base, variant = _split_symbol_variant(symbol)
     if variant == "old":
@@ -771,7 +888,6 @@ def check_signal(symbol):
     return check_signal_new(symbol)  # الافتراضي
 
 # ================== SL/TP ==================
-
 def _compute_sl_tp(entry, atr_val, cfg, variant, symbol=None, df=None, ctx=None, closed=None):
     """يحسِب SL/TP1/TP2 وفق سياسة الاستراتيجية (PER_STRAT_MGMT).
     يعتمد على ATR وطبقات SR وVWAP إن لزم. يُفضَّل تمرير df/closed والسِمبل لتحسين TP1 الذكي.
@@ -835,7 +951,7 @@ def _compute_sl_tp(entry, atr_val, cfg, variant, symbol=None, df=None, ctx=None,
 
     # ATR TP defaults
     atr_tp1 = entry + float(mg.get("TP1_ATR", 1.2)) * atr_val
-    atr_tp2 = entry + float(mg.get("TP2_ATR", cfg.get("TP2_ATR_MULT", 2.2))) * atr_val if mg.get("TP2_ATR") else entry + 2.2 * atr_val
+    atr_tp2 = entry + float(mg.get("TP2_ATR", 2.2)) * atr_val if mg.get("TP2_ATR") else entry + 2.2 * atr_val
 
     mode = mg.get("TP1")
     try:
@@ -880,7 +996,6 @@ def _compute_sl_tp(entry, atr_val, cfg, variant, symbol=None, df=None, ctx=None,
     return float(sl), float(tp1), float(tp2)
 
 # ================== تنفيذ الشراء ==================
-
 def execute_buy(symbol):
     base, variant = _split_symbol_variant(symbol)
 
@@ -990,7 +1105,6 @@ def execute_buy(symbol):
     return order, f"✅ شراء {symbol} | SL: {pos['stop_loss']:.6f}"
 
 # ================== إدارة الصفقة ==================
-
 def manage_position(symbol):
     pos = load_position(symbol)
     if not pos:
@@ -1162,7 +1276,6 @@ def manage_position(symbol):
     return False
 
 # ================== إغلاق وتسجيل ==================
-
 def close_trade(symbol, exit_price, pnl_net, reason="MANUAL"):
     pos = load_position(symbol)
     if not pos: return
@@ -1203,7 +1316,6 @@ def close_trade(symbol, exit_price, pnl_net, reason="MANUAL"):
     clear_position(symbol)
 
 # ================== تقرير يومي ==================
-
 def _fmt_table(rows, headers):
     widths = [len(h) for h in headers]
     for r in rows:
