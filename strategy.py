@@ -642,7 +642,6 @@ def check_signal_old(symbol):
         _LAST_ENTRY_BAR_TS[key] = last_ts_closed
         return {"decision": "buy", "score": score, "reason": why, "pattern": patt,
                 "ts": last_ts_closed, "custom": {"sl": sl_hint, "tp1": tp1_hint}}
-}
 
 # ================== BRT — Break & Retest ==================
 
