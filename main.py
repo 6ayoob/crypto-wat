@@ -72,11 +72,15 @@ def send_telegram_message(text, parse_mode=None, disable_notification=False):
 # ================== أدوات ==================
 _stop_flag = False
 
+# سبب التوقف (لمعلومة أوضح في رسالة الإيقاف)
+STOP_REASON = None
+
 def _handle_stop(signum, frame):
-    global _stop_flag
+    global _stop_flag, STOP_REASON
     _stop_flag = True
+    STOP_REASON = "signal"
     try:
-        send_telegram_message("⏹️ تم استلام إشارة إيقاف، جاري الإنهاء بهدوء…", disable_notification=True)
+        send_telegram_message("⏹️ تم استلام إشارة إيقاف من النظام…", disable_notification=False)
     except Exception:
         pass
 
@@ -249,4 +253,7 @@ if __name__ == "__main__":
                 stop_tickers_cache()
             except Exception:
                 pass
-        send_telegram_message("🛑 تم إيقاف البوت — إلى اللقاء.", disable_notification=True)
+        send_telegram_message(
+            f"🛑 تم إيقاف البوت — سبب: {'إشارة نظام' if STOP_REASON=='signal' else 'انتهاء/خروج من الحلقة'}",
+            disable_notification=False
+        )
