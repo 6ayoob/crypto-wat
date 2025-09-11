@@ -86,6 +86,9 @@ _SYMBOL_LAST_TRADE_AT: Dict[str, datetime] = {}   # key: f"{base}|{variant}"
 _HTF_CACHE: Dict[str, Dict[str, Any]] = {}          # key = base symbol, val={"t": datetime, "ctx": {...}}
 _HTF_TTL_SEC = 150       # ~ دقيقتين ونصف
 
+# ⬇️ سماح طفيف فوق EMA50 للـ HTF (قابل للتهيئة عبر البيئة)
+HTF_ABOVE_TOL = float(os.getenv("HTF_ABOVE_TOL", "0.995"))  # 0.995 = سماح 0.5%
+
 # ================== إعدادات النسختين + Overrides إضافية ==================
 # قاعدة (#old)
 BASE_CFG = {
@@ -558,8 +561,11 @@ def check_signal_old(symbol):
 
     ctx = _get_htf_context(symbol)
     if not ctx: return None
-    if not ((ctx["ema50_now"] - ctx["ema50_prev"]) > 0 and ctx["close"] > ctx["ema50_now"]):
-        return None
+    # تخفيف فلتر HTF: اقبل إذا الميل صاعد أو السعر فوق EMA50 بسماح
+    slope_up = (ctx["ema50_now"] - ctx["ema50_prev"]) > 0
+    above    = ctx["close"] > ctx["ema50_now"] * HTF_ABOVE_TOL
+    if not (slope_up or above):
+        return _rej("htf_trend")
 
     data = fetch_ohlcv(base, LTF_TIMEFRAME, 260)
     if not data: return None
@@ -681,7 +687,10 @@ def check_signal_new(symbol):
 
     ctx = _get_htf_context(symbol)
     if not ctx: return _rej("htf_none")
-    if not ((ctx["ema50_now"] - ctx["ema50_prev"]) > 0 and ctx["close"] > ctx["ema50_now"]):
+    # تخفيف فلتر HTF
+    slope_up = (ctx["ema50_now"] - ctx["ema50_prev"]) > 0
+    above    = ctx["close"] > ctx["ema50_now"] * HTF_ABOVE_TOL
+    if not (slope_up or above):
         return _rej("htf_trend")
 
     data = fetch_ohlcv(base, LTF_TIMEFRAME, 260)
@@ -772,7 +781,11 @@ def check_signal_brt(symbol):
     if load_position(symbol): return None
 
     ctx = _get_htf_context(symbol)
-    if not ctx or not ((ctx["ema50_now"] - ctx["ema50_prev"]) > 0 and ctx["close"] > ctx["ema50_now"]): return None
+    if not ctx: return None
+    # تخفيف فلتر HTF هنا أيضاً
+    slope_up = (ctx["ema50_now"] - ctx["ema50_prev"]) > 0
+    above    = ctx["close"] > ctx["ema50_now"] * HTF_ABOVE_TOL
+    if not (slope_up or above): return None
 
     data = fetch_ohlcv(base, LTF_TIMEFRAME, 260)
     if not data: return None
