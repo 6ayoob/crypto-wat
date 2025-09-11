@@ -6,6 +6,7 @@ strategy.py — ثلاث استراتيجيات مجرَّبة + تحسينات:
 - #srr: Sweep & Reclaim (كسر سيولة واستعادة المستوى)
 - #brt: Break & Retest (اختراق + إعادة اختبار)
 - #vbr: VWAP-Band Reversion (ارتداد من نطاق VWAP)
+- #sr : SR-only (دعوم/مقاومات + RSI فقط)
 
 الملف يوفّر:
 - check_signal(symbol) — Router يُعيد None أو dict يحوي decision/score/…
@@ -86,10 +87,7 @@ _SYMBOL_LAST_TRADE_AT: Dict[str, datetime] = {}   # key: f"{base}|{variant}"
 _HTF_CACHE: Dict[str, Dict[str, Any]] = {}          # key = base symbol, val={"t": datetime, "ctx": {...}}
 _HTF_TTL_SEC = 150       # ~ دقيقتين ونصف
 
-# ⬇️ سماح طفيف فوق EMA50 للـ HTF (قابل للتهيئة عبر البيئة)
-HTF_ABOVE_TOL = float(os.getenv("HTF_ABOVE_TOL", "0.995"))  # 0.995 = سماح 0.5%
-
-# ================== إعدادات النسختين + Overrides إضافية ==================
+# ================== إعدادات النسخ + Overrides ==================
 # قاعدة (#old)
 BASE_CFG = {
     # نمط الدخول
@@ -189,6 +187,12 @@ VBR_OVERRIDES = {
     "LOCK_MIN_PROFIT_PCT": 0.003, "MAX_HOLD_HOURS": 6, "SYMBOL_COOLDOWN_MIN": 8,
 }
 
+# SR-only — Support/Resistance + RSI فقط
+SR_ONLY_OVERRIDES = {
+    "SYMBOL_COOLDOWN_MIN": 8,   # تبريد بسيط
+    "RSI_GATE_POLICY": None,    # بوابة RSI تُطبّق يدويًا داخل الدالة
+}
+
 # نطاقات RSI حسب النمط (عامّة)
 RSI_MIN_PULLBACK, RSI_MAX_PULLBACK = 45, 65
 RSI_MIN_BREAKOUT, RSI_MAX_BREAKOUT = 50, 80
@@ -196,15 +200,18 @@ RSI_MIN_BREAKOUT, RSI_MAX_BREAKOUT = 50, 80
 # ===== إدارة صفقة حسب الاستراتيجية =====
 PER_STRAT_MGMT = {
     "new": {"SL":"atr", "SL_MULT":0.9, "TP1":"sr_or_atr", "TP1_ATR":1.2, "TP2_ATR":2.2,
-             "TRAIL_AFTER_TP1":True, "TRAIL_ATR":1.0, "TIME_HRS":6},
+            "TRAIL_AFTER_TP1":True, "TRAIL_ATR":1.0, "TIME_HRS":6},
     "old": {"SL":"pct", "SL_PCT":0.02, "TP1_PCT":0.03, "TP2_PCT":0.06,
-             "TRAIL_AFTER_TP1":False, "TIME_HRS":12},
+            "TRAIL_AFTER_TP1":False, "TIME_HRS":12},
     "srr": {"SL":"atr_below_sweep", "SL_MULT":0.8, "TP1":"sr_or_atr", "TP1_ATR":1.0, "TP2_ATR":2.2,
-             "TRAIL_AFTER_TP1":True, "TRAIL_ATR":1.0, "TIME_HRS":4},
+            "TRAIL_AFTER_TP1":True, "TRAIL_ATR":1.0, "TIME_HRS":4},
     "brt": {"SL":"atr_below_retest", "SL_MULT":1.0, "TP1":"range_or_atr", "TP1_ATR":1.5, "TP2_ATR":2.5,
-             "TRAIL_AFTER_TP1":True, "TRAIL_ATR":0.9, "TIME_HRS":8},
+            "TRAIL_AFTER_TP1":True, "TRAIL_ATR":0.9, "TIME_HRS":8},
     "vbr": {"SL":"atr", "SL_MULT":1.0, "TP1":"vwap_or_sr", "TP2_ATR":1.8,
-             "TRAIL_AFTER_TP1":True, "TRAIL_ATR":0.8, "TIME_HRS":3},
+            "TRAIL_AFTER_TP1":True, "TRAIL_ATR":0.8, "TIME_HRS":3},
+    # SR-only: SL أسفل السوينغ/الدعم مباشرة (SL_MULT=0), TP1 سيُمرَّر custom عند المقاومة الأقرب
+    "sr":  {"SL":"atr_below_sweep", "SL_MULT":0.0, "TP1":"range_or_atr",
+            "TRAIL_AFTER_TP1":False, "TIME_HRS":6},
 }
 
 def _mgmt(variant: str):
@@ -265,12 +272,12 @@ def _df(data):
         pass
     return df
 
-# تقسيم الرمز إلى أساس/نسخة (#old/#new/#srr/#brt/#vbr)
+# تقسيم الرمز إلى أساس/نسخة (#old/#new/#srr/#brt/#vbr/#sr)
 def _split_symbol_variant(symbol: str):
     if "#" in symbol:
         base, variant = symbol.split("#", 1)
         variant = (variant or "new").lower()
-        if variant not in ("old","new","srr","brt","vbr"):
+        if variant not in ("old","new","srr","brt","vbr","sr"):
             variant = "new"
         return base, variant
     return symbol, "new"
@@ -286,6 +293,8 @@ def get_cfg(variant: str):
         cfg.update(BRT_OVERRIDES)
     elif variant == "vbr":
         cfg.update(VBR_OVERRIDES)
+    elif variant == "sr":
+        cfg.update(SR_ONLY_OVERRIDES)
     return cfg
 
 # ================== تخزين الصفقات ==================
@@ -419,7 +428,7 @@ def _swing_points(df, left=2, right=2):
 
 def _bullish_engulf(prev, cur):
     return (cur["close"] > cur["open"]) and (prev["close"] < prev["open"]) and \
-           (cur["close"] >= prev["open"]) and (cur["open"] <= prev["close"]) 
+           (cur["close"] >= prev["open"]) and (cur["open"] <= prev["close"])
 
 def get_sr_on_closed(df, window=SR_WINDOW):
     if len(df) < window + 3: return None, None
@@ -561,11 +570,8 @@ def check_signal_old(symbol):
 
     ctx = _get_htf_context(symbol)
     if not ctx: return None
-    # تخفيف فلتر HTF: اقبل إذا الميل صاعد أو السعر فوق EMA50 بسماح
-    slope_up = (ctx["ema50_now"] - ctx["ema50_prev"]) > 0
-    above    = ctx["close"] > ctx["ema50_now"] * HTF_ABOVE_TOL
-    if not (slope_up or above):
-        return _rej("htf_trend")
+    if not ((ctx["ema50_now"] - ctx["ema50_prev"]) > 0 and ctx["close"] > ctx["ema50_now"]):
+        return None
 
     data = fetch_ohlcv(base, LTF_TIMEFRAME, 260)
     if not data: return None
@@ -687,10 +693,7 @@ def check_signal_new(symbol):
 
     ctx = _get_htf_context(symbol)
     if not ctx: return _rej("htf_none")
-    # تخفيف فلتر HTF
-    slope_up = (ctx["ema50_now"] - ctx["ema50_prev"]) > 0
-    above    = ctx["close"] > ctx["ema50_now"] * HTF_ABOVE_TOL
-    if not (slope_up or above):
+    if not ((ctx["ema50_now"] - ctx["ema50_prev"]) > 0 and ctx["close"] > ctx["ema50_now"]):
         return _rej("htf_trend")
 
     data = fetch_ohlcv(base, LTF_TIMEFRAME, 260)
@@ -707,16 +710,16 @@ def check_signal_new(symbol):
     atrp = atr / max(price, 1e-9)
     if atrp < float(cfg.get("ATR_MIN_FOR_TREND", 0.002)): return _rej("atr_low", atrp=round(atrp,5))
 
-    # مسافة عن EMA50 — متساهلة قليلاً
+    # مسافة عن EMA50 — (تحسين: 0.20 بدل 0.30) + سقف كما هو
     dist = price - float(closed["ema50"])
-    if not (0.30*atr <= dist <= 4.00*atr):
+    if not (0.20*atr <= dist <= 4.00*atr):
         return _rej("dist_to_ema50", dist_atr=round(dist/atr,3))
 
-    # سيولة/حجم + RVOL
+    # سيولة/حجم + RVOL (تحسين: 0.90 × RVOL_MIN)
     notional = price * float(closed["volume"])
     if notional < 60000: return _rej("notional_low", notional=int(notional))
     rvol = float(closed.get("rvol", 0) or 0)
-    need_rvol = float(cfg.get("RVOL_MIN", 1.2)) * 0.95
+    need_rvol = float(cfg.get("RVOL_MIN", 1.2)) * 0.90
     if pd.isna(rvol) or rvol < need_rvol: return _rej("rvol", rvol=round(rvol,2), need=round(need_rvol,2))
 
     # بوابة MACD/RSI
@@ -781,11 +784,7 @@ def check_signal_brt(symbol):
     if load_position(symbol): return None
 
     ctx = _get_htf_context(symbol)
-    if not ctx: return None
-    # تخفيف فلتر HTF هنا أيضاً
-    slope_up = (ctx["ema50_now"] - ctx["ema50_prev"]) > 0
-    above    = ctx["close"] > ctx["ema50_now"] * HTF_ABOVE_TOL
-    if not (slope_up or above): return None
+    if not ctx or not ((ctx["ema50_now"] - ctx["ema50_prev"]) > 0 and ctx["close"] > ctx["ema50_now"]): return None
 
     data = fetch_ohlcv(base, LTF_TIMEFRAME, 260)
     if not data: return None
@@ -886,6 +885,98 @@ def check_signal_vbr(symbol):
     return {"decision": "buy", "score": score+8, "reason": why, "pattern": patt, "ts": ts,
             "custom": {"sl": float(sl_hint), "tp1": float(tp1_hint)}}
 
+# ================== SR-only — دعم/مقاومة + RSI ==================
+def _nearest_sr_from_levels(price: float, sr_multi: Dict[str, Dict[str, Any]], sup_ltf: Optional[float], res_ltf: Optional[float]):
+    nearest_sup = None
+    nearest_res = None
+    # مرشّحات LTF أولًا
+    if sup_ltf and sup_ltf < price:
+        nearest_sup = sup_ltf
+    if res_ltf and res_ltf > price:
+        nearest_res = res_ltf
+    # ثم بقية الطبقات (1h, 4h, ...)
+    for ent in sr_multi.values():
+        sup = ent.get("support"); res = ent.get("resistance")
+        if sup and sup < price:
+            nearest_sup = sup if nearest_sup is None else max(nearest_sup, sup)
+        if res and res > price:
+            nearest_res = res if nearest_res is None else min(nearest_res, res)
+    return nearest_sup, nearest_res
+
+def check_signal_sr(symbol):
+    ok, reason = _risk_precheck_allow_new_entry()
+    if not ok: return _rej("risk_precheck", reason=reason)
+
+    base, variant = _split_symbol_variant(symbol)
+    cfg = get_cfg(variant)
+    key = f"{base}|{variant}"
+
+    # تبريد & عدم وجود صفقة
+    last_t = _SYMBOL_LAST_TRADE_AT.get(key)
+    if last_t and (now_riyadh() - last_t) < timedelta(minutes=cfg.get("SYMBOL_COOLDOWN_MIN", 8)):
+        return _rej("cooldown")
+    if load_position(symbol):
+        return _rej("already_open")
+
+    # بيانات فريم التنفيذ فقط
+    data = fetch_ohlcv(base, LTF_TIMEFRAME, 240)
+    if not data: return _rej("ltf_fetch")
+    df = _df(data)
+    if len(df) < max(SR_WINDOW+3, 60): return _rej("ltf_len", n=len(df))
+
+    # RSI فقط
+    df["rsi"] = rsi(df["close"], 14)
+
+    prev, closed = df.iloc[-3], df.iloc[-2]
+    ts = int(closed["timestamp"])
+    if _LAST_ENTRY_BAR_TS.get(key) == ts: return _rej("dup_bar")
+
+    price = float(closed["close"])
+    rsi_now = float(closed["rsi"]); rsi_prev = float(prev["rsi"])
+
+    # مستويات SR
+    sup_ltf, res_ltf = get_sr_on_closed(df, SR_WINDOW)
+    sr_multi = get_sr_multi(symbol)
+    nearest_sup, nearest_res = _nearest_sr_from_levels(price, sr_multi, sup_ltf, res_ltf)
+
+    # فلتر مساحة حركة لأقرب مقاومة فوق السعر (0.2%)
+    room_ok = True
+    if nearest_res:
+        room_ok = ((nearest_res - price) / price) >= 0.002
+
+    # نمط 1) استعادة دعم
+    reclaim_support = False
+    if nearest_sup:
+        touched = float(closed["low"]) <= nearest_sup * 1.001  # لمس/كسر بسيط ثم إغلاق فوق
+        reclaimed = price > nearest_sup
+        rsi_gate = (rsi_now > 50) and (rsi_now > rsi_prev)
+        reclaim_support = touched and reclaimed and rsi_gate
+
+    # نمط 2) اختراق مقاومة
+    breakout_res = False
+    base_res = None
+    if res_ltf and res_ltf > price:
+        base_res = res_ltf
+    elif nearest_res and nearest_res > price:
+        base_res = nearest_res
+    if base_res:
+        breakout_res = (price > base_res * 1.001) and (rsi_now > 55) and (rsi_now > rsi_prev)
+
+    if not (room_ok and (reclaim_support or breakout_res)):
+        return _rej("sr_rsi_gate", rsi=round(rsi_now,2))
+
+    # مخرجات: SL أسفل الدعم، TP1 عند أقرب مقاومة
+    custom = {}
+    if nearest_sup:
+        custom["sl"] = float(nearest_sup * 0.999)  # حماية 0.1% تحت الدعم
+    if nearest_res and nearest_res > price:
+        custom["tp1"] = float(nearest_res)
+
+    _LAST_ENTRY_BAR_TS[key] = ts
+    _pass("signal_ok_sr", rsi=round(rsi_now,2))
+    return {"decision": "buy", "score": 60, "reason": ("SR Reclaim" if reclaim_support else "SR Breakout"),
+            "pattern": "SR_RSI", "ts": ts, "custom": custom}
+
 # ================== Router ==================
 def check_signal(symbol):
     base, variant = _split_symbol_variant(symbol)
@@ -898,6 +989,8 @@ def check_signal(symbol):
         return check_signal_brt(symbol)
     if variant == "vbr":
         return check_signal_vbr(symbol)
+    if variant == "sr":
+        return check_signal_sr(symbol)
     return check_signal_new(symbol)  # الافتراضي
 
 # ================== SL/TP ==================
@@ -998,7 +1091,7 @@ def _compute_sl_tp(entry, atr_val, cfg, variant, symbol=None, df=None, ctx=None,
                     tp1 = entry + cfg.get("TP1_ATR_MULT", 1.6) * atr_val
                     tp2 = entry + cfg.get("TP2_ATR_MULT", 3.2) * atr_val
                 else:
-                    tp1 = entry * (1 + cfg.get("TP1_PCT", 0.03))
+                    tp1 = entry * (1 + cfg.get("TP1_PCT", 0.03"))
                     tp2 = entry * (1 + cfg.get("TP2_PCT", 0.06))
     except Exception:
         tp1 = atr_tp1
@@ -1057,7 +1150,6 @@ def execute_buy(symbol):
         "pattern": _sig_inner.get("pattern"),
         "reason": _sig_inner.get("reason"),
         "max_hold_hours": mg.get("TIME_HRS"),
-        # يمكن لاحقًا تمرير stop_rule/max_bars_to_tp1 من الاستراتيجية إن رغبت
     }
 
     # قفل زمني افتراضي للوصول لـ TP1 — 12 شمعة 5m
