@@ -3,7 +3,7 @@
 config.py — إعدادات موسّعة متوافقة مع strategy.py / main.py
 - توسيع تلقائي لقائمة الرموز حسب سيولة OKX
 - توزيع الاستراتيجيات (#new/#old/#srr/#brt/#vbr) على أعلى الرموز سيولة
-- مفاتيح تيليغرام و OKX تُقرأ فقط من متغيرات البيئة (لا مفاتيح صريحة في الكود)
+- مفاتيح تيليغرام و OKX تُقرأ من متغيرات البيئة (لا مفاتيح صريحة في الكود)
 - إطارات زمنية قابلة للتهيئة وتُقرأ من البيئة
 """
 
@@ -17,7 +17,7 @@ from typing import List, Tuple, Optional
 TELEGRAM_TOKEN   = os.getenv("TELEGRAM_TOKEN", "")
 TELEGRAM_CHAT_ID = os.getenv("TELEGRAM_CHAT_ID", "")
 
-# مفاتيح OKX (تُستخدم بواسطة okx_api أو غيره)
+# مفاتيح OKX (مجرّد تعريفات — okx_api يقرأ من البيئة أيضًا)
 OKX_API_KEY      = os.getenv("OKX_API_KEY", "")
 OKX_API_SECRET   = os.getenv("OKX_API_SECRET", "")
 OKX_PASSPHRASE   = os.getenv("OKX_PASSPHRASE", "")
@@ -30,6 +30,7 @@ STRAT_LTF_TIMEFRAME = os.getenv("LTF_TIMEFRAME", "5m")   # إطار التنفي
 
 # ===============================
 # 📈 الرموز — قائمة بذور (سيتم فلترتها/تكميلها تلقائيًا)
+# ملاحظة: يوجد dedupe لاحقًا، فلا تقلق من أي تكرارات عرضية هنا.
 # ===============================
 SEED_SYMBOLS = [
     "BTC/USDT","ETH/USDT","BNB/USDT","SOL/USDT","XRP/USDT","ADA/USDT","DOGE/USDT","TRX/USDT","TON/USDT","DOT/USDT",
@@ -42,10 +43,10 @@ SEED_SYMBOLS = [
     "FIL/USDT","AR/USDT","STORJ/USDT","SC/USDT","HBAR/USDT","EGLD/USDT","ALGO/USDT","THETA/USDT","CFX/USDT",
     "XTZ/USDT","ZIL/USDT","NEO/USDT","QTUM/USDT","IOTA/USDT","ONDO/USDT","ETHFI/USDT","PENDLE/USDT","AEVO/USDT",
     "ZRO/USDT","BOME/USDT","ORDI/USDT","SATS/USDT","CELO/USDT","W/USDT","SLERF/USDT","RAY/USDT","S/USDT",
-    "PRCL/USDT","GHST/USDT","ONDO/USDT","OKB/USDT","PEOPLE/USDT","IP/USDT","ELF/USDT","SKL/USDT","COTI/USDT","ID/USDT",
-    "EOS/USDT","ETHW/USDT","FLOW/USDT","SATS/USDT","GAL/USDT","GLMR/USDT","GMT/USDT","IOST/USDT","JASMY/USDT","JOE/USDT",
+    "PRCL/USDT","GHST/USDT","OKB/USDT","PEOPLE/USDT","IP/USDT","ELF/USDT","SKL/USDT","COTI/USDT","ID/USDT",
+    "EOS/USDT","ETHW/USDT","FLOW/USDT","GAL/USDT","GLMR/USDT","GMT/USDT","IOST/USDT","JASMY/USDT","JOE/USDT",
     "KLAY/USDT","KNC/USDT","KSM/USDT","LINA/USDT","LPT/USDT","LRC/USDT","MASK/USDT","MAV/USDT","NOT/USDT","OM/USDT",
-    "ONT/USDT","POLS/USDT","PRIME/USDT","RSR/USDT","SFP/USDT","SLERF/USDT","TRB/USDT","UMA/USDT","UNFI/USDT",
+    "ONT/USDT","POLS/USDT","PRIME/USDT","RSR/USDT","SFP/USDT","TRB/USDT","UMA/USDT","UNFI/USDT",
     "USDC/USDT","WLD/USDT","WOO/USDT","XAI/USDT","XLM/USDT","YGG/USDT","ZETA/USDT","ZRX/USDT","BLUR/USDT","BNT/USDT",
     "BICO/USDT","CELR/USDT","CFG/USDT","CYBER/USDT","DODO/USDT","DYM/USDT","EDU/USDT","EUL/USDT","FIDA/USDT","FLM/USDT",
     "FRONT/USDT","FX/USDT","LAYER/USDT","HIGH/USDT","HOOK/USDT","HOT/USDT","IDEX/USDT","ILV/USDT","LOKA/USDT","MBOX/USDT",
@@ -65,15 +66,16 @@ MAX_OPEN_POSITIONS  = int(os.getenv("MAX_OPEN_POSITIONS", "3"))
 FEE_BPS_ROUNDTRIP = float(os.getenv("FEE_BPS_ROUNDTRIP", "16"))
 
 # ===============================
-# ⚙️ خيارات التوسيع التلقائي
+# ⚙️ خيارات التوسيع التلقائي + الطباعة
 # ===============================
-AUTO_EXPAND_SYMBOLS   = bool(int(os.getenv("AUTO_EXPAND_SYMBOLS", "1")))
-TARGET_SYMBOLS_COUNT  = int(os.getenv("TARGET_SYMBOLS_COUNT", "100"))
-DEBUG_CONFIG_SYMBOLS  = bool(int(os.getenv("DEBUG_CONFIG_SYMBOLS", "0")))
+AUTO_EXPAND_SYMBOLS     = bool(int(os.getenv("AUTO_EXPAND_SYMBOLS", "1")))
+TARGET_SYMBOLS_COUNT    = int(os.getenv("TARGET_SYMBOLS_COUNT", "100"))
+DEBUG_CONFIG_SYMBOLS    = bool(int(os.getenv("DEBUG_CONFIG_SYMBOLS", "1")))  # افتراضيًا مفعّل ليريك القائمة
+PRINT_SYMBOLS_ON_IMPORT = bool(int(os.getenv("PRINT_SYMBOLS_ON_IMPORT", "0")))  # اطبع القائمة فور الاستيراد
 
 # === فلترة/سيولة قابلة للتهيئة ===
 ALLOWED_QUOTE    = os.getenv("ALLOWED_QUOTE", "USDT").upper()
-MIN_USDT_VOL_24H = float(os.getenv("MIN_USDT_VOL_24H", "1000000"))
+MIN_USDT_VOL_24H = float(os.getenv("MIN_USDT_VOL_24H", "1000000"))  # 1M$
 
 # ✅ استبعاد يعتمد على BASE فقط
 EXCLUDE_BASE_REGEX = os.getenv("EXCLUDE_BASE_REGEX", r"(TEST|IOU)")
@@ -179,6 +181,9 @@ def _fetch_okx_spot_supported() -> List[str]:
 
 def _expand_symbols_to_target(existing: List[str], target=100) -> List[str]:
     base = _dedupe_keep_order(_normalize_symbol(s) for s in existing)
+    # إن وُجد regex للإدراج الإجباري
+    if INCLUDE_REGEX:
+        base = [s for s in base if (re.search(INCLUDE_REGEX, s.split("/")[0], re.IGNORECASE) or True)]
     ranked = _fetch_okx_usdt_spot_ranked(MIN_USDT_VOL_24H)
     if ranked:
         okx_ranked = [s for s,_ in ranked]
@@ -203,7 +208,7 @@ def _expand_symbols_to_target(existing: List[str], target=100) -> List[str]:
         print(f"[config] OKX fetch failed; using existing ({len(out)})")
     return out
 
-# ============ التنفيذ ============
+# ============ التنفيذ: بناء SYMBOLS ============
 try:
     if bool(AUTO_EXPAND_SYMBOLS):
         SYMBOLS = _expand_symbols_to_target(SEED_SYMBOLS, TARGET_SYMBOLS_COUNT)
@@ -219,11 +224,15 @@ if DEBUG_CONFIG_SYMBOLS:
 
 # ===============================
 # 🎯 توزيع الاستراتيجيات على أعلى الرموز سيولة
+# (يضيف نسخ #old/#srr/#brt/#vbr لأعلى N رموز — والباقي يظل #new)
 # ===============================
 ENABLE_OLD_FOR_TOP_N = int(os.getenv("ENABLE_OLD_FOR_TOP_N", "20"))
 ADD_SRR_TOP_N        = int(os.getenv("ADD_SRR_TOP_N", "15"))
 ADD_BRT_TOP_N        = int(os.getenv("ADD_BRT_TOP_N", "15"))
 ADD_VBR_TOP_N        = int(os.getenv("ADD_VBR_TOP_N", "15"))
+
+# خيار اختياري لاستخدام استراتيجية SR/RSI فقط لاحقًا (لو فعّلتها في strategy.py)
+ADD_SR_TOP_N         = int(os.getenv("ADD_SR_TOP_N", "0"))  # افتراضيًا 0 حتى لا تُنشئ #sr بدون دعم
 
 _final_symbols: List[str] = []
 for idx, s in enumerate(SYMBOLS):
@@ -232,6 +241,7 @@ for idx, s in enumerate(SYMBOLS):
     if idx < ADD_SRR_TOP_N:        _final_symbols.append(f"{s}#srr")
     if idx < ADD_BRT_TOP_N:        _final_symbols.append(f"{s}#brt")
     if idx < ADD_VBR_TOP_N:        _final_symbols.append(f"{s}#vbr")
+    if idx < ADD_SR_TOP_N:         _final_symbols.append(f"{s}#sr")   # يعمل فقط لو strategy تدعمها
 
 # إزالة أي تكرارات مع الحفاظ على الترتيب
 def _dedupe_strats(seq):
@@ -245,3 +255,21 @@ SYMBOLS = _dedupe_strats(_final_symbols)
 
 if DEBUG_CONFIG_SYMBOLS:
     print(f"[config] final SYMBOLS: {len(SYMBOLS)} | first 12: {SYMBOLS[:12]}")
+
+# طباعة اختيارية عند الاستيراد (لو تبغى ترى القائمة بالكامل فور التشغيل)
+if PRINT_SYMBOLS_ON_IMPORT:
+    try:
+        print("----- SYMBOLS (all) -----")
+        for s in SYMBOLS:
+            print(s)
+        print("----- /SYMBOLS -----")
+    except Exception:
+        pass
+
+# تشغيل كملف مستقل: طباعة موجزة + كاملة (لتشخيص سريع)
+if __name__ == "__main__":
+    print(f"[config] SYMBOLS ready: {len(SYMBOLS)} | first 12: {SYMBOLS[:12]}")
+    show_all = os.getenv("SHOW_ALL_SYMBOLS", "0").lower() in ("1","true","yes","y")
+    if show_all:
+        for s in SYMBOLS:
+            print(s)
