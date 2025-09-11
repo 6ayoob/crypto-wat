@@ -995,9 +995,7 @@ def check_signal(symbol):
 
 # ================== SL/TP ==================
 def _compute_sl_tp(entry, atr_val, cfg, variant, symbol=None, df=None, ctx=None, closed=None):
-    """يحسِب SL/TP1/TP2 وفق سياسة الاستراتيجية (PER_STRAT_MGMT).
-    يعتمد على ATR وطبقات SR وVWAP إن لزم. يُفضَّل تمرير df/closed والسِمبل لتحسين TP1 الذكي.
-    """
+    """يحسِب SL/TP1/TP2 وفق سياسة الاستراتيجية (PER_STRAT_MGMT)."""
     mg = _mgmt(variant)
 
     # 1) وقف الخسارة
@@ -1009,10 +1007,8 @@ def _compute_sl_tp(entry, atr_val, cfg, variant, symbol=None, df=None, ctx=None,
             sl = entry * (1 - float(mg.get("SL_PCT", cfg.get("STOP_LOSS_PCT", 0.02))))
         elif mg.get("SL") in ("atr_below_sweep", "atr_below_retest"):
             base_level = None
-            # تقدير قاع السويب/منطقة الريتست
             try:
                 if df is not None and len(df) > 10:
-                    # للسويب: أدنى قاع سوينغ حديث
                     _, sw_low = _swing_points(df, left=2, right=2)
                     _, llv = recent_swing(df, lookback=60)
                     base_level = max(float(sw_low or 0), float(llv or 0)) or None
@@ -1023,18 +1019,18 @@ def _compute_sl_tp(entry, atr_val, cfg, variant, symbol=None, df=None, ctx=None,
             else:
                 sl = entry - mg.get("SL_MULT", 1.0) * atr_val
         else:
-            # رجوع لإعدادات cfg الافتراضية
             if cfg.get("USE_ATR_SL_TP") and atr_val and atr_val > 0:
-                sl  = entry - cfg.get("SL_ATR_MULT", 1.6)  * atr_val
+                sl = entry - cfg.get("SL_ATR_MULT", 1.6) * atr_val
             else:
-                sl  = entry * (1 - cfg.get("STOP_LOSS_PCT", 0.02))
+                sl = entry * (1 - cfg.get("STOP_LOSS_PCT", 0.02))
     except Exception:
         sl = entry - 1.0 * atr_val
 
     # 2) حساب TP1/TP2
-    tp1 = None; tp2 = None
+    tp1 = None
+    tp2 = None
 
-    # تحضير SR متعدد الطبقات للحصول على أقرب مقاومة فوق السعر
+    # أقرب مقاومة من طبقات SR
     nearest_res = None
     try:
         if symbol:
@@ -1049,13 +1045,13 @@ def _compute_sl_tp(entry, atr_val, cfg, variant, symbol=None, df=None, ctx=None,
     # VWAP من الشمعة المغلقة
     vwap_val = None
     try:
-        if closed is None and df is not None:
+        if closed is None and df is not None and len(df) >= 2:
             closed = df.iloc[-2]
-        vwap_val = float(closed.get("vwap")) if closed is not None else None
+        vwap_val = float(closed.get("vwap")) if (closed is not None and closed.get("vwap") is not None) else None
     except Exception:
         vwap_val = None
 
-    # ATR TP defaults
+    # افتراضات ATR
     atr_tp1 = entry + float(mg.get("TP1_ATR", 1.2)) * atr_val
     atr_tp2 = entry + float(mg.get("TP2_ATR", 2.2)) * atr_val if mg.get("TP2_ATR") else entry + 2.2 * atr_val
 
@@ -1065,7 +1061,6 @@ def _compute_sl_tp(entry, atr_val, cfg, variant, symbol=None, df=None, ctx=None,
             sr_tp = nearest_res if (nearest_res and nearest_res > entry) else None
             tp1 = float(min(sr_tp, atr_tp1)) if sr_tp else float(atr_tp1)
         elif mode == "range_or_atr":
-            # تقدير قمة الرينج/المقاومة
             sr_tp = None
             try:
                 if df is not None and len(df) > 20:
@@ -1082,9 +1077,9 @@ def _compute_sl_tp(entry, atr_val, cfg, variant, symbol=None, df=None, ctx=None,
             if nearest_res and nearest_res > entry:
                 candidates.append(float(nearest_res))
             tp1 = float(min(candidates)) if candidates else float(atr_tp1)
-      else:
+        else:
             # نسب/افتراضيات cfg
-            if mg.get("TP1_PCT"):
+            if mg.get("TP1_PCT") is not None:
                 tp1 = entry * (1 + float(mg.get("TP1_PCT")))
             else:
                 if cfg.get("USE_ATR_SL_TP") and atr_val and atr_val > 0:
@@ -1093,7 +1088,6 @@ def _compute_sl_tp(entry, atr_val, cfg, variant, symbol=None, df=None, ctx=None,
                 else:
                     tp1 = entry * (1 + cfg.get("TP1_PCT", 0.03))
                     tp2 = entry * (1 + cfg.get("TP2_PCT", 0.06))
-
     except Exception:
         tp1 = atr_tp1
 
