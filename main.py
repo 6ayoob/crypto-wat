@@ -1,9 +1,10 @@
-# main.py — Loop for 15m/5m strategy (signals + management + daily report) — Sync + Cache-Only
+# main.py — Sync loop (15m/5m) with per-round cache + perf metrics
 import os
 import time
 import random
 import signal
 import traceback
+from time import perf_counter
 from datetime import datetime, timezone, timedelta
 
 import requests
@@ -13,7 +14,8 @@ from config import TELEGRAM_TOKEN, TELEGRAM_CHAT_ID, SYMBOLS, STRAT_LTF_TIMEFRAM
 # الاستراتيجية
 from strategy import (
     check_signal, execute_buy, manage_position, load_position,
-    count_open_positions, build_daily_report_text, reset_cycle_cache
+    count_open_positions, build_daily_report_text,
+    reset_cycle_cache, metrics_snapshot, metrics_format
 )
 
 # (اختياري) دوال تشخيص من الاستراتيجية
@@ -25,7 +27,7 @@ except Exception:
     def check_signal_debug(symbol):
         return None, []
 
-# كاش أسعار جماعي من okx_api لتقليل الضغط
+# كاش أسعار جماعي من okx_api لتقليل الضغط (اختياري)
 try:
     from okx_api import start_tickers_cache, stop_tickers_cache
     _HAS_CACHE = True
@@ -46,8 +48,9 @@ DAILY_REPORT_MINUTE  = int(os.getenv("DAILY_REPORT_MINUTE", "58"))
 MUTE_NOISEY_ALERTS        = True
 SEND_ERRORS_TO_TELEGRAM   = os.getenv("SEND_ERRORS_TO_TELEGRAM", "0").lower() in ("1","true","yes")
 SEND_INFO_TO_TELEGRAM     = os.getenv("SEND_INFO_TO_TELEGRAM", "1").lower() in ("1","true","yes")
+SEND_METRICS_TO_TELEGRAM  = os.getenv("SEND_METRICS_TO_TELEGRAM", "0").lower() in ("1","true","yes")
 
-STOP_POLICY = os.getenv("STOP_POLICY", "debounce").lower()
+STOP_POLICY = os.getenv("STOP_POLICY", "debounce").lower()  # ignore | debounce | immediate
 STOP_DEBOUNCE_WINDOW_SEC = int(os.getenv("STOP_DEBOUNCE_WINDOW_SEC", "5"))
 
 RIYADH_TZ = timezone(timedelta(hours=3))
@@ -95,7 +98,7 @@ _last_stop_signal_ts = 0.0
 def _handle_stop(signum, frame):
     """
     سياسة الإيقاف:
-      - ignore   : نتجاهل الإشارة.
+      - ignore   : نتجاهل الإشارة (نطبع فقط).
       - debounce : لا نتوقف إلا إذا وصلت إشارتان خلال نافذة قصيرة.
       - immediate: نتوقف فورًا.
     """
@@ -119,12 +122,14 @@ def _handle_stop(signum, frame):
             tg_info(msg, disable_notification=True)
         return
 
+    # immediate
     _stop_flag = True
     try:
         tg_info("⏹️ تم استلام إشارة إيقاف — جاري الإنهاء بهدوء…", silent=True)
     except Exception:
         pass
 
+# ربط الإشارات (قد لا يُدعم على بعض الأنظمة)
 try:
     signal.signal(signal.SIGINT, _handle_stop)
     signal.signal(signal.SIGTERM, _handle_stop)
@@ -177,32 +182,38 @@ if __name__ == "__main__":
 
     try:
         while True:
+            # في وضع immediate/debounce قد يُطلب الإيقاف
             if _stop_flag and STOP_POLICY in ("immediate", "debounce"):
                 break
 
             now = time.time()
 
-            # 1) فحص إشارات الدخول — مع "كاش الدورة"
+            # 1) فحص إشارات الدخول — مع "كاش الدورة" + قياس الأداء
             if now - last_scan_ts >= SCAN_INTERVAL_SEC + random.uniform(-2, 2):
+                t_round_start = perf_counter()
                 try:
-                    # 🔑 النقطة الأساسية: مسح كاش OHLCV للدورة الحالية مرة واحدة
+                    # 🔑 مسح كاش OHLCV للجولة الحالية مرة واحدة (يصفّر الميتريكس أيضًا)
                     reset_cycle_cache()
 
                     open_positions_count = _get_open_positions_count_safe()
 
                     for symbol in SYMBOLS:
+                        # عند طلب إيقاف "مؤكد" نخرج بأمان
                         if _stop_flag and STOP_POLICY in ("immediate", "debounce"):
                             break
 
+                        # إذا امتلأ حدّنا المحلي (إن فُعِّل)، لا نحاول شراء جديد
                         if not _can_open_new_position(open_positions_count):
-                            break
+                            break  # اكتفِ بما لدينا
 
+                        # لا تفتح صفقة على رمز لديه مركز قائم
                         try:
                             if load_position(symbol) is not None:
-                                continue
+                                continue  # يُدار لاحقًا
                         except Exception:
                             pass
 
+                        # فحص الإشارة
                         try:
                             sig = check_signal(symbol)
                         except Exception as e:
@@ -212,16 +223,20 @@ if __name__ == "__main__":
                                 print(f"[check_signal] {symbol} error: {e}")
                             continue
 
+                        # دعم نوعين من النتيجة: "buy" أو dict(decision="buy")
                         is_buy = (sig == "buy") or (isinstance(sig, dict) and str(sig.get("decision", "")).lower() == "buy")
 
                         if is_buy:
                             try:
                                 order, msg = execute_buy(symbol)
+                                # فقط رسائل النجاح للتلغرام (نمنع إرسال الأخطاء)
                                 if msg:
                                     if _is_error_text(msg):
-                                        if SEND_ERRORS_TO_TELEGRAM: tg_error(msg)
+                                        if SEND_ERRORS_TO_TELEGRAM:
+                                            tg_error(msg)
                                     else:
                                         tg_info(msg)
+                                # تحديث العدّ من المصدر بعد كل محاولة شراء
                                 open_positions_count = _get_open_positions_count_safe()
                             except Exception as e:
                                 if SEND_ERRORS_TO_TELEGRAM:
@@ -230,6 +245,7 @@ if __name__ == "__main__":
                                     print(f"[execute_buy] {symbol} error: {e}")
                                 continue
                         else:
+                            # (اختياري) عندما لا توجد إشارة، نفحص أسباب الرفض (لو الدالة موجودة)
                             try:
                                 _, reasons = check_signal_debug(symbol)
                                 if reasons:
@@ -237,11 +253,30 @@ if __name__ == "__main__":
                             except Exception:
                                 pass
 
-                        # مهلة قصيرة بين الرموز (لا تحجب الكاش؛ مجرد تهدئة)
+                        # مهلة قصيرة بين الرموز لتخفيف الضغط
                         time.sleep(0.15)
 
+                    # (اختياري) إرسال ملخص أسباب الرفض كل ~30 دقيقة — إن كانت الدالة مفعلة
                     try:
                         maybe_emit_reject_summary()
+                    except Exception:
+                        pass
+
+                    # ⏱️ زمن الجولة + متوسط/رمز + ميتريكس الكاش
+                    try:
+                        t_round_end = perf_counter()
+                        dur_sec = t_round_end - t_round_start
+                        avg_per_symbol = (dur_sec / max(1, len(SYMBOLS)))
+                        perf_text = (
+                            "⏱️ <b>Round Perf</b>\n"
+                            f"- Duration: <b>{dur_sec:.2f}s</b>\n"
+                            f"- Avg / symbol: <b>{avg_per_symbol:.3f}s</b>\n"
+                        )
+                        metrics_text = metrics_format()
+                        full_report = perf_text + "\n" + metrics_text
+                        print(full_report)
+                        if SEND_METRICS_TO_TELEGRAM:
+                            tg_info(full_report, parse_mode="HTML", silent=True)
                     except Exception:
                         pass
 
@@ -253,8 +288,9 @@ if __name__ == "__main__":
                 finally:
                     last_scan_ts = now
 
-            # 2) إدارة الصفقات المفتوحة
+            # 2) إدارة الصفقات المفتوحة (TP/SL/Trailing)
             if now - last_manage_ts >= MANAGE_INTERVAL_SEC:
+                t_manage_start = perf_counter()
                 try:
                     for symbol in SYMBOLS:
                         if _stop_flag and STOP_POLICY in ("immediate", "debounce"):
@@ -269,6 +305,14 @@ if __name__ == "__main__":
                             else:
                                 print(f"[manage_position] {symbol} error: {e}")
                         time.sleep(0.1)
+
+                    # (اختياري) طباعة زمن إدارة الصفقات
+                    try:
+                        dur_mng = perf_counter() - t_manage_start
+                        print(f"⏱️ Manage Perf — Duration: {dur_mng:.2f}s")
+                    except Exception:
+                        pass
+
                 except Exception:
                     if SEND_ERRORS_TO_TELEGRAM:
                         tg_error(f"⚠️ خطأ عام أثناء إدارة الصفقات:\n{traceback.format_exc()}")
@@ -293,9 +337,11 @@ if __name__ == "__main__":
                 except Exception:
                     pass
 
+            # نوم قصير
             time.sleep(LOOP_SLEEP_SEC)
 
     finally:
+        # خرجنا بسلاسة (فقط عند سياسات الإيقاف التي تسمح بالخروج)
         if _HAS_CACHE:
             try:
                 stop_tickers_cache()
