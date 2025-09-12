@@ -1,4 +1,5 @@
-# okx_api.py — متوافق مع strategy.py (محسّن + كاش أسعار جماعي + أدوات)
+# -*- coding: utf-8 -*-
+# okx_api.py — متوافق مع strategy.py (Spot فقط) + كاش أسعار جماعي + أدوات مساعدة
 # المتطلبات: pip install ccxt requests
 
 import os
@@ -6,7 +7,6 @@ import time
 import random
 import threading
 import traceback
-import atexit
 from typing import Optional, Tuple, Dict, Any, List
 
 import requests
@@ -29,7 +29,7 @@ exchange = ccxt.okx({
     "enableRateLimit": True,
     "options": {
         "defaultType": "spot",
-        # منع طلب ثمن عند أوامر سوق شراء (تعتمد على exchange)
+        # بعض البورصات تتطلب price مع أوامر Market Buy — OKX لا يتطلب عادةً، لكن نجعلها False
         "createMarketBuyOrderRequiresPrice": False,
     },
     "timeout": 15000,  # 15s
@@ -67,10 +67,6 @@ def _okx_error_hint(e: Exception) -> str:
     msg = str(e)
     if "50110" in msg or ("IP" in msg and "whitelist" in msg.lower()):
         return "❗️يبدو أن IP غير مُدرج في قائمة السماح لـ OKX (50110). أضف IP خادمك في إعدادات مفاتيح OKX."
-    if "51014" in msg:
-        return "⚠️ تجاوزت حد الطلبات المعلّقة (51014) — قلّل التكرار أو انتظر قليلًا."
-    if "58034" in msg or "Invalid sign" in msg:
-        return "⚠️ توقيع غير صالح للمفاتيح (58034) — تحقق من المفاتيح والـ passphrase والساعة."
     if "Insufficient" in msg or "insufficient" in msg:
         return "⚠️ رصيد غير كافٍ لإتمام العملية."
     if "Rate limit" in msg or "Too Many Requests" in msg:
@@ -98,7 +94,7 @@ def _retry(times=3, base_delay=0.6, max_delay=5.0):
                     hint = _okx_error_hint(e)
                     if hint:
                         print(hint)
-                    sleep_s = min(max_delay, base_delay * (1.8 ** i)) + random.uniform(0, 0.2)
+                    sleep_s = min(max_delay, base_delay * (1.8 ** i)) + random.uniform(0, 0.25)
                     time.sleep(sleep_s)
             raise last_exc
         return wrapper
@@ -173,9 +169,6 @@ def stop_tickers_cache():
     global _cache_stop
     _cache_stop = True
 
-# التسجيل لإيقاف الكاش عند إنهاء العملية
-atexit.register(stop_tickers_cache)
-
 # ================ تسوية الكمية/الحدود ================
 def _amount_to_precision(symbol_ccxt: str, amount: float) -> float:
     """
@@ -214,33 +207,15 @@ def _amount_to_precision(symbol_ccxt: str, amount: float) -> float:
             if tkr:
                 last = float(tkr.get("last") or tkr.get("close") or tkr.get("ask") or tkr.get("bid") or 0.0)
             if last > 0 and amt * last < min_cost:
-                # محاولات تصحيح تدريجية لتجاوز min_cost بعد التقريب
-                tries = 0
-                while tries < 3 and amt * last < min_cost:
-                    needed = (min_cost / max(last, 1e-12)) * (1 + 0.01 * tries)
-                    try:
-                        amt = float(exchange.amount_to_precision(symbol_ccxt, needed))
-                    except Exception:
-                        amt = float(needed)
-                    tries += 1
+                needed = min_cost / last
+                try:
+                    amt = float(exchange.amount_to_precision(symbol_ccxt, needed))
+                except Exception:
+                    amt = float(needed)
     except Exception:
         pass
 
     return max(0.0, amt)
-
-# ================ أدوات سعر التنفيذ ================
-def _avg_fill_px(order: Dict[str, Any]) -> float:
-    """يحاول استخراج سعر التعبئة الفعلي بأفضل شكل ممكن من order/"info"."""
-    if not isinstance(order, dict):
-        return 0.0
-    px = order.get("average") or order.get("price")
-    try:
-        if (not px) and isinstance(order.get("info"), dict):
-            info = order["info"]
-            px = info.get("fillPx") or info.get("px") or info.get("avgPx")
-        return float(px or 0.0)
-    except Exception:
-        return 0.0
 
 # ================ واجهات مطلوبة من strategy.py ================
 @_retry()
@@ -296,19 +271,9 @@ def fetch_ohlcv(symbol: str, timeframe: str = "5m", limit: int = 100):
         return []
 
 @_retry()
-def place_market_order(
-    symbol: str,
-    side: str,
-    amount: float | None,
-    send_message=None,
-    *,
-    tgt_ccy: str = "base_ccy",
-    quote_amount: float | None = None,
-):
+def place_market_order(symbol: str, side: str, amount: float, send_message=None):
     """
     ينفّذ أمر سوق (شراء/بيع) مع تسوية الكمية وفق حدود السوق.
-    - افتراضيًا: الكمية "Base" (tgtCcy=base_ccy).
-    - لو مرّرت quote_amount: سيشتري/يبيع بقيمة Quote (USDT) مع tgtCcy=quote_ccy.
     يعيد أمر CCXT عند النجاح أو None عند الفشل.
     """
     sym = _fmt_symbol(symbol)
@@ -317,33 +282,19 @@ def place_market_order(
         _log(send_message, f"⚠️ side غير صحيح ({side}) — يجب buy أو sell")
         return None
 
-    params: Dict[str, Any] = {"tgtCcy": tgt_ccy}
+    if amount is None or amount <= 0:
+        _log(send_message, f"⚠️ كمية غير صالحة لأمر {side} على {symbol}")
+        return None
 
-    # وضع شراء/بيع بالقيمة (Quote)
-    if quote_amount is not None:
-        try:
-            q_amt = float(quote_amount)
-        except Exception:
-            _log(send_message, f"⚠️ quote_amount غير صالح لـ {symbol}")
-            return None
-        if q_amt <= 0:
-            _log(send_message, f"⚠️ quote_amount≤0 لـ {symbol}")
-            return None
-        params["tgtCcy"] = "quote_ccy"
-        adj_amount = float(q_amt)
-    else:
-        if amount is None or amount <= 0:
-            _log(send_message, f"⚠️ كمية غير صالحة لأمر {side} على {symbol}")
-            return None
-        adj_amount = _amount_to_precision(sym, float(amount))
-        if adj_amount <= 0:
-            _log(send_message, f"⚠️ الكمية بعد التسوية أصبحت صفر لـ {symbol} — تحقق من الحد الأدنى للسوق.")
-            return None
+    adj_amount = _amount_to_precision(sym, float(amount))
+    if adj_amount <= 0:
+        _log(send_message, f"⚠️ الكمية بعد التسوية أصبحت صفر لـ {symbol} — تحقق من الحد الأدنى للسوق.")
+        return None
 
     try:
-        order = exchange.create_order(sym, type="market", side=side, amount=adj_amount, params=params)
-        px = _avg_fill_px(order)
-        _log(send_message, f"✅ تم تنفيذ أمر {side.upper()} لـ {symbol} (كمية: {adj_amount}) @ {px or '—'}")
+        # params إضافية اختيارية لـ OKX: {"tgtCcy": "base_ccy"} عند الحاجة
+        order = exchange.create_order(sym, type="market", side=side, amount=adj_amount)
+        _log(send_message, f"✅ تم تنفيذ أمر {side.upper()} لـ {symbol} (كمية: {adj_amount})")
         return order
     except Exception as e:
         hint = _okx_error_hint(e)
@@ -378,10 +329,3 @@ def list_okx_usdt_spot_symbols() -> List[str]:
     except Exception as e:
         print(f"⚠️ فشل جلب قائمة USDT/Spot: {e}")
         return []
-
-# ================ بدء الكاش تلقائيًا (اختياري) ================
-if os.getenv("OKX_TICKERS_CACHE_AUTO", "0").lower() in ("1", "true", "yes"):
-    try:
-        start_tickers_cache(period=int(os.getenv("OKX_TICKERS_CACHE_PERIOD", "2")), usdt_only=True)
-    except Exception:
-        pass
