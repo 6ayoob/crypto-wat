@@ -1,11 +1,16 @@
 # -*- coding: utf-8 -*-
 """
-strategy.py — Spot-only
+strategy.py — Spot-only (improved)
 - كاش OHLCV للدورة + مِقاييس أداء.
 - Retry/Backoff لاستدعاءات OHLCV.
-- Position sizing ديناميكي (نسبة من رأس المال + معامل تقلب ATR).
+- Position sizing ديناميكي (رأس مال × تقلب ATR × مضاعِف score).
 - Circuit breaker بالساعة (اختياري عبر البيئة).
-- توثيق أساسي للدوال العامة.
+- Auto‑Relax ديناميكي عند جفاف الإشارات.
+- Market Breadth Guard على HTF.
+- دعم Fibonacci للدخول والأهداف.
+- حارس Parabolic/Exhaustion لتفادي الاندفاع المبالغ فيه.
+- أهداف متعددة (حتى TP5) وجزئيات متكيفة مع ATR%.
+- MaxBars→TP1 ديناميكي بحسب ATR% و Score.
 
 واجهات مطلوبة من main.py:
 - check_signal(symbol)
@@ -101,6 +106,22 @@ HOURLY_DD_PCT = float(os.getenv("HOURLY_DD_PCT", "0.05"))   # 5% من Equity خ�
 # كاش HTF
 _HTF_CACHE: Dict[str, Dict[str, Any]] = {}
 _HTF_TTL_SEC = int(os.getenv("HTF_CACHE_TTL_SEC", "150"))
+
+# ======= Auto‑Relax (جفاف الإشارات) =======
+AUTO_RELAX_ENABLE = os.getenv("AUTO_RELAX_ENABLE", "1").lower() in ("1","true","yes","y")
+# (hours, rvol_mult, atr_mult, ema50_bounds_mult)
+_RELAX_LEVELS = [
+    (6,  0.95, 0.95, 1.05),
+    (12, 0.90, 0.92, 1.10),
+]
+_LAST_ANY_TRADE_AT: Optional[datetime] = None
+
+# ======= Market Breadth Guard =======
+MARKET_BREADTH_ENABLE = os.getenv("MARKET_BREADTH_ENABLE", "1").lower() in ("1","true","yes","y")
+BREADTH_MIN_RATIO = float(os.getenv("BREADTH_MIN_RATIO", "0.60"))  # 55% فوق EMA50 على HTF
+BREADTH_SAMPLE = int(os.getenv("BREADTH_SAMPLE", "25"))
+_BREADTH_CACHE: Dict[str, Any] = {"ts": None, "ratio": None, "n": 0}
+BREADTH_TTL_SEC = int(os.getenv("BREADTH_TTL_SEC", "240"))
 
 # ======= كاش OHLCV للدورة + مِقاييس =======
 _OHLCV_CACHE: Dict[tuple, list] = {}  # key=(symbol, tf, bars)
@@ -214,6 +235,9 @@ NEW_SCALP_OVERRIDES = {
     "SL_ATR_MULT": 0.9,
     "TP1_ATR_MULT": 1.2,
     "TP2_ATR_MULT": 2.2,
+    # أهداف إضافية (اختيارية)
+    "TP3_ATR_MULT": 3.2,
+    "TP4_ATR_MULT": 4.5,
 
     "TRAIL_AFTER_TP1": True,
     "TRAIL_ATR_MULT": 1.0,
@@ -231,6 +255,7 @@ SRR_OVERRIDES = {
     "SL_ATR_MULT": 0.8,
     "TP1_ATR_MULT": 1.2,
     "TP2_ATR_MULT": 2.2,
+    "TP3_ATR_MULT": 3.0,
     "TRAIL_AFTER_TP1": True,
     "TRAIL_ATR_MULT": 1.1,
     "LOCK_MIN_PROFIT_PCT": 0.004,
@@ -244,6 +269,7 @@ BRT_OVERRIDES = {
     "ATR_MIN_FOR_TREND": 0.0022,
     "RSI_GATE_POLICY": "balanced",
     "USE_ATR_SL_TP": True, "SL_ATR_MULT": 0.9, "TP1_ATR_MULT": 1.4, "TP2_ATR_MULT": 2.4,
+    "TP3_ATR_MULT": 3.4,
     "TRAIL_AFTER_TP1": True, "TRAIL_ATR_MULT": 1.1,
     "LOCK_MIN_PROFIT_PCT": 0.004, "MAX_HOLD_HOURS": 8, "SYMBOL_COOLDOWN_MIN": 10,
 }
@@ -254,6 +280,7 @@ VBR_OVERRIDES = {
     "ATR_MIN_FOR_TREND": 0.0018,
     "RSI_GATE_POLICY": "balanced",
     "USE_ATR_SL_TP": True, "SL_ATR_MULT": 0.8, "TP1_ATR_MULT": 1.2, "TP2_ATR_MULT": 2.0,
+    "TP3_ATR_MULT": 2.6,
     "TRAIL_AFTER_TP1": True, "TRAIL_ATR_MULT": 1.0,
     "LOCK_MIN_PROFIT_PCT": 0.003, "MAX_HOLD_HOURS": 6, "SYMBOL_COOLDOWN_MIN": 8,
 }
@@ -263,16 +290,20 @@ RSI_MIN_BREAKOUT, RSI_MAX_BREAKOUT = 50, 80
 
 PER_STRAT_MGMT = {
     "new": {"SL":"atr", "SL_MULT":0.9, "TP1":"sr_or_atr", "TP1_ATR":1.2, "TP2_ATR":2.2,
+             "TP3_ATR":3.2, "TP4_ATR":4.5,
              "TRAIL_AFTER_TP1":True, "TRAIL_ATR":1.0, "TIME_HRS":6},
     "old": {"SL":"pct", "SL_PCT":0.02, "TP1_PCT":0.03, "TP2_PCT":0.06,
              "TRAIL_AFTER_TP1":False, "TIME_HRS":12},
     "srr": {"SL":"atr_below_sweep", "SL_MULT":0.8, "TP1":"sr_or_atr", "TP1_ATR":1.0, "TP2_ATR":2.2,
+             "TP3_ATR":3.0,
              "TRAIL_AFTER_TP1":True, "TRAIL_ATR":1.0, "TIME_HRS":4},
     "brt": {"SL":"atr_below_retest", "SL_MULT":1.0, "TP1":"range_or_atr", "TP1_ATR":1.5, "TP2_ATR":2.5,
+             "TP3_ATR":3.5,
              "TRAIL_AFTER_TP1":True, "TRAIL_ATR":0.9, "TIME_HRS":8},
-    "vbr": {"SL":"atr", "SL_MULT":1.0, "TP1":"vwap_or_sr", "TP2_ATR":1.8,
+    "vbr": {"SL":"atr", "SL_MULT":1.0, "TP1":"vwap_or_sr", "TP2_ATR":1.8, "TP3_ATR":2.6,
              "TRAIL_AFTER_TP1":True, "TRAIL_ATR":0.8, "TIME_HRS":3},
 }
+
 def _mgmt(variant: str): return PER_STRAT_MGMT.get(variant, PER_STRAT_MGMT["new"])
 
 # ======= فلترة متعددة الفريمات =======
@@ -298,7 +329,9 @@ def _tg(text, parse_mode="HTML"):
         pass
 
 def now_riyadh(): return datetime.now(RIYADH_TZ)
+
 def _today_str(): return now_riyadh().strftime("%Y-%m-%d")
+
 def _hour_key(dt: datetime) -> str: return dt.strftime("%Y-%m-%d %H")
 
 def _atomic_write(path, data):
@@ -348,7 +381,9 @@ def _pos_path(symbol):
     return f"{POSITIONS_DIR}/{symbol.replace('/', '_')}.json"
 
 def load_position(symbol): return _read_json(_pos_path(symbol), None)
+
 def save_position(symbol, position): _atomic_write(_pos_path(symbol), position)
+
 def clear_position(symbol):
     try:
         p = _pos_path(symbol)
@@ -361,12 +396,13 @@ def count_open_positions():
     return len([f for f in os.listdir(POSITIONS_DIR) if f.endswith(".json")])
 
 def load_closed_positions(): return _read_json(CLOSED_POSITIONS_FILE, [])
+
 def save_closed_positions(lst): _atomic_write(CLOSED_POSITIONS_FILE, lst)
 
 # ================== حالة المخاطر اليومية/الساعة ==================
 def _default_risk_state():
     return {"date": _today_str(), "daily_pnl": 0.0, "consecutive_losses": 0,
-            "trades_today": 0, "blocked_until": None, "hourly_pnl": {}}
+            "trades_today": 0, "blocked_until": None, "hourly_pnl": {}, "relax_wins": 0}
 
 def load_risk_state():
     s = _read_json(RISK_STATE_FILE, _default_risk_state())
@@ -375,10 +411,15 @@ def load_risk_state():
     # تهيئة hourly_pnl
     if "hourly_pnl" not in s or not isinstance(s["hourly_pnl"], dict):
         s["hourly_pnl"] = {}
+    if "relax_wins" not in s:
+        s["relax_wins"] = 0
     return s
 
 def save_risk_state(s): _atomic_write(RISK_STATE_FILE, s)
+
 def register_trade_opened():
+    global _LAST_ANY_TRADE_AT
+    _LAST_ANY_TRADE_AT = now_riyadh()
     s = load_risk_state(); s["trades_today"] = int(s.get("trades_today", 0)) + 1; save_risk_state(s)
 
 def _set_block(minutes, reason="risk"):
@@ -395,10 +436,21 @@ def _is_blocked():
 
 def register_trade_result(pnl_usdt):
     """تحديث حالة المخاطر بعد كل خروج جزئي/كامل + Circuit breaker بالساعة."""
+    global _LAST_ANY_TRADE_AT
+    _LAST_ANY_TRADE_AT = now_riyadh()
     s = load_risk_state()
     s["daily_pnl"] = float(s.get("daily_pnl", 0.0)) + float(pnl_usdt)
     s["consecutive_losses"] = 0 if pnl_usdt > 0 else int(s.get("consecutive_losses", 0)) + 1
 
+
+    # تتبع نجاحات للتخفيف: نعيد النظام للوضع الطبيعي بعد صفقتين ناجحتين (ليستا بالضرورة متتاليتين)
+    try:
+        if float(pnl_usdt) > 0:
+            s["relax_wins"] = int(s.get("relax_wins", 0)) + 1
+        else:
+            s["relax_wins"] = int(s.get("relax_wins", 0))
+    except Exception:
+        pass
     # حساب PnL الساعة الحالية
     hk = _hour_key(now_riyadh())
     s["hourly_pnl"][hk] = float(s["hourly_pnl"].get(hk, 0.0)) + float(pnl_usdt)
@@ -479,7 +531,7 @@ def _atr_from_df(df, period=ATR_PERIOD):
     atr = tr.ewm(alpha=1/period, adjust=False).mean()
     return float(atr.iloc[-2])
 
-# ===== Swing/SR =====
+# ===== Swing/SR/Fib =====
 def _swing_points(df, left=2, right=2):
     highs, lows = df["high"], df["low"]
     idx = len(df) - 3
@@ -531,6 +583,22 @@ def get_sr_multi(symbol: str):
         except Exception:
             pass
     return levels
+
+# Fib helpers
+def _fib_levels_from_recent(df, lookback=60):
+    h, l = recent_swing(df, lookback=lookback)
+    if not h or not l or h <= l:
+        return None
+    rng = h - l
+    # مستويات شائعة للارتداد والامتداد
+    levels = {
+        "0.382": h - 0.382 * rng,
+        "0.5":   h - 0.5   * rng,
+        "0.618": h - 0.618 * rng,
+        "1.272": h + 0.272 * rng,
+        "1.618": h + 0.618 * rng,
+    }
+    return {"high": h, "low": l, "levels": levels, "range": rng}
 
 # ===== MACD/RSI Gate =====
 def macd_rsi_gate(prev_row, closed_row, policy):
@@ -599,25 +667,77 @@ def _get_htf_context(symbol):
     _HTF_CACHE[base] = {"t": now, "ctx": ctx}
     return ctx
 
+# ======= Market breadth (HTF > EMA50) =======
+def _market_breadth_ratio():
+    if not MARKET_BREADTH_ENABLE:
+        return 1.0, 0
+    now = now_riyadh()
+    ts = _BREADTH_CACHE.get("ts")
+    if ts and (now - ts).total_seconds() <= BREADTH_TTL_SEC:
+        return float(_BREADTH_CACHE.get("ratio", 1.0)), int(_BREADTH_CACHE.get("n", 0))
+
+    sample = []
+    seen = set()
+    for s in SYMBOLS:
+        base = s.split("#")[0]
+        if base in seen: continue
+        seen.add(base)
+        sample.append(base)
+        if len(sample) >= BREADTH_SAMPLE: break
+
+    ups = 0
+    for base in sample:
+        try:
+            ctx = _get_htf_context(base)
+            if not ctx: continue
+            if ctx["close"] > ctx["ema50_now"] and (ctx["ema50_now"] >= ctx["ema50_prev"]):
+                ups += 1
+        except Exception:
+            continue
+    ratio = (ups / max(1, len(sample))) if sample else 1.0
+    _BREADTH_CACHE["ts"] = now
+    _BREADTH_CACHE["ratio"] = ratio
+    _BREADTH_CACHE["n"] = len(sample)
+    return ratio, len(sample)
+
 # ================== منطق الدخول الأساسية ==================
-def _entry_pullback_logic(df, closed, prev, atr_ltf, htf_ctx, cfg):
+
+def _entry_pullback_logic(df, closed, prev, atr_ltf, htf_ctx, cfg, fib=None):
     ref_val = closed["ema21"] if cfg["PULLBACK_VALUE_REF"]=="ema21" else closed.get("vwap", closed["ema21"])
     if pd.isna(ref_val): ref_val = closed["ema21"]
     near_val = (closed["close"] >= ref_val) and (closed["low"] <= ref_val)
     if not near_val: return False
-    if cfg["PULLBACK_CONFIRM"] == "bullish_engulf":
-        return _bullish_engulf(prev, closed)
-    elif cfg["PULLBACK_CONFIRM"] == "bos":
-        swing_high, _ = _swing_points(df); return bool(swing_high and closed["close"] > swing_high)
+    # تأكيد النمط
+    if cfg.get("PULLBACK_CONFIRM") == "bullish_engulf":
+        if not _bullish_engulf(prev, closed):
+            return False
+    elif cfg.get("PULLBACK_CONFIRM") == "bos":
+        swing_high, _ = _swing_points(df); 
+        if not (swing_high and closed["close"] > swing_high):
+            return False
+    # شرط فيبوناتشي (اختياري)
+    if cfg.get("USE_FIB") and fib:
+        try:
+            fib_tol = float(cfg.get("FIB_TOL", 0.004))
+            zone_low  = fib["levels"]["0.618"]
+            zone_high = fib["levels"]["0.382"]
+            price = float(closed["close"])
+            in_zone = (price >= zone_low * (1 - fib_tol)) and (price <= zone_high * (1 + fib_tol))
+            if not in_zone:
+                return False
+        except Exception:
+            pass
     return True
 
 def _entry_breakout_logic(df, closed, prev, atr_ltf, htf_ctx, cfg):
     hi_range = float(df["high"].iloc[-NR_WINDOW-2:-2].max())
     is_nr_recent = bool(df["is_nr"].iloc[-3:-1].all())
     vwap_ok = closed["close"] > float(closed.get("vwap", closed["ema21"]))
-    return (closed["close"] > hi_range) and (is_nr_recent and vwap_ok or vwap_ok)
+    buf = float(cfg.get("BREAKOUT_BUFFER_LTF", 0.0015))
+    return (closed["close"] > hi_range * (1.0 + buf)) and (is_nr_recent or vwap_ok)
 
 # ---------- Scoring ----------
+
 def _opportunity_score(df, prev, closed):
     score, why, pattern = 0, [], ""
     try:
@@ -640,11 +760,69 @@ def _opportunity_score(df, prev, closed):
         pass
     return score, ", ".join(why), (pattern or "Generic")
 
-# ================== NEW/SRR — متكّيف بالـ ATR + EMA200 + GoldenCross ==================
+# ===== Exhaustion / Parabolic guard =====
+EXHAUSTION_GUARD_ENABLE = os.getenv("EXHAUSTION_GUARD_ENABLE", "1").lower() in ("1","true","yes","y")
+EXH_RSI_MAX = float(os.getenv("EXH_RSI_MAX", "76"))
+EXH_UP_BARS = int(os.getenv("EXH_UP_BARS", "5"))
+EXH_MAX_DIST_ATR = float(os.getenv("EXH_MAX_DIST_ATR", "4.8"))
+
+def _exhaustion_block(df, closed) -> bool:
+    if not EXHAUSTION_GUARD_ENABLE:
+        return False
+    try:
+        rsi_val = float(closed.get("rsi", 50))
+        if rsi_val >= EXH_RSI_MAX:
+            return True
+        # متتالية ارتفاعات
+        last = df.iloc[-(EXH_UP_BARS+1):-1]
+        ups = int((last["close"] > last["open"]).sum())
+        if ups >= EXH_UP_BARS:
+            return True
+        # بعد مبالغ فيه عن EMA50
+        atr_val = _atr_from_df(df)
+        if atr_val and atr_val > 0:
+            dist_atr = (float(closed["close"]) - float(closed.get("ema50", closed["close"])))/atr_val
+            if dist_atr > EXH_MAX_DIST_ATR:
+                return True
+    except Exception:
+        return False
+    return False
+
+# ================== NEW/SRR — متكّيف بالـ ATR + EMA200 + GoldenCross + Auto‑Relax + Breadth ==================
+
+def _auto_relax_factors():
+    if not AUTO_RELAX_ENABLE:
+        return 1.0, 1.0, 1.0
+    # إذا تحقّقت صفقتان ناجحتان، نعيد عوامل التخفيف للوضع الطبيعي ونصفر العداد
+    s = load_risk_state()
+    try:
+        if int(s.get("relax_wins", 0)) >= 2:
+            s["relax_wins"] = 0
+            save_risk_state(s)
+            global _LAST_ANY_TRADE_AT
+            _LAST_ANY_TRADE_AT = now_riyadh()
+            return 1.0, 1.0, 1.0
+    except Exception:
+        pass  # rvol_mult, atr_mult, ema50_bounds_mult
+    if _LAST_ANY_TRADE_AT is None:
+        return 1.0, 1.0, 1.0
+    hours = (now_riyadh() - _LAST_ANY_TRADE_AT).total_seconds() / 3600.0
+    rvol_m, atr_m, ema_bounds_m = 1.0, 1.0, 1.0
+    for h, rv, at, eb in _RELAX_LEVELS:
+        if hours >= h:
+            rvol_m, atr_m, ema_bounds_m = rv, at, eb
+    return rvol_m, atr_m, ema_bounds_m
+
 def check_signal_new(symbol):
     """يفحص إشارة شراء Spot فقط على الرمز المحدد (نسخ: new/srr/brt/vbr). يعيد dict{'decision':'buy', ...} أو None."""
+    # حارس المخاطر العامة
     ok, reason = _risk_precheck_allow_new_entry()
     if not ok: return _rej("risk_precheck", reason=reason)
+
+    # حارس Market Breadth
+    ratio, n = _market_breadth_ratio()
+    if MARKET_BREADTH_ENABLE and ratio < BREADTH_MIN_RATIO:
+        return _rej("breadth_guard", ratio=round(ratio,2), min=BREADTH_MIN_RATIO, n=n)
 
     base, variant = _split_symbol_variant(symbol); cfg = get_cfg(variant)
     key = f"{base}|{variant}"
@@ -666,6 +844,9 @@ def check_signal_new(symbol):
     if len(df) < 200: return _rej("ltf_len", n=len(df))  # نحتاج EMA200 أيضًا
 
     prev, closed = df.iloc[-3], df.iloc[-2]
+    if _exhaustion_block(df, closed):
+        return _rej("exhaustion_guard")
+
     ts = int(closed["timestamp"])
     if _LAST_ENTRY_BAR_TS.get(key) == ts: return _rej("dup_bar")
 
@@ -673,19 +854,28 @@ def check_signal_new(symbol):
     atr = _atr_from_df(df)
     if not atr or atr <= 0: return _rej("atr_nan")
     atrp = atr / max(price, 1e-9)
-    if atrp < float(cfg.get("ATR_MIN_FOR_TREND", 0.002)): return _rej("atr_low", atrp=round(atrp,5))
+
+    # Auto‑Relax adjustments
+    rv_mult, atr_mult, ema_bounds_mult = _auto_relax_factors()
+
+    if atrp < float(cfg.get("ATR_MIN_FOR_TREND", 0.002)) * atr_mult:
+        return _rej("atr_low", atrp=round(atrp,5))
 
     notional = price * float(closed["volume"])
     if notional < 60000: return _rej("notional_low", notional=int(notional))
 
     rvol = float(closed.get("rvol", 0) or 0)
-    need_rvol = float(cfg.get("RVOL_MIN", 1.2)) * 0.95
-    if pd.isna(rvol) or rvol < need_rvol: return _rej("rvol", rvol=round(rvol,2), need=round(need_rvol,2))
+    need_rvol = float(cfg.get("RVOL_MIN", 1.2)) * rv_mult
+    if pd.isna(rvol) or rvol < need_rvol:
+        return _rej("rvol", rvol=round(rvol,2), need=round(need_rvol,2))
 
     # فلتر ترند EMA200 (اختياري)
     if USE_EMA200_TREND_FILTER:
         if not (float(closed.get("ema50", price)) > float(closed.get("ema200", price)) and price > float(closed.get("ema200", price))):
             return _rej("ema200_trend")
+
+    # تحضير فيبوناتشي (إن وُجد)
+    fib = _fib_levels_from_recent(df, lookback=int(cfg.get("SWING_LOOKBACK", 60))) if cfg.get("USE_FIB") else None
 
     # اختيار النمط الأساسي (hybrid)
     def _brk_ok():
@@ -698,14 +888,14 @@ def check_signal_new(symbol):
     chosen_mode = None; mode_ok = False
     entry_mode = cfg.get("ENTRY_MODE", "hybrid")
     if entry_mode == "pullback":
-        chosen_mode = "pullback"; mode_ok = _entry_pullback_logic(df, closed, prev, atr, ctx, cfg)
+        chosen_mode = "pullback"; mode_ok = _entry_pullback_logic(df, closed, prev, atr, ctx, cfg, fib=fib)
     elif entry_mode == "breakout":
         chosen_mode = "breakout"; mode_ok = _brk_ok()
     else:
         for m in cfg.get("HYBRID_ORDER", ["breakout","pullback"]):
             if m == "breakout" and _brk_ok():
                 chosen_mode = "breakout"; mode_ok = True; break
-            if m == "pullback" and _entry_pullback_logic(df, closed, prev, atr, ctx, cfg):
+            if m == "pullback" and _entry_pullback_logic(df, closed, prev, atr, ctx, cfg, fib=fib):
                 chosen_mode = "pullback"; mode_ok = True; break
 
     # بديل: دخول Golden Cross (اختياري)
@@ -738,8 +928,10 @@ def check_signal_new(symbol):
     else:  # golden_cross
         lb, ub = 0.00, 4.0
         if rvol >= need_rvol * 1.30: ub = 4.5
+    # Auto‑Relax يوسّع الحدود قليلًا
+    lb, ub = lb/ema_bounds_mult, ub*ema_bounds_mult
     if not (lb <= dist_atr <= ub):
-        return _rej("dist_to_ema50", dist_atr=round(dist_atr,3), lb=lb, ub=ub)
+        return _rej("dist_to_ema50", dist_atr=round(dist_atr,3), lb=round(lb,2), ub=round(ub,2))
 
     # نطاقات RSI حسب النمط
     rsi_val = float(closed.get("rsi", 50))
@@ -772,14 +964,18 @@ def check_signal_new(symbol):
 
     _LAST_ENTRY_BAR_TS[key] = ts
     _pass("signal_ok", mode=chosen_mode, score=score, rvol=round(rvol,2), atrp=round(atrp,4))
-    return {"decision": "buy", "score": score, "reason": why, "pattern": patt, "ts": ts}
+    return {"decision": "buy", "score": score, "reason": why, "pattern": patt, "ts": ts, "fib": fib}
 
 # ================== OLD/SRR/BRT/VBR ==================
+
 def check_signal_old(symbol): return check_signal_new(symbol)
+
 def check_signal_brt(symbol): return check_signal_new(symbol)
+
 def check_signal_vbr(symbol): return check_signal_new(symbol)
 
 # ================== Router ==================
+
 def check_signal(symbol):
     """Router لفحص الإشارة حسب النسخة suffix#."""
     base, variant = _split_symbol_variant(symbol)
@@ -790,7 +986,8 @@ def check_signal(symbol):
     return check_signal_new(symbol)
 
 # ================== SL/TP ==================
-def _compute_sl_tp(entry, atr_val, cfg, variant, symbol=None, df=None, ctx=None, closed=None):
+
+def _compute_sl_and_targets(entry, atr_val, cfg, variant, symbol=None, df=None, ctx=None, closed=None, fib=None):
     mg = _mgmt(variant)
     sl = None
     try:
@@ -819,72 +1016,61 @@ def _compute_sl_tp(entry, atr_val, cfg, variant, symbol=None, df=None, ctx=None,
     except Exception:
         sl = entry - 1.0 * atr_val
 
-    tp1 = None; tp2 = None
-    nearest_res = None
+    # أهداف افتراضية بالـ ATR
+    tp1 = entry + float(mg.get("TP1_ATR", cfg.get("TP1_ATR_MULT", 1.2))) * atr_val
+    tp2 = entry + float(mg.get("TP2_ATR", cfg.get("TP2_ATR_MULT", 2.2))) * atr_val
+    targets = [float(tp1), float(tp2)]
+
+    # دمج SR/VWAP للـ TP1 عند الحاجة
     try:
+        nearest_res = None
         if symbol:
             sr_multi = get_sr_multi(symbol)
             for name, ent in sr_multi.items():
                 res = ent.get("resistance")
                 if res and res > entry:
                     nearest_res = res if nearest_res is None else min(nearest_res, res)
+        if mg.get("TP1") in ("sr_or_atr", "range_or_atr", "vwap_or_sr"):
+            cand = targets[0]
+            if mg.get("TP1") == "vwap_or_sr" and closed is not None:
+                vwap_val = float(closed.get("vwap")) if closed.get("vwap") else None
+                if vwap_val and vwap_val > entry:
+                    cand = min(cand, vwap_val)
+            if nearest_res and nearest_res > entry:
+                cand = min(cand, nearest_res)
+            targets[0] = float(cand)
     except Exception:
         pass
 
-    vwap_val = None
+    # أهداف إضافية من الإعداد أو من Fib extension
     try:
-        if closed is None and df is not None:
-            closed = df.iloc[-2]
-        vwap_val = float(closed.get("vwap")) if closed is not None else None
+        if mg.get("TP3_ATR") or cfg.get("TP3_ATR_MULT"):
+            targets.append(entry + float(mg.get("TP3_ATR", cfg.get("TP3_ATR_MULT", 3.2))) * atr_val)
+        if mg.get("TP4_ATR") or cfg.get("TP4_ATR_MULT"):
+            targets.append(entry + float(mg.get("TP4_ATR", cfg.get("TP4_ATR_MULT", 4.5))) * atr_val)
+        # Fib extensions
+        if fib and isinstance(fib, dict) and fib.get("levels"):
+            ext1618 = fib["levels"].get("1.618")
+            if ext1618 and ext1618 > entry:
+                targets.append(float(ext1618))
     except Exception:
-        vwap_val = None
+        pass
 
-    atr_tp1 = entry + float(mg.get("TP1_ATR", 1.2)) * atr_val
-    atr_tp2 = entry + float(mg.get("TP2_ATR", 2.2)) * atr_val if mg.get("TP2_ATR") else entry + 2.2 * atr_val
-
-    mode = mg.get("TP1")
-    try:
-        if mode == "sr_or_atr":
-            sr_tp = nearest_res if (nearest_res and nearest_res > entry) else None
-            tp1 = float(min(sr_tp, atr_tp1)) if sr_tp else float(atr_tp1)
-        elif mode == "range_or_atr":
-            sr_tp = None
-            try:
-                if df is not None and len(df) > 20:
-                    hhv = float(df.iloc[:-1]["high"].rolling(SR_WINDOW, min_periods=10).max().iloc[-1])
-                    sr_tp = hhv if hhv > entry else None
-            except Exception:
-                sr_tp = None
-            sr_tp = nearest_res if (nearest_res and nearest_res > entry) else sr_tp
-            tp1 = float(min(sr_tp, atr_tp1)) if sr_tp else float(atr_tp1)
-        elif mode == "vwap_or_sr":
-            candidates = []
-            if vwap_val and vwap_val > entry: candidates.append(float(vwap_val))
-            if nearest_res and nearest_res > entry: candidates.append(float(nearest_res))
-            tp1 = float(min(candidates)) if candidates else float(atr_tp1)
-        else:
-            if mg.get("TP1_PCT"):
-                tp1 = entry * (1 + float(mg.get("TP1_PCT")))
-            else:
-                if cfg.get("USE_ATR_SL_TP") and atr_val and atr_val > 0:
-                    tp1 = entry + cfg.get("TP1_ATR_MULT", 1.6) * atr_val
-                    tp2 = entry + cfg.get("TP2_ATR_MULT", 3.2) * atr_val
-                else:
-                    tp1 = entry * (1 + cfg.get("TP1_PCT", 0.03))
-                    tp2 = entry * (1 + cfg.get("TP2_PCT", 0.06))
-    except Exception:
-        tp1 = atr_tp1
-
-    if tp2 is None:
-        tp2 = atr_tp2
-
-    return float(sl), float(tp1), float(tp2)
+    # إزالة التكرار وترتيب تصاعدي
+    targets = sorted(list({round(float(t), 10) for t in targets}))
+    # فلترة المستويات القريبة جدًا (أقل من 0.2*ATR بينها)
+    filtered = []
+    for t in targets:
+        if not filtered or abs(t - filtered[-1]) >= 0.2 * atr_val:
+            filtered.append(t)
+    return float(sl), filtered[:5]
 
 # ================== تنفيذ الشراء ==================
+
 def execute_buy(symbol):
     """
     تنفيذ شراء Spot-only للرمز المحدّد.
-    - يستخدم Position sizing ديناميكي إذا USE_DYNAMIC_RISK=1 (افتراضي).
+    - يستخدم Position sizing ديناميكي إذا USE_DYNAMIC_RISK=1 (افتراضي) مع مضاعف score.
     - يخضع لمنطق الحظر/المخاطر.
     """
     base, variant = _split_symbol_variant(symbol)
@@ -912,38 +1098,31 @@ def execute_buy(symbol):
     cfg = get_cfg(variant)
     ctx = _get_htf_context(symbol)
 
-    sl, tp1, tp2 = _compute_sl_tp(price_fallback, atr_val, cfg, variant, symbol=symbol, df=df_exec, ctx=ctx, closed=closed)
+    sl, targets = _compute_sl_and_targets(price_fallback, atr_val, cfg, variant, symbol=symbol, df=df_exec, ctx=ctx, closed=closed, fib=_sig_inner.get("fib"))
     mg = _mgmt(variant)
     custom = (_sig_inner.get("custom") if isinstance(_sig_inner, dict) else {}) or {}
     if "sl" in custom and isinstance(custom["sl"], (int, float)):
         sl = float(custom["sl"])
-    if "tp1" in custom and isinstance(custom["tp1"], (int, float)):
-        tp1 = min(tp1, float(custom["tp1"]))
+    if "tp1" in custom and isinstance(custom["tp1"], (int, float)) and targets:
+        targets[0] = min(targets[0], float(custom["tp1"]))
 
-    sig = {
-        "entry": price_fallback,
-        "sl": sl,
-        "targets": [tp1, tp2],
-        "partials": [TP1_FRACTION, 1.0 - TP1_FRACTION],
-        "messages": {"entry": f"🚀 دخول {_sig_inner.get('pattern','Opportunity')}"},
-        "score": _sig_inner.get("score"),
-        "pattern": _sig_inner.get("pattern"),
-        "reason": _sig_inner.get("reason"),
-        "max_hold_hours": mg.get("TIME_HRS"),
-    }
-    sig["max_bars_to_tp1"] = 12
-
-    price = float(sig["entry"]) if isinstance(sig, dict) else None
+    score = float(_sig_inner.get("score", 70))
+    price = float(price_fallback)
     usdt = float(fetch_balance("USDT") or 0)
 
-    # ===== Position sizing ديناميكي =====
+    # ===== Position sizing ديناميكي + score multiplier =====
     if USE_DYNAMIC_RISK:
         equity = usdt  # تبسيط: نعتبر USDT المتاح ≈ Equity
         base_risk = equity * RISK_PCT_OF_EQUITY
         risk_usdt = min(MAX_TRADE_USDT, max(MIN_TRADE_USDT, base_risk))
         atrp = (atr_val / max(price, 1e-9)) if atr_val else 0.0
         vol_factor = 1.0 / (1.0 + ATR_RISK_SCALER * max(0.0, atrp))  # كلما زاد ATR% قلّ الحجم
-        trade_usdt = max(MIN_TRADE_USDT, risk_usdt * vol_factor)
+        # مضاعِف score
+        score_mult = 1.0
+        if score >= 92: score_mult = 1.35
+        elif score >= 85: score_mult = 1.20
+        elif score <= 65: score_mult = 0.80
+        trade_usdt = max(MIN_TRADE_USDT, risk_usdt * vol_factor * score_mult)
     else:
         trade_usdt = TRADE_AMOUNT_USDT
 
@@ -960,22 +1139,55 @@ def execute_buy(symbol):
 
     fill_px = float(order.get("average") or order.get("price") or price)
 
+    # ===== جزئيات متكيفة مع ATR% =====
+    atrp = (atr_val / max(fill_px, 1e-9)) if atr_val else 0.0
+    if len(targets) < 3:
+        # ضمّن على الأقل 3 أهداف
+        last = targets[-1] if targets else fill_px + 2.2*atr_val
+        targets = [targets[0], targets[1], last + 0.8*atr_val] if len(targets) >= 2 else [fill_px + 1.2*atr_val, fill_px + 2.2*atr_val, fill_px + 3.2*atr_val]
+
+    if atrp < 0.007:
+        partials = [0.40, 0.30, 0.20, 0.10][:len(targets)]
+    elif atrp < 0.015:
+        partials = [0.50, 0.30, 0.15, 0.05][:len(targets)]
+    else:
+        partials = [0.60, 0.25, 0.10, 0.05][:len(targets)]
+    # اضبط الطول (حتى 5 أهداف)
+    if len(targets) > 5:
+        targets = targets[:5]
+        partials = partials[:5]
+    # إذا عدد الجزئيات أقل من الأهداف، أكمل بجزئيات صغيرة
+    while len(partials) < len(targets):
+        partials.append(max(0.05, 1 - sum(partials)))
+    # طبّع المجموع = 1.0
+    ssum = sum(partials)
+    if ssum != 0:
+        partials = [p/ssum for p in partials]
+
+    # ===== Max Bars to TP1 ديناميكي =====
+    max_bars_to_tp1 = 12
+    if atrp <= 0.006: max_bars_to_tp1 = 14
+    if atrp >= 0.015: max_bars_to_tp1 = 9
+    if score >= 90:   max_bars_to_tp1 += 1
+    if score <= 65:   max_bars_to_tp1 -= 1
+    max_bars_to_tp1 = int(max(6, min(16, max_bars_to_tp1)))
+
     pos = {
         "symbol": symbol,
         "amount": float(amount),
         "entry_price": float(fill_px),
-        "stop_loss": float(sig["sl"]),
-        "targets": sig["targets"],
-        "partials": sig["partials"],
+        "stop_loss": float(sl),
+        "targets": [float(t) for t in targets],
+        "partials": [float(p) for p in partials],
         "opened_at": now_riyadh().isoformat(timespec="seconds"),
         "variant": variant,
-        "htf_stop": sig.get("stop_rule"),
-        "max_bars_to_tp1": sig.get("max_bars_to_tp1"),
-        "messages": sig.get("messages"),
-        "tp_hits": [False] * len(sig["targets"]),
-        "score": sig.get("score"),
-        "pattern": sig.get("pattern"),
-        "reason": sig.get("reason"),
+        "htf_stop": None,
+        "max_bars_to_tp1": max_bars_to_tp1,
+        "messages": {"entry": f"🚀 دخول {_sig_inner.get('pattern','Opportunity')}"},
+        "tp_hits": [False] * len(targets),
+        "score": score,
+        "pattern": _sig_inner.get("pattern"),
+        "reason": _sig_inner.get("reason"),
     }
     save_position(symbol, pos)
     register_trade_opened()
@@ -983,20 +1195,21 @@ def execute_buy(symbol):
     _SYMBOL_LAST_TRADE_AT[f"{base}|{variant}"] = now_riyadh()
 
     try:
-        if pos.get("messages") and pos["messages"].get("entry"):
-            _tg(f"{pos['messages']['entry']}\n"
-                f"دخول: <code>{fill_px:.6f}</code>\n"
-                f"SL: <code>{pos['stop_loss']:.6f}</code>\n"
-                f"أهداف: {', '.join(str(round(t,6)) for t in pos['targets'])}\n"
-                f"💰 حجم الصفقة: <b>{trade_usdt:.2f}$</b>")
-        else:
-            _tg(f"✅ دخول {symbol} عند <code>{fill_px:.6f}</code> | SL <code>{pos['stop_loss']:.6f}</code> | 💰 {trade_usdt:.2f}$")
+        _tg(
+            f"{pos['messages']['entry']}\n"
+            f"دخول: <code>{fill_px:.6f}</code>\n"
+            f"SL: <code>{pos['stop_loss']:.6f}</code>\n"
+            f"أهداف: {', '.join(str(round(t,6)) for t in pos['targets'])}\n"
+            f"🎯 Partials: {', '.join(f'{int(p*100)}%' for p in pos['partials'])}\n"
+            f"💰 حجم الصفقة: <b>{trade_usdt:.2f}$</b>"
+        )
     except Exception:
         pass
 
     return order, f"✅ شراء {symbol} | SL: {pos['stop_loss']:.6f} | 💰 {trade_usdt:.2f}$"
 
 # ================== إدارة الصفقة ==================
+
 def manage_position(symbol):
     """
     يدير صفقة مفتوحة: TP/SL/Trailing/Time-based exits.
@@ -1108,10 +1321,8 @@ def manage_position(symbol):
 
                     # قفل أرباح بعد TP1
                     try:
-                        variant = pos.get("variant", "new")
-                        cfg = get_cfg(variant)
                         if i == 0 and pos["amount"] > 0:
-                            lock_sl = entry * (1.0 + float(cfg.get("LOCK_MIN_PROFIT_PCT", 0.0)))
+                            lock_sl = entry * (1.0 + float(get_cfg(variant).get("LOCK_MIN_PROFIT_PCT", 0.0)))
                             if lock_sl > pos["stop_loss"]:
                                 pos["stop_loss"] = float(lock_sl)
                                 save_position(symbol, pos)
@@ -1120,13 +1331,13 @@ def manage_position(symbol):
                     except Exception:
                         pass
 
-                    # تريلينغ بعد TP2
+                    # تريلينغ بعد أي TP ≥ 2
                     if i >= 1 and pos["amount"] > 0:
                         data_for_atr = get_ohlcv_cached(base, LTF_TIMEFRAME, 140)
                         if data_for_atr:
-                            df_atr = _df(data_for_atr); atr_val = _atr_from_df(df_atr)
-                            if atr_val and atr_val > 0:
-                                new_sl = current - atr_val
+                            df_atr = _df(data_for_atr); atr_val2 = _atr_from_df(df_atr)
+                            if atr_val2 and atr_val2 > 0:
+                                new_sl = current - get_cfg(variant).get("TRAIL_ATR_MULT", 1.0) * atr_val2
                                 if new_sl > pos["stop_loss"] * (1 + TRAIL_MIN_STEP_RATIO):
                                     pos["stop_loss"] = float(new_sl); save_position(symbol, pos)
                                     try: _tg(f"🧭 <b>Trailing SL</b> {symbol} → <code>{new_sl:.6f}</code>")
@@ -1164,13 +1375,14 @@ def manage_position(symbol):
     return False
 
 # ================== إغلاق وتسجيل ==================
+
 def close_trade(symbol, exit_price, pnl_net, reason="MANUAL"):
     """يغلق الصفقة ويدوّنها في closed_positions.json ويحدّث مخاطر اليوم/الساعة."""
     pos = load_position(symbol)
     if not pos: return
     closed = load_closed_positions()
 
-    entry = float(pos["entry_price"]); amount = float(pos["amount"])
+    entry = float(pos["entry_price"]); amount = float(pos["amount"])  # المتبقّي عند الإغلاق (قد يكون جزئيًا)
     pnl_pct = ((exit_price / entry) - 1.0) if entry else 0.0
 
     tp_hits = {}
@@ -1202,6 +1414,7 @@ def close_trade(symbol, exit_price, pnl_net, reason="MANUAL"):
     clear_position(symbol)
 
 # ================== تقرير يومي ==================
+
 def _fmt_table(rows, headers):
     widths = [len(h) for h in headers]
     for r in rows:
