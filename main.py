@@ -1,11 +1,11 @@
-# main.py — Loop for 15m/5m strategy (signals + management + daily report)
+# main.py — Loop for 15m/5m strategy (signals + management + daily report) — Sync + Cache-Only
 import os
 import time
 import random
 import signal
 import traceback
 from datetime import datetime, timezone, timedelta
-import asyncio
+
 import requests
 
 from config import TELEGRAM_TOKEN, TELEGRAM_CHAT_ID, SYMBOLS, STRAT_LTF_TIMEFRAME, STRAT_HTF_TIMEFRAME
@@ -18,7 +18,7 @@ from strategy import (
 
 # (اختياري) دوال تشخيص من الاستراتيجية
 try:
-    from strategy import maybe_emit_reject_summary, check_signal_debug
+    from strategy import maybe_emit_reject_summary, check_signal_debug  # قد لا تكون متوفرة
 except Exception:
     def maybe_emit_reject_summary():
         pass
@@ -33,10 +33,10 @@ except Exception:
     _HAS_CACHE = False
 
 # ================== إعدادات الحلقة ==================
-MAX_OPEN_POSITIONS_OVERRIDE = None  # مثال: 2 أو 3 … أو None لإيقافه
+MAX_OPEN_POSITIONS_OVERRIDE = None  # حد محلي لعدد الصفقات (اختياري)
 
-SCAN_INTERVAL_SEC    = int(os.getenv("SCAN_INTERVAL_SEC", "25"))
-MANAGE_INTERVAL_SEC  = int(os.getenv("MANAGE_INTERVAL_SEC", "10"))
+SCAN_INTERVAL_SEC    = int(os.getenv("SCAN_INTERVAL_SEC", "25"))   # فحص إشارات الدخول
+MANAGE_INTERVAL_SEC  = int(os.getenv("MANAGE_INTERVAL_SEC", "10")) # إدارة المراكز
 LOOP_SLEEP_SEC       = 1.0
 
 ENABLE_DAILY_REPORT  = os.getenv("ENABLE_DAILY_REPORT", "1").lower() in ("1","true","yes")
@@ -51,10 +51,6 @@ STOP_POLICY = os.getenv("STOP_POLICY", "debounce").lower()
 STOP_DEBOUNCE_WINDOW_SEC = int(os.getenv("STOP_DEBOUNCE_WINDOW_SEC", "5"))
 
 RIYADH_TZ = timezone(timedelta(hours=3))
-
-# تحكم بالتوازي
-MAX_CONCURRENCY = int(os.getenv("MAX_CONCURRENCY", "8"))
-TASK_TIMEOUT_SEC = int(os.getenv("TASK_TIMEOUT_SEC", "25"))
 
 # ================== Telegram ==================
 def send_telegram_message(text, parse_mode=None, disable_notification=False):
@@ -97,28 +93,37 @@ _stop_flag = False
 _last_stop_signal_ts = 0.0
 
 def _handle_stop(signum, frame):
+    """
+    سياسة الإيقاف:
+      - ignore   : نتجاهل الإشارة.
+      - debounce : لا نتوقف إلا إذا وصلت إشارتان خلال نافذة قصيرة.
+      - immediate: نتوقف فورًا.
+    """
     global _stop_flag, _last_stop_signal_ts
     now = time.time()
 
     if STOP_POLICY == "ignore":
-        print(f"⏸️ تم استقبال إشارة {signum} وتم تجاهلها.")
+        print(f"⏸️ تم استقبال إشارة {signum} وتم تجاهلها حسب STOP_POLICY=ignore.")
         return
 
     if STOP_POLICY == "debounce":
         if (now - _last_stop_signal_ts) <= STOP_DEBOUNCE_WINDOW_SEC:
             _stop_flag = True
-            msg = "⏹️ تم تأكيد إيقاف البوت بعد إشارة ثانية."
+            msg = "⏹️ تم تأكيد إيقاف البوت بعد إشارة ثانية ضمن النافذة (debounce)."
             print(msg)
-            tg_info(msg, silent=True)
+            tg_info(msg, disable_notification=True)
         else:
             _last_stop_signal_ts = now
             msg = f"⚠️ استلمت إشارة إيقاف. لن يتم الإيقاف إلا إذا وصلت إشارة ثانية خلال {STOP_DEBOUNCE_WINDOW_SEC}ث."
             print(msg)
-            tg_info(msg, silent=True)
+            tg_info(msg, disable_notification=True)
         return
 
     _stop_flag = True
-    tg_info("⏹️ تم استلام إشارة إيقاف — جاري الإنهاء بهدوء…", silent=True)
+    try:
+        tg_info("⏹️ تم استلام إشارة إيقاف — جاري الإنهاء بهدوء…", silent=True)
+    except Exception:
+        pass
 
 try:
     signal.signal(signal.SIGINT, _handle_stop)
@@ -130,6 +135,7 @@ def _now_riyadh():
     return datetime.now(RIYADH_TZ)
 
 def _get_open_positions_count_safe():
+    """يرجع عدد الصفقات المفتوحة من الاستراتيجية (مع fallback بسيط)."""
     try:
         return int(count_open_positions())
     except Exception:
@@ -139,111 +145,163 @@ def _get_open_positions_count_safe():
             return 0
 
 def _can_open_new_position(current_open: int) -> bool:
+    """يقرّر محليًا إن كنا نسمح بإشارات شراء جديدة بناءً على override فقط."""
     if MAX_OPEN_POSITIONS_OVERRIDE is None:
         return True
     return current_open < int(MAX_OPEN_POSITIONS_OVERRIDE)
 
-# ================== مهام Async ==================
-async def _scan_one_symbol(symbol: str, sem: asyncio.Semaphore):
-    async with sem:
-        try:
-            if load_position(symbol) is not None:
-                return
-            sig = check_signal(symbol)
-            is_buy = (sig == "buy") or (isinstance(sig, dict) and str(sig.get("decision", "")).lower() == "buy")
-            if is_buy:
-                order, msg = execute_buy(symbol)
-                if msg:
-                    if _is_error_text(msg):
-                        if SEND_ERRORS_TO_TELEGRAM: tg_error(msg)
-                    else:
-                        tg_info(msg)
-            else:
-                try:
-                    _, reasons = check_signal_debug(symbol)
-                    if reasons:
-                        print(f"[debug] {symbol} reject reasons: {reasons[:5]}")
-                except Exception:
-                    pass
-        except Exception as e:
-            print(f"[scan_one] {symbol} error: {e}")
-
-async def scan_symbols_round(symbols):
-    reset_cycle_cache()
-    sem = asyncio.Semaphore(MAX_CONCURRENCY)
-    tasks = [asyncio.wait_for(_scan_one_symbol(sym, sem), timeout=TASK_TIMEOUT_SEC) for sym in symbols]
-    await asyncio.gather(*tasks, return_exceptions=True)
-
-async def manage_positions_round(symbols):
-    for symbol in symbols:
-        try:
-            closed = manage_position(symbol)
-            if closed:
-                print(f"[manage] {symbol} closed by TP/SL/TIME")
-        except Exception as e:
-            print(f"[manage] {symbol} error: {e}")
-        await asyncio.sleep(0)
-
 # ================== الحلقة الرئيسية ==================
-async def main_loop():
+if __name__ == "__main__":
+    # بدء كاش الأسعار الجماعي (طلب واحد كل عدة ثوانٍ) إن توفر
     if _HAS_CACHE:
         try:
             start_tickers_cache(period=int(os.getenv("OKX_CACHE_PERIOD", "3")), usdt_only=True)
         except Exception:
             pass
 
-    tg_info(f"🚀 تشغيل البوت — {len(SYMBOLS)} رمز | HTF={STRAT_HTF_TIMEFRAME} / LTF={STRAT_LTF_TIMEFRAME} ✅", silent=True)
+    # معلومات بدء مع عرض الإطارات الزمنية الفعلية
+    try:
+        tg_info(
+            f"🚀 تشغيل البوت — {len(SYMBOLS)} رمز | HTF={STRAT_HTF_TIMEFRAME} / LTF={STRAT_LTF_TIMEFRAME} ✅",
+            silent=True
+        )
+    except Exception:
+        print("🚀 تشغيل البوت")
 
     last_scan_ts   = 0.0
     last_manage_ts = 0.0
     last_report_day = None
 
-    await asyncio.sleep(random.uniform(0.5, 1.5))
+    # Jitter أولي لتوزيع الأحمال إذا كان لديك أكثر من عملية
+    time.sleep(random.uniform(0.5, 1.5))
 
     try:
         while True:
             if _stop_flag and STOP_POLICY in ("immediate", "debounce"):
                 break
+
             now = time.time()
 
-            if now - last_scan_ts >= SCAN_INTERVAL_SEC:
+            # 1) فحص إشارات الدخول — مع "كاش الدورة"
+            if now - last_scan_ts >= SCAN_INTERVAL_SEC + random.uniform(-2, 2):
                 try:
-                    await scan_symbols_round(SYMBOLS)
-                    maybe_emit_reject_summary()
-                except Exception as e:
-                    tg_error(f"[scan] error:\n{traceback.format_exc()}")
+                    # 🔑 النقطة الأساسية: مسح كاش OHLCV للدورة الحالية مرة واحدة
+                    reset_cycle_cache()
+
+                    open_positions_count = _get_open_positions_count_safe()
+
+                    for symbol in SYMBOLS:
+                        if _stop_flag and STOP_POLICY in ("immediate", "debounce"):
+                            break
+
+                        if not _can_open_new_position(open_positions_count):
+                            break
+
+                        try:
+                            if load_position(symbol) is not None:
+                                continue
+                        except Exception:
+                            pass
+
+                        try:
+                            sig = check_signal(symbol)
+                        except Exception as e:
+                            if not MUTE_NOISEY_ALERTS and SEND_ERRORS_TO_TELEGRAM:
+                                tg_error(f"⚠️ check_signal خطأ في {symbol}:\n{e}")
+                            else:
+                                print(f"[check_signal] {symbol} error: {e}")
+                            continue
+
+                        is_buy = (sig == "buy") or (isinstance(sig, dict) and str(sig.get("decision", "")).lower() == "buy")
+
+                        if is_buy:
+                            try:
+                                order, msg = execute_buy(symbol)
+                                if msg:
+                                    if _is_error_text(msg):
+                                        if SEND_ERRORS_TO_TELEGRAM: tg_error(msg)
+                                    else:
+                                        tg_info(msg)
+                                open_positions_count = _get_open_positions_count_safe()
+                            except Exception as e:
+                                if SEND_ERRORS_TO_TELEGRAM:
+                                    tg_error(f"❌ فشل تنفيذ شراء {symbol}:\n{e}")
+                                else:
+                                    print(f"[execute_buy] {symbol} error: {e}")
+                                continue
+                        else:
+                            try:
+                                _, reasons = check_signal_debug(symbol)
+                                if reasons:
+                                    print(f"[debug] {symbol} reject reasons: {reasons[:5]}")
+                            except Exception:
+                                pass
+
+                        # مهلة قصيرة بين الرموز (لا تحجب الكاش؛ مجرد تهدئة)
+                        time.sleep(0.15)
+
+                    try:
+                        maybe_emit_reject_summary()
+                    except Exception:
+                        pass
+
+                except Exception:
+                    if SEND_ERRORS_TO_TELEGRAM:
+                        tg_error(f"⚠️ خطأ عام أثناء فحص الإشارات:\n{traceback.format_exc()}")
+                    else:
+                        print(f"[scan] general error:\n{traceback.format_exc()}")
                 finally:
                     last_scan_ts = now
 
+            # 2) إدارة الصفقات المفتوحة
             if now - last_manage_ts >= MANAGE_INTERVAL_SEC:
                 try:
-                    await manage_positions_round(SYMBOLS)
+                    for symbol in SYMBOLS:
+                        if _stop_flag and STOP_POLICY in ("immediate", "debounce"):
+                            break
+                        try:
+                            closed = manage_position(symbol)
+                            if closed:
+                                print(f"[manage] {symbol} closed by TP/SL/TIME")
+                        except Exception as e:
+                            if not MUTE_NOISEY_ALERTS and SEND_ERRORS_TO_TELEGRAM:
+                                tg_error(f"⚠️ خطأ إدارة {symbol}:\n{e}")
+                            else:
+                                print(f"[manage_position] {symbol} error: {e}")
+                        time.sleep(0.1)
                 except Exception:
-                    tg_error(f"[manage] error:\n{traceback.format_exc()}")
+                    if SEND_ERRORS_TO_TELEGRAM:
+                        tg_error(f"⚠️ خطأ عام أثناء إدارة الصفقات:\n{traceback.format_exc()}")
+                    else:
+                        print(f"[manage] general error:\n{traceback.format_exc()}")
                 finally:
                     last_manage_ts = now
 
+            # 3) تقرير يومي تلقائي (23:58 الرياض افتراضيًا)
             if ENABLE_DAILY_REPORT:
                 try:
                     now_r = _now_riyadh()
                     day_key = now_r.strftime("%Y-%m-%d")
                     if (now_r.hour == DAILY_REPORT_HOUR and now_r.minute >= DAILY_REPORT_MINUTE) and (last_report_day != day_key):
-                        report = build_daily_report_text()
-                        if report:
-                            tg_info(report, parse_mode="HTML", silent=True)
+                        try:
+                            report = build_daily_report_text()
+                            if report:
+                                tg_info(report, parse_mode="HTML", silent=True)
+                        except Exception as e:
+                            print(f"[daily_report] build error: {e}")
                         last_report_day = day_key
                 except Exception:
                     pass
 
-            await asyncio.sleep(LOOP_SLEEP_SEC)
+            time.sleep(LOOP_SLEEP_SEC)
+
     finally:
         if _HAS_CACHE:
-            try: stop_tickers_cache()
-            except Exception: pass
+            try:
+                stop_tickers_cache()
+            except Exception:
+                pass
         if _stop_flag and STOP_POLICY in ("immediate", "debounce"):
             tg_info("🛑 تم إيقاف البوت — إلى اللقاء.", silent=True)
         else:
             print("🟢 انتهت الحلقة بدون إيقاف مؤكد.")
-
-if __name__ == "__main__":
-    asyncio.run(main_loop())
