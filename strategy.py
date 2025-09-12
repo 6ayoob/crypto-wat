@@ -1,27 +1,27 @@
 # -*- coding: utf-8 -*-
 """
-strategy.py — استراتيجيات متعددة + تحسينات:
-- #old: Hybrid كلاسيكي مع فلترة SR محسّنة
-- #new: Scalp متكّف بالـ ATR + Regime-aware + TP1 ذكي
-- #srr: Sweep & Reclaim
-- #brt: Break & Retest
-- #vbr: VWAP-Band Reversion
+strategy.py — Spot Only — استراتيجيات متعددة + تحسينات أداء/متانة/مرونة
 
-الجديد في هذه النسخة:
-- EMA200 كفلتر ترند اختياري (سعر>EMA200 و EMA50>EMA200).
-- دخول اختياري عند Golden Cross (تقاطع EMA50↑ فوق EMA200) مع شروط حجم/ATR/SR.
-- شرط المسافة عن EMA50 أصبح ديناميكيًا حسب نمط الدخول.
+يشمل:
+- كاش HTF مع TTL و"تحديث مبكّر" عند تغيّر السوق
+- كاش OHLCV لدورة الفحص لتقليل استدعاءات API
+- retry/backoff لاستدعاءات الشبكة (fetch_*/place_order)
+- مخاطرة ديناميكية كنسبة من الرصيد (Spot)
+- تحميل SR levels من ملف JSON اختياري
+- فحص سيولة أدق عبر turnover rolling
+- Trailing SL محسّن باستخدام دعم/مقاومة ديناميكي
+- Docstrings مختصرة + إشعارات تيليجرام أغنى
 
-واجهات مطلوبة من main.py:
+واجهات مطلوبة من main/bot:
 - check_signal(symbol)
 - execute_buy(symbol), manage_position(symbol), close_trade(symbol, exit_price, pnl_net), build_daily_report_text()
 
 يعتمد على okx_api: fetch_ohlcv, fetch_price, place_market_order, fetch_balance
-وعلى config: TRADE_AMOUNT_USDT, MAX_OPEN_POSITIONS, SYMBOLS, FEE_BPS_ROUNDTRIP, TELEGRAM_TOKEN, TELEGRAM_CHAT_ID,
-             STRAT_LTF_TIMEFRAME, STRAT_HTF_TIMEFRAME
+وعلى config: TRADE_AMOUNT_USDT, MAX_OPEN_POSITIONS, SYMBOLS, FEE_BPS_ROUNDTRIP,
+             TELEGRAM_TOKEN, TELEGRAM_CHAT_ID, STRAT_LTF_TIMEFRAME, STRAT_HTF_TIMEFRAME
 """
 
-import os, json, requests, logging
+import os, json, requests, logging, time
 from datetime import datetime, timedelta, timezone
 from typing import Optional, Tuple, Dict, Any, List
 import pandas as pd
@@ -88,6 +88,10 @@ USE_EMA200_TREND_FILTER   = os.getenv("USE_EMA200_TREND_FILTER", "1").lower() in
 ENABLE_GOLDEN_CROSS_ENTRY = os.getenv("ENABLE_GOLDEN_CROSS_ENTRY", "1").lower() in ("1","true","yes","y")
 GOLDEN_CROSS_RVOL_BOOST   = float(os.getenv("GOLDEN_CROSS_RVOL_BOOST", "1.10"))  # 1.10 = تشديد 10%
 
+# Spot only (لا دعم للشورت)
+# تأكد من INST_TYPE=SPOT في بيئة المشروع ومولّد الرموز.
+# لا يوجد أي منطق mirrored للـ short هنا.
+
 # تتبُّع
 _LAST_REJECT: Dict[str, Any] = {}
 _LAST_ENTRY_BAR_TS: Dict[str, int] = {}
@@ -95,12 +99,51 @@ _SYMBOL_LAST_TRADE_AT: Dict[str, datetime] = {}
 
 # كاش HTF
 _HTF_CACHE: Dict[str, Dict[str, Any]] = {}
-_HTF_TTL_SEC = 150
+_HTF_TTL_SEC = int(os.getenv("HTF_CACHE_TTL_SEC", "180"))
+_HTF_EARLY_REFRESH_ATR_MULT = float(os.getenv("HTF_EARLY_REFRESH_ATR_MULT", "1.5"))
+
+# كاش للدورة الواحدة لتجميع طلبات OHLCV
+_OHLCV_CACHE: Dict[tuple, list] = {}
+
+def reset_cycle_cache():
+    """مسح كاش OHLCV — نادِها في بداية كل دورة فحص بالـ bot/main."""
+    _OHLCV_CACHE.clear()
+
+def get_ohlcv_cached(symbol: str, tf: str, bars: int) -> list:
+    key = (symbol, tf, bars)
+    if key in _OHLCV_CACHE:
+        return _OHLCV_CACHE[key]
+    data = api_fetch_ohlcv(symbol, tf, bars)
+    if data:
+        _OHLCV_CACHE[key] = data
+    return data
+
+# ================== Retry / Backoff ==================
+def retry(backoff=0.6, tries=3, exceptions=(Exception,)):
+    def deco(fn):
+        def wrapper(*a, **k):
+            delay = backoff
+            for i in range(tries):
+                try:
+                    return fn(*a, **k)
+                except exceptions as e:
+                    if i == tries - 1:
+                        logger.exception("Retry failed in %s: %s", fn.__name__, e)
+                        raise
+                    logger.warning("Retry %s/%s for %s: %s", i + 1, tries, fn.__name__, e)
+                    time.sleep(delay); delay *= 2
+        return wrapper
+    return deco
+
+api_fetch_ohlcv       = retry()(fetch_ohlcv)
+api_fetch_price       = retry()(fetch_price)
+api_place_market_order= retry()(place_market_order)
+api_fetch_balance     = retry()(fetch_balance)
 
 # ================== إعدادات النسخ ==================
 BASE_CFG = {
     "ENTRY_MODE": "hybrid",
-    "HYBRID_ORDER": ["pullback","breakout"],
+    "HYBRID_ORDER": ["breakout","pullback"],
     "PULLBACK_VALUE_REF": "ema21",
     "PULLBACK_CONFIRM": "bullish_engulf",
 
@@ -211,6 +254,16 @@ SR_LEVELS_CFG = [
     ("meso",  "1h",  50, 1.0),
     ("macro", "4h",  50, 1.3),
 ]
+# تحميل SR levels من ملف JSON اختياري
+try:
+    cfg_path = os.getenv("SR_LEVELS_FILE", "sr_levels.json")
+    if os.path.exists(cfg_path):
+        with open(cfg_path, "r", encoding="utf-8") as f:
+            obj = json.load(f)
+            SR_LEVELS_CFG = [(x["name"], x["tf"], int(x["window"]), float(x["near_mult"])) for x in obj]
+            logger.info("SR levels loaded from %s", cfg_path)
+except Exception as e:
+    logger.warning("SR levels external load failed: %s", e)
 
 # ================== Helpers ==================
 def _tg(text, parse_mode="HTML"):
@@ -220,9 +273,9 @@ def _tg(text, parse_mode="HTML"):
         url = f"https://api.telegram.org/bot{TELEGRAM_TOKEN}/sendMessage"
         data = {"chat_id": TELEGRAM_CHAT_ID, "text": text}
         if parse_mode: data["parse_mode"] = parse_mode
-        requests.post(url, data=data, timeout=10)
+        requests.post(url, data=data, timeout=6)
     except Exception:
-        pass
+        return
 
 def now_riyadh(): return datetime.now(RIYADH_TZ)
 def _today_str(): return now_riyadh().strftime("%Y-%m-%d")
@@ -250,6 +303,14 @@ def _df(data):
     except Exception:
         pass
     return df
+
+def _tf_minutes(tf: str) -> int:
+    if not tf: return 5
+    tf = str(tf).lower().strip()
+    if tf.endswith("m"): return int(tf[:-1] or 5)
+    if tf.endswith("h"): return int(tf[:-1] or 1) * 60
+    if tf.endswith("d"): return int(tf[:-1] or 1) * 60 * 24
+    return 5
 
 def _split_symbol_variant(symbol: str):
     if "#" in symbol:
@@ -412,8 +473,8 @@ def recent_swing(df, lookback=60):
     if pd.isna(hhv) or pd.isna(llv) or hhv <= llv: return None, None
     return float(hhv), float(llv)
 
-def _rolling_sr(symbol, tf: str, window: int, bars: int = 300):
-    data = fetch_ohlcv(symbol, tf, bars)
+def _rolling_sr(symbol: str, tf: str, window: int, bars: int = 300):
+    data = get_ohlcv_cached(symbol, tf, bars)
     if not data: return None, None
     df = _df(data)
     if len(df) < window + 3: return None, None
@@ -438,7 +499,7 @@ def get_sr_multi(symbol: str):
 
 # ===== MACD/RSI Gate =====
 def macd_rsi_gate(prev_row, closed_row, policy):
-    if not policy:  # None → بوابة متوقفة
+    if not policy:
         return True
     rsi_now = float(closed_row.get("rsi", 50.0))
     rsi_up  = rsi_now > float(prev_row.get("rsi", rsi_now))
@@ -457,6 +518,15 @@ def macd_rsi_gate(prev_row, closed_row, policy):
     return k >= 2  # balanced
 
 # ================== HTF سياق ==================
+def _htf_early_refresh_needed(ctx: Dict[str, Any], last_price: float, atr_est: float) -> bool:
+    try:
+        if not ctx or not atr_est: return False
+        ema = float(ctx.get("ema50_now") or 0.0)
+        if ema <= 0: return False
+        return abs(last_price - ema) > _HTF_EARLY_REFRESH_ATR_MULT * atr_est
+    except Exception:
+        return False
+
 def _get_htf_context(symbol):
     base, _ = _split_symbol_variant(symbol)
     now = now_riyadh()
@@ -464,16 +534,20 @@ def _get_htf_context(symbol):
     if ent and (now - ent["t"]).total_seconds() <= _HTF_TTL_SEC:
         return ent["ctx"]
 
-    data = fetch_ohlcv(base, HTF_TIMEFRAME, 200)
+    data = get_ohlcv_cached(base, HTF_TIMEFRAME, 200)
     if not data: return None
-    df = _df(data); df["ema50_htf"] = ema(df["close"], HTF_EMA_TREND_PERIOD)
-    if len(df) < HTF_SR_WINDOW + 3: return None
+    df = _df(data)
+    if len(df) < max(HTF_SR_WINDOW + 3, HTF_EMA_TREND_PERIOD + 5):
+        return None
+    df["ema50_htf"] = ema(df["close"], HTF_EMA_TREND_PERIOD)
     df_prev = df.iloc[:-2]; w = min(HTF_SR_WINDOW, len(df_prev))
-    resistance = df_prev["high"].rolling(w).max().iloc[-1]
-    support    = df_prev["low"].rolling(w).min().iloc[-1]
+    resistance = df_prev["high"].rolling(w, min_periods=max(5, w//3 or 1)).max().iloc[-1]
+    support    = df_prev["low"].rolling(w,  min_periods=max(5, w//3 or 1)).min().iloc[-1]
     closed = df.iloc[-2]
-    ema_now  = float(closed["ema50_htf"])
+    ema_now  = float(closed.get("ema50_htf", np.nan))
     ema_prev = float(df["ema50_htf"].iloc[-7]) if len(df) >= 7 else ema_now
+    if np.isnan(ema_now) or np.isnan(ema_prev) or pd.isna(resistance) or pd.isna(support):
+        return None
 
     ctx: Dict[str, Any] = {"close": float(closed["close"]), "ema50_now": ema_now, "ema50_prev": ema_prev,
            "support": float(support), "resistance": float(resistance), "mtf": {}}
@@ -481,7 +555,7 @@ def _get_htf_context(symbol):
     if ENABLE_MTF_STRICT:
         def _tf_info(tf, bars=160):
             try:
-                d = fetch_ohlcv(base, tf, bars)
+                d = get_ohlcv_cached(base, tf, bars)
                 if not d or len(d) < 80: return None
                 _dfx = _df(d); _dfx[f"ema{HTF_EMA_TREND_PERIOD}"] = ema(_dfx["close"], HTF_EMA_TREND_PERIOD)
                 row = _dfx.iloc[-2]
@@ -544,6 +618,10 @@ def _opportunity_score(df, prev, closed):
 
 # ================== NEW/SRR — متكّيف بالـ ATR + EMA200 + GoldenCross ==================
 def check_signal_new(symbol):
+    """Return a buy decision dict or None.
+    Args: symbol (str): 'BTC/USDT#new' (النسخة بعد # اختيارية).
+    Returns: dict|None: {"decision":"buy","score":...} أو None إذا لا إشارة.
+    """
     ok, reason = _risk_precheck_allow_new_entry()
     if not ok: return _rej("risk_precheck", reason=reason)
 
@@ -561,7 +639,7 @@ def check_signal_new(symbol):
     if not ((ctx["ema50_now"] - ctx["ema50_prev"]) > 0 and ctx["close"] > ctx["ema50_now"]):
         return _rej("htf_trend")
 
-    data = fetch_ohlcv(base, LTF_TIMEFRAME, 260)
+    data = get_ohlcv_cached(base, LTF_TIMEFRAME, 260)
     if not data: return _rej("ltf_fetch")
     df = _df(data); df = _ensure_ltf_indicators(df)
     if len(df) < 200: return _rej("ltf_len", n=len(df))  # نحتاج EMA200 أيضًا
@@ -573,19 +651,33 @@ def check_signal_new(symbol):
     price = float(closed["close"])
     atr = _atr_from_df(df)
     if not atr or atr <= 0: return _rej("atr_nan")
+    # تحديث HTF مبكّر إذا ابتعد السعر كثيرًا عن EMA50(HTF)
+    if _htf_early_refresh_needed(ctx, price, atr):
+        try:
+            del _HTF_CACHE[base]
+        except Exception:
+            pass
+        ctx = _get_htf_context(symbol) or ctx
+
     atrp = atr / max(price, 1e-9)
     if atrp < float(cfg.get("ATR_MIN_FOR_TREND", 0.002)): return _rej("atr_low", atrp=round(atrp,5))
 
-    notional = price * float(closed["volume"])
-    if notional < 60000: return _rej("notional_low", notional=int(notional))
-
-    rvol = float(closed.get("rvol", 0) or 0)
-    need_rvol = float(cfg.get("RVOL_MIN", 1.2)) * 0.95
-    if pd.isna(rvol) or rvol < need_rvol: return _rej("rvol", rvol=round(rvol,2), need=round(need_rvol,2))
+    # سيولة بالدولار: متوسط 10 شموع (close*volume)
+    try:
+        turnover = (df["close"] * df["volume"]).rolling(10).mean().iloc[-2]
+    except Exception:
+        turnover = price * float(closed.get("volume", 0.0))
+    MIN_TURNOVER_USD = float(os.getenv("MIN_TURNOVER_USD", "80000"))
+    if not turnover or turnover < MIN_TURNOVER_USD:
+        return _rej("turnover_low", usd=int(turnover or 0))
 
     # فلتر ترند EMA200 (اختياري)
     if USE_EMA200_TREND_FILTER:
-        if not (float(closed.get("ema50", price)) > float(closed.get("ema200", price)) and price > float(closed.get("ema200", price))):
+        ema50_v = float(closed.get("ema50", np.nan))
+        ema200_v = float(closed.get("ema200", np.nan))
+        if np.isnan(ema50_v) or np.isnan(ema200_v):
+            return _rej("ema200_nan")
+        if not (ema50_v > ema200_v and price > ema200_v):
             return _rej("ema200_trend")
 
     # اختيار النمط الأساسي
@@ -613,11 +705,13 @@ def check_signal_new(symbol):
     golden_cross_ok = False
     if ENABLE_GOLDEN_CROSS_ENTRY:
         try:
-            prev50, prev200 = float(prev["ema50"]), float(prev["ema200"])
-            now50, now200 = float(closed["ema50"]), float(closed["ema200"])
-            golden_cross_ok = (prev50 <= prev200) and (now50 > now200) and (price > now50)
-            # تشديد بسيط: RVOL و ATR لازالوا معتبرين
-            if golden_cross_ok and rvol < need_rvol * GOLDEN_CROSS_RVOL_BOOST:
+            prev50, prev200 = float(prev.get("ema50", np.nan)), float(prev.get("ema200", np.nan))
+            now50,  now200  = float(closed.get("ema50", np.nan)), float(closed.get("ema200", np.nan))
+            if not any(np.isnan(x) for x in (prev50, prev200, now50, now200)):
+                golden_cross_ok = (prev50 <= prev200) and (now50 > now200) and (price > now50)
+            else:
+                golden_cross_ok = False
+            if golden_cross_ok and float(closed.get("rvol", 0) or 0) < float(cfg.get("RVOL_MIN", 1.2)) * GOLDEN_CROSS_RVOL_BOOST:
                 golden_cross_ok = False
         except Exception:
             golden_cross_ok = False
@@ -631,6 +725,8 @@ def check_signal_new(symbol):
     # شرط المسافة الديناميكي عن EMA50
     dist = price - float(closed["ema50"])
     dist_atr = dist / atr
+    rvol = float(closed.get("rvol", 0) or 0)
+    need_rvol = float(cfg.get("RVOL_MIN", 1.2)) * 0.95
     if chosen_mode == "pullback":
         lb, ub = 0.15, 2.5
         if rvol >= need_rvol * 1.20:
@@ -646,7 +742,7 @@ def check_signal_new(symbol):
     if not (lb <= dist_atr <= ub):
         return _rej("dist_to_ema50", dist_atr=round(dist_atr,3), lb=lb, ub=ub)
 
-    # نطاقات RSI حسب النمط — بهوامش طفيفة
+    # نطاقات RSI حسب النمط
     rsi_val = float(closed.get("rsi", 50))
     if chosen_mode == "pullback" and not (RSI_MIN_PULLBACK - 3 < rsi_val < RSI_MAX_PULLBACK + 2):
         return _rej("rsi_pullback", rsi=rsi_val)
@@ -663,7 +759,6 @@ def check_signal_new(symbol):
             near_res_any = True; break
     near_res = (res_ltf and (res_ltf - price) < 0.8*atr) or (ctx.get("resistance") and (ctx["resistance"] - price) < 1.2*atr) or near_res_any
     if near_res and chosen_mode != "breakout":
-        # السماح للاختراق فقط لو قريب من مقاومة (منطقي)
         return _rej("near_res_block")
 
     score, why, patt = _opportunity_score(df, prev, closed)
@@ -671,7 +766,6 @@ def check_signal_new(symbol):
     if chosen_mode == "golden_cross":
         patt = "EMA50x200_Golden"
         score += 12
-        # للـ golden cross، لا نُلزم بحد السكور تمامًا، لكن إن كان شديد الانخفاض نرفض
         if score < (SCORE_THRESHOLD - 15):
             return _rej("score_low", score=score)
     else:
@@ -683,19 +777,13 @@ def check_signal_new(symbol):
     return {"decision": "buy", "score": score, "reason": why, "pattern": patt, "ts": ts}
 
 # ================== OLD/SRR/BRT/VBR ==================
-def check_signal_old(symbol):
-    # لإيجاز، نستخدم نفس check_signal_new مع إعدادات النسخة
-    return check_signal_new(symbol)
-
-def check_signal_brt(symbol):
-    # يمكن إبقاء منطق BRT المتخصص، لكن لا بأس بالاعتماد على check_signal_new مع إعداد brt
-    return check_signal_new(symbol)
-
-def check_signal_vbr(symbol):
-    return check_signal_new(symbol)
+def check_signal_old(symbol):  return check_signal_new(symbol)
+def check_signal_brt(symbol):  return check_signal_new(symbol)
+def check_signal_vbr(symbol):  return check_signal_new(symbol)
 
 # ================== Router ==================
 def check_signal(symbol):
+    """Route symbol by variant → return decision dict or None."""
     base, variant = _split_symbol_variant(symbol)
     if variant == "old":
         return check_signal_old(symbol)
@@ -708,6 +796,8 @@ def check_signal(symbol):
     return check_signal_new(symbol)
 
 # ================== SL/TP ==================
+def _mgmt(variant: str): return PER_STRAT_MGMT.get(variant, PER_STRAT_MGMT["new"])
+
 def _compute_sl_tp(entry, atr_val, cfg, variant, symbol=None, df=None, ctx=None, closed=None):
     mg = _mgmt(variant)
     sl = None
@@ -800,6 +890,7 @@ def _compute_sl_tp(entry, atr_val, cfg, variant, symbol=None, df=None, ctx=None,
 
 # ================== تنفيذ الشراء ==================
 def execute_buy(symbol):
+    """Execute a spot BUY if signal exists; returns (order, msg) or (None, reason)."""
     base, variant = _split_symbol_variant(symbol)
 
     if count_open_positions() >= MAX_OPEN_POSITIONS:
@@ -809,7 +900,7 @@ def execute_buy(symbol):
     if load_position(symbol):
         return None, "🚫 لديك صفقة مفتوحة على هذا الرمز/الاستراتيجية."
 
-    ohlcv = fetch_ohlcv(base, LTF_TIMEFRAME, 220)
+    ohlcv = get_ohlcv_cached(base, LTF_TIMEFRAME, 220)
     if not ohlcv:
         return None, "⚠️ فشل جلب بيانات الشموع."
 
@@ -847,14 +938,22 @@ def execute_buy(symbol):
     sig["max_bars_to_tp1"] = 12
 
     price = float(sig["entry"]) if isinstance(sig, dict) else None
-    usdt = float(fetch_balance("USDT") or 0)
-    if usdt < TRADE_AMOUNT_USDT:
+    usdt = float(api_fetch_balance("USDT") or 0)
+    use_dyn = os.getenv("USE_DYNAMIC_RISK", "1").lower() in ("1","true","yes","y")
+    risk_pct = float(os.getenv("RISK_PCT_OF_EQUITY", "0.02"))
+    min_usdt = float(os.getenv("MIN_TRADE_USDT", "10"))
+    max_usdt = float(os.getenv("MAX_TRADE_USDT", "1200"))
+    trade_usdt = TRADE_AMOUNT_USDT
+    if use_dyn:
+        trade_usdt = min(max(usdt * risk_pct, min_usdt), max_usdt)
+
+    if usdt < trade_usdt:
         return None, "🚫 رصيد USDT غير كافٍ."
-    amount = TRADE_AMOUNT_USDT / price
+    amount = trade_usdt / price
     if amount * price < MIN_NOTIONAL_USDT:
         return None, "🚫 قيمة الصفقة أقل من الحد الأدنى."
 
-    order = place_market_order(base, "buy", amount)
+    order = api_place_market_order(base, "buy", amount)
     if not order:
         return None, "⚠️ فشل تنفيذ الصفقة."
 
@@ -897,11 +996,12 @@ def execute_buy(symbol):
 
 # ================== إدارة الصفقة ==================
 def manage_position(symbol):
+    """Manage an open spot position: targets, trailing, time exits, stop-loss."""
     pos = load_position(symbol)
     if not pos: return False
 
     base = pos["symbol"].split("#")[0]
-    current = float(fetch_price(base))
+    current = float(api_fetch_price(base))
     entry   = float(pos["entry_price"])
     amount  = float(pos["amount"])
     targets = pos.get("targets")
@@ -918,7 +1018,7 @@ def manage_position(symbol):
         tf = stop_rule.get("tf")
         tf_map = {"H1": "1h", "H4": "4h", "D1": "1d"}
         tf_fetch = tf_map.get(str(tf).upper(), "4h")
-        data_htf = fetch_ohlcv(base, tf_fetch, 200)
+        data_htf = get_ohlcv_cached(base, tf_fetch, 200)
         if data_htf:
             dfh = _df(data_htf)
             closed = dfh.iloc[-2]
@@ -927,7 +1027,7 @@ def manage_position(symbol):
             except Exception:
                 level = float(pos["stop_loss"])
             if float(closed["close"]) < level:
-                order = place_market_order(base, "sell", amount)
+                order = api_place_market_order(base, "sell", amount)
                 if order:
                     exit_px = float(order.get("average") or order.get("price") or current)
                     pnl_net = (exit_px - entry) * amount - (entry + exit_px) * amount * (FEE_BPS_ROUNDTRIP/10000.0)
@@ -936,14 +1036,15 @@ def manage_position(symbol):
                     except Exception: pass
                     return True
 
-    # (2) خروج زمني لـ TP1
+    # (2) خروج زمني لـ TP1 (يعتمد على فريم LTF الحقيقي)
     max_bars = pos.get("max_bars_to_tp1")
     if max_bars and isinstance(max_bars, int):
         try:
             opened_at = datetime.fromisoformat(pos["opened_at"])
-            bars_passed = int((now_riyadh() - opened_at) // timedelta(minutes=5))
+            bar_minutes = _tf_minutes(LTF_TIMEFRAME)
+            bars_passed = int((now_riyadh() - opened_at) // timedelta(minutes=bar_minutes))
             if bars_passed >= max_bars and not pos["tp_hits"][0]:
-                order = place_market_order(base, "sell", amount)
+                order = api_place_market_order(base, "sell", amount)
                 if order:
                     exit_px = float(order.get("average") or order.get("price") or current)
                     pnl_net = (exit_px - entry) * amount - (entry + exit_px) * amount * (FEE_BPS_ROUNDTRIP/10000.0)
@@ -963,7 +1064,7 @@ def manage_position(symbol):
         try:
             opened_at = datetime.fromisoformat(pos["opened_at"])
             if (now_riyadh() - opened_at) >= timedelta(hours=max_hold_hours):
-                order = place_market_order(base, "sell", amount)
+                order = api_place_market_order(base, "sell", amount)
                 if order:
                     exit_px = float(order.get("average") or order.get("price") or current)
                     pnl_net = (exit_px - entry) * amount - (entry + exit_px) * amount * (FEE_BPS_ROUNDTRIP/10000.0)
@@ -983,7 +1084,7 @@ def manage_position(symbol):
                 if part_qty * current < MIN_NOTIONAL_USDT:
                     part_qty = amount
 
-                order = place_market_order(base, "sell", part_qty)
+                order = api_place_market_order(base, "sell", part_qty)
                 if order:
                     exit_px = float(order.get("average") or order.get("price") or current)
                     pnl_gross = (exit_px - entry) * part_qty
@@ -1015,9 +1116,9 @@ def manage_position(symbol):
                     except Exception:
                         pass
 
-                    # تريلينغ بعد TP2
+                    # تريلينغ بعد TP2 + إعادة تقييم TP النهائي وفق مقاومة أقرب
                     if i >= 1 and pos["amount"] > 0:
-                        data_for_atr = fetch_ohlcv(base, LTF_TIMEFRAME, 140)
+                        data_for_atr = get_ohlcv_cached(base, LTF_TIMEFRAME, 140)
                         if data_for_atr:
                             df_atr = _df(data_for_atr); atr_val = _atr_from_df(df_atr)
                             if atr_val and atr_val > 0:
@@ -1026,15 +1127,37 @@ def manage_position(symbol):
                                     pos["stop_loss"] = float(new_sl); save_position(symbol, pos)
                                     try: _tg(f"🧭 <b>Trailing SL</b> {symbol} → <code>{new_sl:.6f}</code>")
                                     except Exception: pass
+                                # إعادة تقييم هدف أخير
+                                try:
+                                    nearest_res = None
+                                    sr_multi = get_sr_multi(symbol)
+                                    for name, ent in sr_multi.items():
+                                        r = ent.get("resistance")
+                                        if r and r > current:
+                                            nearest_res = r if nearest_res is None else min(nearest_res, r)
+                                    if nearest_res and nearest_res < pos["targets"][-1]:
+                                        pos["targets"][-1] = float(nearest_res)
+                                        save_position(symbol, pos)
+                                        _tg("🎯 تحديث TP النهائي وفق مقاومة جديدة أقرب")
+                                except Exception:
+                                    pass
 
-    # (3b) تريلينغ عام بعد أي TP
+    # (3b) تريلينغ عام بعد أي TP + رفع SL إلى دعم أقرب أعلى من SL
     if mgmt.get("TRAIL_AFTER_TP1") and pos["amount"] > 0 and any(pos.get("tp_hits", [])):
-        data_for_atr = fetch_ohlcv(base, LTF_TIMEFRAME, 140)
+        data_for_atr = get_ohlcv_cached(base, LTF_TIMEFRAME, 140)
         if data_for_atr:
             df_atr = _df(data_for_atr)
             atr_val = _atr_from_df(df_atr)
             if atr_val and atr_val > 0:
                 new_sl = current - mgmt.get("TRAIL_ATR", 1.0) * atr_val
+                try:
+                    sup_ltf, _ = get_sr_on_closed(df_atr, SR_WINDOW)
+                    if sup_ltf and sup_ltf < current:
+                        candidate = float(sup_ltf)
+                        if candidate > new_sl:
+                            new_sl = candidate
+                except Exception:
+                    pass
                 if new_sl > pos["stop_loss"] * (1 + TRAIL_MIN_STEP_RATIO):
                     pos["stop_loss"] = float(new_sl); save_position(symbol, pos)
                     try: _tg(f"🧭 <b>Trailing SL</b> {symbol} → <code>{new_sl:.6f}</code>")
@@ -1043,7 +1166,7 @@ def manage_position(symbol):
     # (4) وقف الخسارة
     if current <= pos["stop_loss"] and pos["amount"] > 0:
         sellable = float(pos["amount"])
-        order = place_market_order(base, "sell", sellable)
+        order = api_place_market_order(base, "sell", sellable)
         if order:
             exit_px = float(order.get("average") or order.get("price") or current)
             pnl_gross = (exit_px - entry) * sellable
@@ -1094,6 +1217,18 @@ def close_trade(symbol, exit_price, pnl_net, reason="MANUAL"):
     save_closed_positions(closed)
     register_trade_result(pnl_net)
     clear_position(symbol)
+
+    # إشعار أغنى
+    try:
+        s = load_risk_state()
+        _tg(
+          "📌 <b>إغلاق صفقة</b>\n"
+          f"رمز: {symbol}\n"
+          f"P/L$: <code>{pnl_net:.2f}</code> | P/L%: <code>{pnl_pct*100:.2f}%</code>\n"
+          f"PnL اليومي: <code>{s.get('daily_pnl',0.0):.2f}$</code> • صفقات اليوم: <code>{s.get('trades_today',0)}</code>"
+        )
+    except Exception:
+        pass
 
 # ================== تقرير يومي ==================
 def _fmt_table(rows, headers):
@@ -1157,6 +1292,7 @@ def build_daily_report_text():
 if __name__ == "__main__":
     if DEBUG_LOG_SIGNALS:
         logger.setLevel("INFO")
+    reset_cycle_cache()
     test = [s if "#" in s else s+"#new" for s in SYMBOLS[:10]]
     for sym in test:
         r = check_signal(sym)
