@@ -229,13 +229,10 @@ if __name__ == "__main__":
                         if is_buy:
                             try:
                                 order, msg = execute_buy(symbol)
-                                # فقط رسائل النجاح للتلغرام (نمنع إرسال الأخطاء)
-                                if msg:
-                                    if _is_error_text(msg):
-                                        if SEND_ERRORS_TO_TELEGRAM:
-                                            tg_error(msg)
-                                    else:
-                                        tg_info(msg)
+                                # 👇 تعديل مهم: لا نُعيد إرسال رسائل النجاح (strategy سترسل إشعاراتها)
+                                # نُرسل فقط رسائل الأخطاء هنا
+                                if msg and _is_error_text(msg):
+                                    tg_error(msg)
                                 # تحديث العدّ من المصدر بعد كل محاولة شراء
                                 open_positions_count = _get_open_positions_count_safe()
                             except Exception as e:
