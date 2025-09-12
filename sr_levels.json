@@ -1,0 +1,5 @@
+[
+  { "name": "micro", "tf": "5m",  "window": 50, "near_mult": 0.8 },
+  { "name": "meso",  "tf": "1h",  "window": 50, "near_mult": 1.0 },
+  { "name": "macro", "tf": "4h",  "window": 50, "near_mult": 1.3 }
+]
