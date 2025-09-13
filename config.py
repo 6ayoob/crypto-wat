@@ -5,6 +5,12 @@ config.py — إعدادات موسّعة متوافقة مع strategy.py / main
 - توزيع الاستراتيجيات (#new/#old/#srr/#brt/#vbr) على أعلى الرموز سيولة
 - مفاتيح تيليغرام و OKX تُقرأ من متغيرات البيئة (لا مفاتيح صريحة في الكود)
 - إطارات زمنية قابلة للتهيئة وتُقرأ من البيئة
+
+التعديلات الافتراضية (يمكن تغييرها عبر ENV):
+- STRAT_HTF_TIMEFRAME = "1h"  (كان 15m)
+- TARGET_SYMBOLS_COUNT = 60   (كان 100)
+- MIN_USDT_VOL_24H = 5_000_000$  (كان 1_000_000$)
+- توزيع الاستراتيجيات: old=10, srr=40, brt=10, vbr=40
 """
 
 import os, time, random, re
@@ -25,8 +31,8 @@ OKX_PASSPHRASE   = os.getenv("OKX_PASSPHRASE", "")
 # ===============================
 # ⏱ إطارات زمنية تستخدمها الاستراتيجية
 # ===============================
-STRAT_HTF_TIMEFRAME = os.getenv("HTF_TIMEFRAME", "15m")  # إطار السياق (HTF)
-STRAT_LTF_TIMEFRAME = os.getenv("LTF_TIMEFRAME", "5m")   # إطار التنفيذ (LTF)
+STRAT_HTF_TIMEFRAME = os.getenv("HTF_TIMEFRAME", "1h")  # إطار السياق (HTF) — أنعم وأقل رفض HTF
+STRAT_LTF_TIMEFRAME = os.getenv("LTF_TIMEFRAME", "5m")  # إطار التنفيذ (LTF)
 
 # ===============================
 # 📈 الرموز — قائمة بذور (سيتم فلترتها/تكميلها تلقائيًا)
@@ -69,13 +75,13 @@ FEE_BPS_ROUNDTRIP = float(os.getenv("FEE_BPS_ROUNDTRIP", "16"))
 # ⚙️ خيارات التوسيع التلقائي + الطباعة
 # ===============================
 AUTO_EXPAND_SYMBOLS     = bool(int(os.getenv("AUTO_EXPAND_SYMBOLS", "1")))
-TARGET_SYMBOLS_COUNT    = int(os.getenv("TARGET_SYMBOLS_COUNT", "100"))
-DEBUG_CONFIG_SYMBOLS    = bool(int(os.getenv("DEBUG_CONFIG_SYMBOLS", "1")))  # افتراضيًا مفعّل ليريك القائمة
-PRINT_SYMBOLS_ON_IMPORT = bool(int(os.getenv("PRINT_SYMBOLS_ON_IMPORT", "0")))  # اطبع القائمة فور الاستيراد
+TARGET_SYMBOLS_COUNT    = int(os.getenv("TARGET_SYMBOLS_COUNT", "60"))   # ← كان 100
+DEBUG_CONFIG_SYMBOLS    = bool(int(os.getenv("DEBUG_CONFIG_SYMBOLS", "1")))  # اطبع موجزًا عن القائمة
+PRINT_SYMBOLS_ON_IMPORT = bool(int(os.getenv("PRINT_SYMBOLS_ON_IMPORT", "0")))  # اطبع القائمة كاملة عند الاستيراد
 
 # === فلترة/سيولة قابلة للتهيئة ===
 ALLOWED_QUOTE    = os.getenv("ALLOWED_QUOTE", "USDT").upper()
-MIN_USDT_VOL_24H = float(os.getenv("MIN_USDT_VOL_24H", "1000000"))  # 1M$
+MIN_USDT_VOL_24H = float(os.getenv("MIN_USDT_VOL_24H", "5000000"))  # ← كان 1M
 
 # ✅ استبعاد يعتمد على BASE فقط
 EXCLUDE_BASE_REGEX = os.getenv("EXCLUDE_BASE_REGEX", r"(TEST|IOU)")
@@ -226,12 +232,12 @@ if DEBUG_CONFIG_SYMBOLS:
 # 🎯 توزيع الاستراتيجيات على أعلى الرموز سيولة
 # (يضيف نسخ #old/#srr/#brt/#vbr لأعلى N رموز — والباقي يظل #new)
 # ===============================
-ENABLE_OLD_FOR_TOP_N = int(os.getenv("ENABLE_OLD_FOR_TOP_N", "20"))
-ADD_SRR_TOP_N        = int(os.getenv("ADD_SRR_TOP_N", "15"))
-ADD_BRT_TOP_N        = int(os.getenv("ADD_BRT_TOP_N", "15"))
-ADD_VBR_TOP_N        = int(os.getenv("ADD_VBR_TOP_N", "15"))
+ENABLE_OLD_FOR_TOP_N = int(os.getenv("ENABLE_OLD_FOR_TOP_N", "10"))  # ← كان 20
+ADD_SRR_TOP_N        = int(os.getenv("ADD_SRR_TOP_N", "40"))         # ← كان 15
+ADD_BRT_TOP_N        = int(os.getenv("ADD_BRT_TOP_N", "10"))         # ← كان 15
+ADD_VBR_TOP_N        = int(os.getenv("ADD_VBR_TOP_N", "40"))         # ← كان 15
 
-# خيار اختياري لاستخدام استراتيجية SR/RSI فقط لاحقًا (لو فعّلتها في strategy.py)
+# خيار اختياري لاستخدام استراتيجية SR/RSI لاحقًا (لو فعّلتها في strategy.py)
 ADD_SR_TOP_N         = int(os.getenv("ADD_SR_TOP_N", "0"))  # افتراضيًا 0 حتى لا تُنشئ #sr بدون دعم
 
 _final_symbols: List[str] = []
