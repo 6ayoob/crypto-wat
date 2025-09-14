@@ -1,4 +1,4 @@
-# main.py — Sync loop (15m/5m) with per-round cache + perf metrics + breadth short-circuit
+# main.py — Sync loop (15m/5m) with per-round cache + perf metrics + breadth status
 import os
 import time
 import random
@@ -15,24 +15,11 @@ from config import TELEGRAM_TOKEN, TELEGRAM_CHAT_ID, SYMBOLS, STRAT_LTF_TIMEFRAM
 from strategy import (
     check_signal, execute_buy, manage_position, load_position,
     count_open_positions, build_daily_report_text,
-    reset_cycle_cache, metrics_snapshot, metrics_format
+    reset_cycle_cache, metrics_snapshot, metrics_format,
+    maybe_emit_reject_summary,  # قد تكون موجودة في نسختك
+    check_signal_debug,         # قد تكون موجودة في نسختك
+    breadth_status              # ← جديد: لعرض حالة السِعة
 )
-
-# (اختياري) دوال تشخيص من الاستراتيجية
-try:
-    from strategy import maybe_emit_reject_summary, check_signal_debug  # قد لا تكون متوفرة
-except Exception:
-    def maybe_emit_reject_summary():
-        pass
-    def check_signal_debug(symbol):
-        return None, []
-
-# عرض حالة الـ Breadth لتخطي الجولة عند ضعف السوق
-try:
-    from strategy import breadth_status
-except Exception:
-    def breadth_status():
-        return {"ok": True, "ratio": None, "min": 0.0}
 
 # كاش أسعار جماعي من okx_api لتقليل الضغط (اختياري)
 try:
@@ -45,7 +32,7 @@ except Exception:
 MAX_OPEN_POSITIONS_OVERRIDE = None  # حد محلي لعدد الصفقات (اختياري)
 
 SCAN_INTERVAL_SEC    = int(os.getenv("SCAN_INTERVAL_SEC", "25"))   # فحص إشارات الدخول
-MANAGE_INTERVAL_SEC  = int(os.getenv("MANAGE_INTERVAL_SEC", "10")) # إدارة المراكز (قيمة ابتدائية)
+MANAGE_INTERVAL_SEC  = int(os.getenv("MANAGE_INTERVAL_SEC", "10")) # إدارة المراكز
 LOOP_SLEEP_SEC       = 1.0
 
 ENABLE_DAILY_REPORT  = os.getenv("ENABLE_DAILY_REPORT", "1").lower() in ("1","true","yes")
@@ -59,9 +46,6 @@ SEND_METRICS_TO_TELEGRAM  = os.getenv("SEND_METRICS_TO_TELEGRAM", "0").lower() i
 
 STOP_POLICY = os.getenv("STOP_POLICY", "debounce").lower()  # ignore | debounce | immediate
 STOP_DEBOUNCE_WINDOW_SEC = int(os.getenv("STOP_DEBOUNCE_WINDOW_SEC", "5"))
-
-# كتم طباعة أسباب الرفض الاختيارية
-DEBUG_REJECT_PRINT = os.getenv("DEBUG_REJECT_PRINT", "0").lower() in ("1","true","yes")
 
 RIYADH_TZ = timezone(timedelta(hours=3))
 
@@ -174,10 +158,13 @@ if __name__ == "__main__":
         except Exception:
             pass
 
-    # معلومات بدء مع عرض الإطارات الزمنية الفعلية
+    # معلومات بدء مع عرض الإطارات الزمنية الفعلية + حالة السعة
     try:
+        bs0 = breadth_status()
+        bs_line = f"breadth: {('—' if bs0.get('ratio') is None else f'{bs0['ratio']:.2f}')}, min={bs0.get('min', 0):.2f}, ok={'✅' if bs0.get('ok') else '❌'}"
         tg_info(
-            f"🚀 تشغيل البوت — {len(SYMBOLS)} رمز | HTF={STRAT_HTF_TIMEFRAME} / LTF={STRAT_LTF_TIMEFRAME} ✅",
+            f"🚀 تشغيل البوت — {len(SYMBOLS)} رمز | HTF={STRAT_HTF_TIMEFRAME} / LTF={STRAT_LTF_TIMEFRAME} ✅\n"
+            f"📡 {bs_line}",
             silent=True
         )
     except Exception:
@@ -186,9 +173,6 @@ if __name__ == "__main__":
     last_scan_ts   = 0.0
     last_manage_ts = 0.0
     last_report_day = None
-
-    # متغيّر محلي لإيقاع إدارة الصفقات (قد نعدّله ديناميكياً)
-    manage_interval_sec = MANAGE_INTERVAL_SEC
 
     # Jitter أولي لتوزيع الأحمال إذا كان لديك أكثر من عملية
     time.sleep(random.uniform(0.5, 1.5))
@@ -201,46 +185,12 @@ if __name__ == "__main__":
 
             now = time.time()
 
-            # 1) فحص إشارات الدخول — مع "كاش الدورة" + قياس الأداء
+            # 1) فحص إشارات الدخول — مع "كاش الدورة" + قياس الأداء + حالة السعة
             if now - last_scan_ts >= SCAN_INTERVAL_SEC + random.uniform(-2, 2):
                 t_round_start = perf_counter()
                 try:
                     # 🔑 مسح كاش OHLCV للجولة الحالية مرة واحدة (يصفّر الميتريكس أيضًا)
                     reset_cycle_cache()
-
-                    # فحص حالة الـ Breadth لتخطي الجولة عند ضعف السوق
-                    bs = breadth_status()
-                    if not bs.get("ok", True):
-                        ratio = bs.get("ratio")
-                        minr  = bs.get("min")
-                        if ratio is not None and minr is not None:
-                            print(f"🌫️ Market breadth منخفض ({ratio:.2f} < {minr:.2f}) — تخطي جولة المسح.")
-                        else:
-                            print("🌫️ Market breadth غير متاح/ضعيف — تخطي جولة المسح.")
-                        # إبطاء بسيط عند السوق السيئ (اختياري)
-                        manage_interval_sec = max(manage_interval_sec, 15)
-                        time.sleep(min(10, SCAN_INTERVAL_SEC/2))
-                        last_scan_ts = now
-                        # مخرجات أداء موجزة حتى عند التخطي
-                        try:
-                            t_round_end = perf_counter()
-                            dur_sec = t_round_end - t_round_start
-                            perf_text = (
-                                "⏱️ <b>Round Perf</b>\n"
-                                f"- Duration: <b>{dur_sec:.2f}s</b>\n"
-                                f"- Avg / symbol: <b>—</b>\n"
-                            )
-                            metrics_text = metrics_format()
-                            full_report = perf_text + "\n" + metrics_text
-                            print(full_report)
-                            if SEND_METRICS_TO_TELEGRAM:
-                                tg_info(full_report, parse_mode="HTML", silent=True)
-                        except Exception:
-                            pass
-                        continue
-                    else:
-                        # عودة للإيقاع الافتراضي عندما يتحسن السوق
-                        manage_interval_sec = MANAGE_INTERVAL_SEC
 
                     open_positions_count = _get_open_positions_count_safe()
 
@@ -276,7 +226,8 @@ if __name__ == "__main__":
                         if is_buy:
                             try:
                                 order, msg = execute_buy(symbol)
-                                # نُرسل فقط رسائل الأخطاء هنا (الاستراتيجية سترسل نجاحاتها إن مفعّلة)
+                                # 👇 تعديل مهم: لا نُعيد إرسال رسائل النجاح (strategy سترسل إشعاراتها)
+                                # نُرسل فقط رسائل الأخطاء هنا
                                 if msg and _is_error_text(msg):
                                     tg_error(msg)
                                 # تحديث العدّ من المصدر بعد كل محاولة شراء
@@ -288,14 +239,13 @@ if __name__ == "__main__":
                                     print(f"[execute_buy] {symbol} error: {e}")
                                 continue
                         else:
-                            # طباعة أسباب الرفض فقط عند تفعيل DEBUG_REJECT_PRINT
-                            if DEBUG_REJECT_PRINT:
-                                try:
-                                    _, reasons = check_signal_debug(symbol)
-                                    if reasons:
-                                        print(f"[debug] {symbol} reject reasons: {reasons[:5]}")
-                                except Exception:
-                                    pass
+                            # (اختياري) عندما لا توجد إشارة، نفحص أسباب الرفض (لو الدالة موجودة)
+                            try:
+                                _, reasons = check_signal_debug(symbol)
+                                if reasons:
+                                    print(f"[debug] {symbol} reject reasons: {reasons[:5]}")
+                            except Exception:
+                                pass
 
                         # مهلة قصيرة بين الرموز لتخفيف الضغط
                         time.sleep(0.15)
@@ -306,15 +256,28 @@ if __name__ == "__main__":
                     except Exception:
                         pass
 
-                    # ⏱️ زمن الجولة + متوسط/رمز + ميتريكس الكاش
+                    # ⏱️ زمن الجولة + متوسط/رمز + ميتريكس الكاش + حالة السعة
                     try:
                         t_round_end = perf_counter()
                         dur_sec = t_round_end - t_round_start
                         avg_per_symbol = (dur_sec / max(1, len(SYMBOLS)))
+
+                        # حالة السعة الحالية
+                        bs = {}
+                        try:
+                            bs = breadth_status() or {}
+                        except Exception:
+                            bs = {}
+                        b_ratio = bs.get("ratio")
+                        b_min   = bs.get("min")
+                        b_ok    = bs.get("ok")
+                        b_line  = f"breadth: <b>{'—' if b_ratio is None else f'{b_ratio:.2f}'}</b> | min: <b>{b_min:.2f}</b> | {('✅ OK' if b_ok else '❌ LOW')}"
+
                         perf_text = (
                             "⏱️ <b>Round Perf</b>\n"
                             f"- Duration: <b>{dur_sec:.2f}s</b>\n"
                             f"- Avg / symbol: <b>{avg_per_symbol:.3f}s</b>\n"
+                            f"- {b_line}\n"
                         )
                         metrics_text = metrics_format()
                         full_report = perf_text + "\n" + metrics_text
@@ -333,7 +296,7 @@ if __name__ == "__main__":
                     last_scan_ts = now
 
             # 2) إدارة الصفقات المفتوحة (TP/SL/Trailing)
-            if now - last_manage_ts >= manage_interval_sec:
+            if now - last_manage_ts >= MANAGE_INTERVAL_SEC:
                 t_manage_start = perf_counter()
                 try:
                     for symbol in SYMBOLS:
