@@ -1508,14 +1508,28 @@ def _fmt_table(rows, headers):
 
 def build_daily_report_text():
     """ينشئ نص تقرير يومي مضغوط (HTML) مع ملخص المخاطر وصفقات اليوم)."""
-    closed = load_closed_positions(); today = _today_str()
+    closed = load_closed_positions()
+    today = _today_str()
     todays = [t for t in closed if str(t.get("closed_at", "")).startswith(today)]
     s = load_risk_state()
 
+    # صياغة ذكية لعبارة Auto-Relax
+    hrs = _hours_since_last_signal()
+    if hrs is None:
+        relax_str = "Auto-Relax: لا توجد إشارات بعد."
+    elif hrs >= 72:
+        relax_str = f"Auto-Relax: آخر إشارة منذ ~{hrs/24:.1f}d."
+    else:
+        relax_str = f"Auto-Relax: آخر إشارة منذ ~{hrs:.1f}h."
+
     if not todays:
-        extra = f"\nوضع المخاطر: {'محظور حتى ' + s.get('blocked_until') if s.get('blocked_until') else 'سماح'} • صفقات اليوم: {s.get('trades_today',0)} • PnL اليومي: {s.get('daily_pnl',0.0):.2f}$"
-        hrs = _hours_since_last_signal()
-        return f"📊 <b>تقرير اليوم {today}</b>\nلا توجد صفقات اليوم.{extra}\nAuto-Relax: آخر إشارة منذ ~{hrs:.1f}h."
+        extra = (
+            f"\nوضع المخاطر: "
+            f"{'محظور حتى ' + s.get('blocked_until') if s.get('blocked_until') else 'سماح'} "
+            f"• صفقات اليوم: {s.get('trades_today', 0)} "
+            f"• PnL اليومي: {s.get('daily_pnl', 0.0):.2f}$"
+        )
+        return f"📊 <b>تقرير اليوم {today}</b>\nلا توجد صفقات اليوم.{extra}\n{relax_str}"
 
     total_pnl = sum(float(t.get("profit", 0.0)) for t in todays)
     wins = [t for t in todays if float(t.get("profit", 0.0)) > 0]
@@ -1526,35 +1540,37 @@ def build_daily_report_text():
     for t in todays:
         tp_hits = []
         for i in range(1, 8):
-            if t.get(f"tp{i}_hit"): tp_hits.append(f"T{i}")
+            if t.get(f"tp{i}_hit"):
+                tp_hits.append(f"T{i}")
         tp_str = ",".join(tp_hits) if tp_hits else "-"
-
         rows.append([
-            t.get("symbol","-"),
-            f"{float(t.get('amount',0)):, .6f}".replace(' ', ''),
-            f"{float(t.get('entry_price',0)):, .6f}".replace(' ', ''),
-            f"{float(t.get('exit_price',0)):, .6f}".replace(' ', ''),
-            f"{float(t.get('profit',0)):, .2f}".replace(' ', ''),
-            f"{round(float(t.get('pnl_pct',0))*100,2)}%",
-            str(t.get("score","-")),
-            t.get("pattern","-"),
-            (t.get("entry_reason", t.get('reason','-'))[:40] + ("…" if len(t.get("entry_reason", t.get('reason','')))>40 else "")),
+            t.get("symbol", "-"),
+            f"{float(t.get('amount', 0)):, .6f}".replace(' ', ''),
+            f"{float(t.get('entry_price', 0)):, .6f}".replace(' ', ''),
+            f"{float(t.get('exit_price', 0)):, .6f}".replace(' ', ''),
+            f"{float(t.get('profit', 0)):, .2f}".replace(' ', ''),
+            f"{round(float(t.get('pnl_pct', 0)) * 100, 2)}%",
+            str(t.get("score", "-")),
+            t.get("pattern", "-"),
+            (t.get("entry_reason", t.get('reason', '-'))[:40] + ("…" if len(t.get("entry_reason", t.get('reason', ''))) > 40 else "")),
             tp_str,
-            t.get("reason","-")
+            t.get("reason", "-")
         ])
 
     table = _fmt_table(rows, headers)
 
-    risk_line = f"وضع المخاطر: {'محظور حتى ' + s.get('blocked_until') if s.get('blocked_until') else 'سماح'} • " \
-                f"اليومي: <b>{s.get('daily_pnl',0.0):.2f}$</b> • " \
-                f"متتالية خسائر: <b>{s.get('consecutive_losses',0)}</b> • " \
-                f"صفقات اليوم: <b>{s.get('trades_today',0)}</b>"
+    risk_line = (
+        f"وضع المخاطر: "
+        f"{'محظور حتى ' + s.get('blocked_until') if s.get('blocked_until') else 'سماح'} • "
+        f"اليومي: <b>{s.get('daily_pnl', 0.0):.2f}$</b> • "
+        f"متتالية خسائر: <b>{s.get('consecutive_losses', 0)}</b> • "
+        f"صفقات اليوم: <b>{s.get('trades_today', 0)}</b>"
+    )
 
-    hrs = _hours_since_last_signal()
     summary = (
         f"📊 <b>تقرير اليوم {today}</b>\n"
         f"عدد الصفقات: <b>{len(todays)}</b> • ربح/خسارة: <b>{total_pnl:.2f}$</b>\n"
-        f"نسبة الفوز: <b>{win_rate}%</b> • Auto-Relax منذ آخر إشارة: ~<b>{hrs:.1f}h</b>\n"
+        f"نسبة الفوز: <b>{win_rate}%</b> • {relax_str}\n"
         f"{risk_line}\n"
     )
     return summary + table
