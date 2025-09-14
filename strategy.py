@@ -1,12 +1,12 @@
 # -*- coding: utf-8 -*-
 """
-strategy.py — Spot-only (v3.2)
+strategy.py — Spot-only (v3.2a AUTO-BREADTH)
 - كاش OHLCV للجولة + مِقاييس أداء.
 - Retry/Backoff لاستدعاءات OHLCV.
 - Position sizing ديناميكي (نسبة من رأس المال + معامل تقلب ATR + تعزيز حسب Score).
 - Circuit breaker بالساعة (اختياري عبر البيئة).
 - Auto-Relax (6/12 ساعة) مع رجوع للوضع الطبيعي بعد صفقتين ناجحتين.
-- Market Breadth Guard ديناميكي (_effective_breadth_min) بدل حد ثابت.
+- Market Breadth Guard تلقائي: اختيار بين الثابت BREADTH_MIN_RATIO والديناميكي _effective_breadth_min حسب قوة BTC على 4h.
 - استثناء القائد (Relative Leader vs BTC) بحجم مخفّض في بيئة سِعة ضعيفة.
 - تحجيم حجم الصفقة تدريجيًا حسب السِعة.
 - حارس Parabolic/Exhaustion (RSI/المسافة عن EMA50).
@@ -711,7 +711,7 @@ def _get_breadth_ratio_cached() -> Optional[float]:
     _BREADTH_CACHE["t"] = now_s
     return r
 
-# ===== سِعة ديناميكية + استثناء القائد =====
+# ===== سِعة ديناميكية
 def _effective_breadth_min() -> float:
     """يضبط الحد الأدنى المطلوب للسعة بناءً على حالة BTC/USDT على 4h."""
     base = BREADTH_MIN_RATIO
@@ -729,6 +729,34 @@ def _effective_breadth_min() -> float:
         pass
     return base
 
+# ===== اختيار تلقائي بين الثابت والديناميكي (جديد) =====
+def _btc_strong_on_4h() -> bool:
+    """يُرجع True إذا كان BTC/USDT قوي على 4h: فوق EMA50 و RSI≥55."""
+    try:
+        d = get_ohlcv_cached("BTC/USDT", "4h", 220)
+        if not d or len(d) < 100:
+            return False
+        df = _df(d)
+        df["ema50"] = ema(df["close"], 50)
+        rsi_btc = float(rsi(df["close"], 14).iloc[-2])
+        row = df.iloc[-2]
+        above = float(row["close"]) > float(row["ema50"])
+        return bool(above and rsi_btc >= 55)
+    except Exception:
+        return False
+
+def _breadth_min_auto() -> float:
+    """
+    اختيار تلقائي بين الثابت والديناميكي:
+    - إذا BTC قوي على 4h → ديناميكي (_effective_breadth_min)
+    - غير ذلك → ثابت (BREADTH_MIN_RATIO)
+    """
+    try:
+        return _effective_breadth_min() if _btc_strong_on_4h() else BREADTH_MIN_RATIO
+    except Exception:
+        return BREADTH_MIN_RATIO
+
+# ===== سلوك القائد =====
 def _is_relative_leader_vs_btc(symbol_base: str, tf="1h", lookback=24, edge=0.02) -> bool:
     """يقيس متوسط التفوق النسبي لعوائد الرمز - عوائد BTC خلال نافذة بسيطة."""
     try:
@@ -817,7 +845,7 @@ def _opportunity_score(df, prev, closed):
         pass
     return score, ", ".join(why), (pattern or "Generic")
 
-# ================== NEW/SRR — مع السِعة الديناميكية + قائد ==================
+# ================== NEW/SRR — مع السِعة التلقائية + قائد ==================
 def check_signal_new(symbol):
     """يفحص إشارة شراء Spot فقط على الرمز المحدد (نسخ: new/srr/brt/vbr). يعيد dict{'decision':'buy', ...} أو None."""
     ok, reason = _risk_precheck_allow_new_entry()
@@ -832,9 +860,9 @@ def check_signal_new(symbol):
     if load_position(symbol):
         return _rej("already_open")
 
-    # Market breadth (ديناميكي)
+    # Market breadth (تلقائي)
     br = _get_breadth_ratio_cached()
-    eff_min = _effective_breadth_min()
+    eff_min = _breadth_min_auto()   # ← استخدام الحدّ التلقائي
     leader_flag = False
     if br is not None and br < eff_min:
         # استثناء القائد
@@ -1542,7 +1570,7 @@ def maybe_emit_reject_summary():
         msg = (
             "🧪 <b>Reject Summary (30m)</b>\n"
             " • " + (" | ".join(f"{k}:{v}" for k,v in top) if top else "No data") + "\n"
-            f" • breadth={br:.2f} (eff_min≈{_effective_breadth_min():.2f})\n"
+            f" • breadth={br:.2f} (eff_min≈{_breadth_min_auto():.2f})\n"
             f" • soften: ATR×{f_atr:.2f}, RVOL×{f_rvol:.2f}, Notional≥{int(notional_min)}"
         )
         _tg(msg)
@@ -1559,11 +1587,13 @@ def check_signal_debug(symbol: str):
     else:
         reasons = ["other"]
     return r, reasons
+
 def breadth_status():
     try:
         r = _get_breadth_ratio_cached()
+        eff_min = _breadth_min_auto()
         if r is None:
-            return {"ok": True, "ratio": None, "min": BREADTH_MIN_RATIO}
-        return {"ok": r >= BREADTH_MIN_RATIO, "ratio": r, "min": BREADTH_MIN_RATIO}
+            return {"ok": True, "ratio": None, "min": eff_min}
+        return {"ok": r >= eff_min, "ratio": r, "min": eff_min}
     except Exception:
         return {"ok": True, "ratio": None, "min": BREADTH_MIN_RATIO}
