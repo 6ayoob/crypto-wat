@@ -442,16 +442,28 @@ def _hours_since_last_signal() -> Optional[float]:
     return max(0.0, (now_riyadh() - dt).total_seconds() / 3600.0)
 
 def _relax_level_current() -> int:
+    """يرجع مستوى التخفيف 0/1/2 حسب الساعات منذ آخر إشارة، مع احترام reset بالنجاحات."""
     s = load_risk_state()
+    # لو حقّقنا عدد الصفقات الناجحة المطلوبة، نعود للوضع الطبيعي
     if int(s.get("relax_success_count", 0)) >= RELAX_RESET_SUCCESS_TRADES:
         return 0
- hrs = _hours_since_last_signal()
-if hrs is None:
-    relax_str = "Auto-Relax: لا توجد إشارات بعد."
-elif hrs >= 72:
-    relax_str = f"Auto-Relax: آخر إشارة منذ ~{hrs/24:.1f}d."
-else:
-    relax_str = f"Auto-Relax: آخر إشارة منذ ~{hrs:.1f}h."
+
+    hrs = _hours_since_last_signal()
+    if hrs >= AUTO_RELAX_AFTER_HRS_2:
+        return 2
+    if hrs >= AUTO_RELAX_AFTER_HRS_1:
+        return 1
+    return 0
+
+def _format_relax_str() -> str:
+    """سطر جاهز لعرض حالة Auto-Relax في التقارير."""
+    hrs = _hours_since_last_signal()
+    # بعض النسخ القديمة كانت ترجع قيمة ضخمة كـ "بدون إشارات" — نتعامل معها هنا
+    if hrs is None or hrs > 1e8:
+        return "Auto-Relax: لا توجد إشارات بعد."
+    if hrs >= 72:
+        return f"Auto-Relax: آخر إشارة منذ ~{hrs/24:.1f}d."
+    return f"Auto-Relax: آخر إشارة منذ ~{hrs:.1f}h."
 
 
 def register_trade_result(pnl_usdt):
