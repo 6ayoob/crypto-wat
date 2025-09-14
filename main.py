@@ -27,7 +27,7 @@ except Exception:
     def check_signal_debug(symbol):
         return None, []
 
-# (جديد) واجهة عرض حالة الـ Breadth لتخطي الجولة عند ضعف السوق
+# عرض حالة الـ Breadth لتخطي الجولة عند ضعف السوق
 try:
     from strategy import breadth_status
 except Exception:
@@ -60,7 +60,7 @@ SEND_METRICS_TO_TELEGRAM  = os.getenv("SEND_METRICS_TO_TELEGRAM", "0").lower() i
 STOP_POLICY = os.getenv("STOP_POLICY", "debounce").lower()  # ignore | debounce | immediate
 STOP_DEBOUNCE_WINDOW_SEC = int(os.getenv("STOP_DEBOUNCE_WINDOW_SEC", "5"))
 
-# (جديد) كتم طباعة أسباب الرفض الاختيارية
+# كتم طباعة أسباب الرفض الاختيارية
 DEBUG_REJECT_PRINT = os.getenv("DEBUG_REJECT_PRINT", "0").lower() in ("1","true","yes")
 
 RIYADH_TZ = timezone(timedelta(hours=3))
@@ -208,7 +208,7 @@ if __name__ == "__main__":
                     # 🔑 مسح كاش OHLCV للجولة الحالية مرة واحدة (يصفّر الميتريكس أيضًا)
                     reset_cycle_cache()
 
-                    # (جديد) فحص حالة الـ Breadth لتخطي الجولة عند ضعف السوق
+                    # فحص حالة الـ Breadth لتخطي الجولة عند ضعف السوق
                     bs = breadth_status()
                     if not bs.get("ok", True):
                         ratio = bs.get("ratio")
@@ -220,9 +220,8 @@ if __name__ == "__main__":
                         # إبطاء بسيط عند السوق السيئ (اختياري)
                         manage_interval_sec = max(manage_interval_sec, 15)
                         time.sleep(min(10, SCAN_INTERVAL_SEC/2))
-                        # سجّل زمن آخر مسح وتخطَّي بقية هذه الجولة
                         last_scan_ts = now
-                        # طباعة ميتريكس الجولة (فارغة) بنبرة خفيفة
+                        # مخرجات أداء موجزة حتى عند التخطي
                         try:
                             t_round_end = perf_counter()
                             dur_sec = t_round_end - t_round_start
@@ -238,7 +237,6 @@ if __name__ == "__main__":
                                 tg_info(full_report, parse_mode="HTML", silent=True)
                         except Exception:
                             pass
-                        # انتقل لإدارة الصفقات مباشرةً
                         continue
                     else:
                         # عودة للإيقاع الافتراضي عندما يتحسن السوق
@@ -278,7 +276,7 @@ if __name__ == "__main__":
                         if is_buy:
                             try:
                                 order, msg = execute_buy(symbol)
-                                # 👇 نُرسل فقط رسائل الأخطاء هنا (الاستراتيجية سترسل نجاحاتها)
+                                # نُرسل فقط رسائل الأخطاء هنا (الاستراتيجية سترسل نجاحاتها إن مفعّلة)
                                 if msg and _is_error_text(msg):
                                     tg_error(msg)
                                 # تحديث العدّ من المصدر بعد كل محاولة شراء
@@ -290,7 +288,7 @@ if __name__ == "__main__":
                                     print(f"[execute_buy] {symbol} error: {e}")
                                 continue
                         else:
-                            # (اختياري) عندما لا توجد إشارة، نفحص أسباب الرفض فقط عند تفعيل DEBUG_REJECT_PRINT
+                            # طباعة أسباب الرفض فقط عند تفعيل DEBUG_REJECT_PRINT
                             if DEBUG_REJECT_PRINT:
                                 try:
                                     _, reasons = check_signal_debug(symbol)
