@@ -430,24 +430,29 @@ def _mark_signal_now():
     s["last_signal_ts"] = now_riyadh().isoformat(timespec="seconds")
     save_risk_state(s)
 
-def _hours_since_last_signal() -> float:
+def _hours_since_last_signal() -> Optional[float]:
     s = load_risk_state()
     ts = s.get("last_signal_ts")
-    if not ts: return 1e9
+    if not ts:
+        return None
     try:
         dt = datetime.fromisoformat(ts)
     except Exception:
-        return 1e9
-    return max(0.0, (now_riyadh() - dt).total_seconds()/3600.0)
+        return None
+    return max(0.0, (now_riyadh() - dt).total_seconds() / 3600.0)
 
 def _relax_level_current() -> int:
     s = load_risk_state()
     if int(s.get("relax_success_count", 0)) >= RELAX_RESET_SUCCESS_TRADES:
         return 0
-    hrs = _hours_since_last_signal()
-    if hrs >= AUTO_RELAX_AFTER_HRS_2: return 2
-    if hrs >= AUTO_RELAX_AFTER_HRS_1: return 1
-    return 0
+ hrs = _hours_since_last_signal()
+if hrs is None:
+    relax_str = "Auto-Relax: لا توجد إشارات بعد."
+elif hrs >= 72:
+    relax_str = f"Auto-Relax: آخر إشارة منذ ~{hrs/24:.1f}d."
+else:
+    relax_str = f"Auto-Relax: آخر إشارة منذ ~{hrs:.1f}h."
+
 
 def register_trade_result(pnl_usdt):
     s = load_risk_state()
