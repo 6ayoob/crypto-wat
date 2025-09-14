@@ -1600,13 +1600,19 @@ def maybe_emit_reject_summary():
     _last_emit_ts = now
     try:
         top = sorted(_REJ_SUMMARY.items(), key=lambda x: x[1], reverse=True)[:5]
+        items = [f"{k}:{v}" for k, v in top]
+        top_line = " | ".join(items) if items else "No data"
+
         br = _BREADTH_CACHE.get("ratio")
+        br_txt = "—" if br is None else f"{br:.2f}"
+        eff_min = _breadth_min_auto()
+        eff_min_txt = f"{eff_min:.2f}"
+
         f_atr, f_rvol, notional_min = _round_relax_factors()
-        br_txt = "—" if br is None else f"{float(br):.2f}"
         msg = (
             "🧪 <b>Reject Summary (30m)</b>\n"
-            " • " + (" | ".join(f\"{k}:{v}\" for k, v in top) if top else "No data") + "\n"
-            f" • breadth={br_txt} (eff_min≈{_breadth_min_auto():.2f})\n"
+            f" • {top_line}\n"
+            f" • breadth={br_txt} (eff_min≈{eff_min_txt})\n"
             f" • soften: ATR×{f_atr:.2f}, RVOL×{f_rvol:.2f}, Notional≥{int(notional_min)}"
         )
         _tg(msg)
