@@ -1559,3 +1559,11 @@ def check_signal_debug(symbol: str):
     else:
         reasons = ["other"]
     return r, reasons
+def breadth_status():
+    try:
+        r = _get_breadth_ratio_cached()
+        if r is None:
+            return {"ok": True, "ratio": None, "min": BREADTH_MIN_RATIO}
+        return {"ok": r >= BREADTH_MIN_RATIO, "ratio": r, "min": BREADTH_MIN_RATIO}
+    except Exception:
+        return {"ok": True, "ratio": None, "min": BREADTH_MIN_RATIO}
