@@ -1,16 +1,19 @@
 # -*- coding: utf-8 -*-
 """
-strategy.py — Spot-only (v3.1 • tuned)
+strategy.py — Spot-only (v3.2)
 - كاش OHLCV للجولة + مِقاييس أداء.
 - Retry/Backoff لاستدعاءات OHLCV.
 - Position sizing ديناميكي (نسبة من رأس المال + معامل تقلب ATR + تعزيز حسب Score).
 - Circuit breaker بالساعة (اختياري عبر البيئة).
 - Auto-Relax (6/12 ساعة) مع رجوع للوضع الطبيعي بعد صفقتين ناجحتين.
-- Market Breadth Guard (نسبة الأصول فوق EMA50) — حد افتراضي 0.60.
-- حارس Parabolic/Exhaustion (RSI/المسافة عن EMA50) — حد RSI افتراضي 76.
+- Market Breadth Guard ديناميكي (_effective_breadth_min) بدل حد ثابت.
+- استثناء القائد (Relative Leader vs BTC) بحجم مخفّض في بيئة سِعة ضعيفة.
+- تحجيم حجم الصفقة تدريجيًا حسب السِعة.
+- حارس Parabolic/Exhaustion (RSI/المسافة عن EMA50).
 - دعم أهداف متعددة (حتى 5) + Partials متكيّفة.
 - Dynamic Max Bars to TP1.
-- ✨ تليين محلي داخل الجولة حسب كثافة الرفض (ATR/RVOL/Notional).
+- ملخص رفضات دوري كل 30 دقيقة.
+- دوال تشخيص اختيارية.
 
 واجهات مطلوبة من main.py:
 - check_signal(symbol)
@@ -67,7 +70,6 @@ NR_WINDOW = 10
 NR_FACTOR = 0.75
 HTF_EMA_TREND_PERIOD = 50
 HTF_SR_WINDOW = 50
-RESISTANCE_BUFFER, SUPPORT_BUFFER = 0.005, 0.002
 
 # إدارة الصفقة
 TP1_FRACTION = 0.5
@@ -82,10 +84,9 @@ DAILY_LOSS_LIMIT_USDT    = 200.0
 # مفاتيح الميزات
 USE_EMA200_TREND_FILTER   = os.getenv("USE_EMA200_TREND_FILTER", "1").lower() in ("1","true","yes","y")
 ENABLE_GOLDEN_CROSS_ENTRY = os.getenv("ENABLE_GOLDEN_CROSS_ENTRY", "1").lower() in ("1","true","yes","y")
-GOLDEN_CROSS_RVOL_BOOST   = float(os.getenv("GOLDEN_CROSS_RVOL_BOOST", "1.10"))  # تشديد 10%
+GOLDEN_CROSS_RVOL_BOOST   = float(os.getenv("GOLDEN_CROSS_RVOL_BOOST", "1.10"))
 
-# ======= تحسينات جديدة (v3.1) =======
-# Auto-Relax (بالساعات) + رجوع بعد نجاحين
+# ======= Auto-Relax =======
 AUTO_RELAX_AFTER_HRS_1 = float(os.getenv("AUTO_RELAX_AFTER_HRS_1", "6"))
 AUTO_RELAX_AFTER_HRS_2 = float(os.getenv("AUTO_RELAX_AFTER_HRS_2", "12"))
 RELAX_RVOL_DELTA_1 = float(os.getenv("RELAX_RVOL_DELTA_1", "0.05"))
@@ -94,19 +95,19 @@ RELAX_ATR_MIN_SCALE_1 = float(os.getenv("RELAX_ATR_MIN_SCALE_1", "0.9"))
 RELAX_ATR_MIN_SCALE_2 = float(os.getenv("RELAX_ATR_MIN_SCALE_2", "0.85"))
 RELAX_RESET_SUCCESS_TRADES = int(os.getenv("RELAX_RESET_SUCCESS_TRADES", "2"))
 
-# Market Breadth Guard
-BREADTH_MIN_RATIO = float(os.getenv("BREADTH_MIN_RATIO", "0.60"))
+# ======= Market Breadth =======
+BREADTH_MIN_RATIO = float(os.getenv("BREADTH_MIN_RATIO", "0.60"))  # حد أساسي (يُضبط ديناميكيًا)
 BREADTH_TF = os.getenv("BREADTH_TF", "1h")
 BREADTH_TTL_SEC = int(os.getenv("BREADTH_TTL_SEC", "180"))
 BREADTH_SYMBOLS_ENV = os.getenv("BREADTH_SYMBOLS", "")  # CSV اختياري
 
-# Parabolic/Exhaustion
+# Exhaustion
 EXH_RSI_MAX = float(os.getenv("EXH_RSI_MAX", "76"))
 EXH_EMA50_DIST_ATR = float(os.getenv("EXH_EMA50_DIST_ATR", "2.8"))
 
 # Multi-targets
 ENABLE_MULTI_TARGETS = os.getenv("ENABLE_MULTI_TARGETS", "1").lower() in ("1","true","yes","y")
-MAX_TP_COUNT = int(os.getenv("MAX_TP_COUNT", "5"))  # حتى 5
+MAX_TP_COUNT = int(os.getenv("MAX_TP_COUNT", "5"))
 TP_ATR_MULTS_TREND = tuple(float(x) for x in os.getenv("TP_ATR_MULTS_TREND", "1.2,2.2,3.5,4.5,6.0").split(","))
 TP_ATR_MULTS_VBR   = tuple(float(x) for x in os.getenv("TP_ATR_MULTS_VBR",   "0.6,1.2,1.8,2.4").split(","))
 
@@ -114,7 +115,7 @@ TP_ATR_MULTS_VBR   = tuple(float(x) for x in os.getenv("TP_ATR_MULTS_VBR",   "0.
 USE_DYNAMIC_MAX_BARS = os.getenv("USE_DYNAMIC_MAX_BARS", "1").lower() in ("1","true","yes","y")
 MAX_BARS_BASE = int(os.getenv("MAX_BARS_TO_TP1_BASE", "12"))
 
-# ======= Tunables via ENV + softer defaults (للتقليل من رفض ATR/RVOL/Notional) =======
+# Tunables عبر ENV (تخفيف رفض ATR/RVOL/Notional)
 MIN_BAR_NOTIONAL_USD = float(os.getenv("MIN_BAR_NOTIONAL_USD", "25000"))
 ATR_MIN_BASE = float(os.getenv("ATR_MIN_FOR_TREND_BASE", "0.0020"))
 ATR_MIN_NEW  = float(os.getenv("ATR_MIN_FOR_TREND_NEW",  "0.0026"))
@@ -128,25 +129,18 @@ _HTF_TTL_SEC = int(os.getenv("HTF_CACHE_TTL_SEC", "150"))
 
 # ======= كاش OHLCV للجولة + مِقاييس =======
 _OHLCV_CACHE: Dict[tuple, list] = {}  # key=(symbol, tf, bars)
+_METRICS = {"ohlcv_api_calls": 0, "ohlcv_cache_hits": 0, "ohlcv_cache_misses": 0, "htf_cache_hits": 0, "htf_cache_misses": 0}
 
-_METRICS = {
-    "ohlcv_api_calls": 0,
-    "ohlcv_cache_hits": 0,
-    "ohlcv_cache_misses": 0,
-    "htf_cache_hits": 0,
-    "htf_cache_misses": 0,
-}
-
-# ======= عدّاد رفضات الجولة (لتليين محلي) =======
+# ======= عدّاد رفضات الجولة (لتليين محلي) + ملخص عام =======
 _REJ_COUNTS = {"atr_low": 0, "rvol": 0, "notional_low": 0}
+_REJ_SUMMARY: Dict[str, int] = {}
 
 def reset_cycle_cache():
     """يمسح كاش OHLCV ويصفر مِقاييس الجولة + عدّادات الرفض — تُنادى من main.py بداية كل جولة."""
     _OHLCV_CACHE.clear()
-    for k in _METRICS:
-        _METRICS[k] = 0
-    for k in _REJ_COUNTS:
-        _REJ_COUNTS[k] = 0
+    for k in _METRICS: _METRICS[k] = 0
+    for k in _REJ_COUNTS: _REJ_COUNTS[k] = 0
+    # _REJ_SUMMARY لا نصفره داخل الجولة؛ الملخص كل 30 دقيقة
 
 def metrics_snapshot() -> dict:
     return dict(_METRICS)
@@ -186,8 +180,7 @@ def get_ohlcv_cached(symbol: str, tf: str, bars: int) -> list:
         return _OHLCV_CACHE[key]
     _METRICS["ohlcv_cache_misses"] += 1
     data = api_fetch_ohlcv(symbol, tf, bars)
-    if data:
-        _OHLCV_CACHE[key] = data
+    if data: _OHLCV_CACHE[key] = data
     return data
 
 # ================== تتبُّع ==================
@@ -283,7 +276,7 @@ VBR_OVERRIDES = {
     "LOCK_MIN_PROFIT_PCT": 0.003, "MAX_HOLD_HOURS": 6, "SYMBOL_COOLDOWN_MIN": 8,
 }
 
-# ✨ حقن القيم اللينة/البيئية
+# ✨ حقن قيم ENV اللينة
 BASE_CFG["ATR_MIN_FOR_TREND"] = ATR_MIN_BASE
 NEW_SCALP_OVERRIDES.update({"ATR_MIN_FOR_TREND": ATR_MIN_NEW, "RVOL_MIN": RVOL_MIN_NEW})
 BRT_OVERRIDES.update({"ATR_MIN_FOR_TREND": ATR_MIN_BRT, "RVOL_MIN": RVOL_MIN_BRT})
@@ -317,11 +310,9 @@ SR_LEVELS_CFG = [
 
 # ================== Helpers ==================
 def _tg(text, parse_mode="HTML"):
-    if not STRAT_TG_SEND:
-        return
+    if not STRAT_TG_SEND: return
     try:
-        if not TELEGRAM_TOKEN or not TELEGRAM_CHAT_ID:
-            return
+        if not TELEGRAM_TOKEN or not TELEGRAM_CHAT_ID: return
         url = f"https://api.telegram.org/bot{TELEGRAM_TOKEN}/sendMessage"
         data = {"chat_id": TELEGRAM_CHAT_ID, "text": text}
         if parse_mode: data["parse_mode"] = parse_mode
@@ -404,7 +395,6 @@ def _default_risk_state():
         "trades_today": 0,
         "blocked_until": None,
         "hourly_pnl": {},
-        # Auto-Relax
         "last_signal_ts": None,
         "relax_success_count": 0
     }
@@ -415,10 +405,8 @@ def load_risk_state():
         s = _default_risk_state(); save_risk_state(s)
     if "hourly_pnl" not in s or not isinstance(s["hourly_pnl"], dict):
         s["hourly_pnl"] = {}
-    if "last_signal_ts" not in s:
-        s["last_signal_ts"] = None
-    if "relax_success_count" not in s:
-        s["relax_success_count"] = 0
+    if "last_signal_ts" not in s: s["last_signal_ts"] = None
+    if "relax_success_count" not in s: s["relax_success_count"] = 0
     return s
 
 def save_risk_state(s): _atomic_write(RISK_STATE_FILE, s)
@@ -608,8 +596,7 @@ def get_sr_multi(symbol: str):
 
 # ===== MACD/RSI Gate =====
 def macd_rsi_gate(prev_row, closed_row, policy):
-    if not policy:
-        return True
+    if not policy: return True
     rsi_now = float(closed_row.get("rsi", 50.0))
     rsi_up  = rsi_now > float(prev_row.get("rsi", rsi_now))
     macd_h_now  = float(closed_row.get("macd_hist", 0.0))
@@ -690,8 +677,7 @@ def _breadth_refs() -> List[str]:
         base = s.split("#")[0].replace("-", "/").upper()
         if base not in seen:
             uniq.append(base); seen.add(base)
-        if len(uniq) >= 12:
-            break
+        if len(uniq) >= 12: break
     if not uniq:
         uniq = ["BTC/USDT","ETH/USDT","BNB/USDT","SOL/USDT","XRP/USDT","ADA/USDT"]
     return uniq
@@ -710,8 +696,7 @@ def _compute_breadth_ratio() -> Optional[float]:
             c = float(row["close"]); e = float(row["ema50"])
             if c>0 and e>0:
                 tot += 1
-                if c > e:
-                    ok += 1
+                if c > e: ok += 1
         except Exception:
             continue
     if tot == 0: return None
@@ -726,11 +711,49 @@ def _get_breadth_ratio_cached() -> Optional[float]:
     _BREADTH_CACHE["t"] = now_s
     return r
 
+# ===== سِعة ديناميكية + استثناء القائد =====
+def _effective_breadth_min() -> float:
+    """يضبط الحد الأدنى المطلوب للسعة بناءً على حالة BTC/USDT على 4h."""
+    base = BREADTH_MIN_RATIO
+    try:
+        d = get_ohlcv_cached("BTC/USDT", "4h", 220)
+        if not d or len(d) < 100: 
+            return base
+        df = _df(d); df["ema50"] = ema(df["close"], 50)
+        row = df.iloc[-2]
+        above = float(row["close"]) > float(row["ema50"])
+        rsi_btc = float(rsi(df["close"], 14).iloc[-2])
+        if above and rsi_btc >= 55:  return max(0.40, base - 0.15)  # مرونة للأسفل
+        if (not above) or rsi_btc <= 45: return min(0.75, base + 0.10)  # تشديد للأعلى
+    except Exception:
+        pass
+    return base
+
+def _is_relative_leader_vs_btc(symbol_base: str, tf="1h", lookback=24, edge=0.02) -> bool:
+    """يقيس متوسط التفوق النسبي لعوائد الرمز - عوائد BTC خلال نافذة بسيطة."""
+    try:
+        d1 = get_ohlcv_cached(symbol_base, tf, lookback+10)
+        d2 = get_ohlcv_cached("BTC/USDT", tf, lookback+10)
+        if not d1 or not d2: return False
+        s1 = _df(d1)["close"].iloc[-(lookback+1):-1]
+        s2 = _df(d2)["close"].iloc[-(lookback+1):-1]
+        if len(s1)!=len(s2):
+            n=min(len(s1),len(s2)); s1=s1.iloc[-n:]; s2=s2.iloc[-n:]
+        rel = (s1.pct_change().fillna(0) - s2.pct_change().fillna(0)).mean()
+        return float(rel) >= edge
+    except Exception:
+        return False
+
 # ================== أدوات رفض/تمرير ==================
 def _rej(stage, **kv):
     # عدّاد التليين المحلي
     if stage in _REJ_COUNTS:
         _REJ_COUNTS[stage] += 1
+    # ملخص شامل لأي سبب
+    try:
+        _REJ_SUMMARY[stage] = int(_REJ_SUMMARY.get(stage, 0)) + 1
+    except Exception:
+        pass
     if DEBUG_LOG_SIGNALS:
         kvs = " ".join(f"{k}={v}" for k, v in kv.items())
         logger.info(f"[REJECT] {stage} | {kvs}")
@@ -794,7 +817,7 @@ def _opportunity_score(df, prev, closed):
         pass
     return score, ", ".join(why), (pattern or "Generic")
 
-# ================== NEW/SRR — متكّيف بالـ ATR + EMA200 + GoldenCross + Breadth + Relax ==================
+# ================== NEW/SRR — مع السِعة الديناميكية + قائد ==================
 def check_signal_new(symbol):
     """يفحص إشارة شراء Spot فقط على الرمز المحدد (نسخ: new/srr/brt/vbr). يعيد dict{'decision':'buy', ...} أو None."""
     ok, reason = _risk_precheck_allow_new_entry()
@@ -809,10 +832,15 @@ def check_signal_new(symbol):
     if load_position(symbol):
         return _rej("already_open")
 
-    # Market breadth guard (عام)
+    # Market breadth (ديناميكي)
     br = _get_breadth_ratio_cached()
-    if br is not None and br < BREADTH_MIN_RATIO:
-        return _rej("breadth_low", ratio=round(br,2))
+    eff_min = _effective_breadth_min()
+    leader_flag = False
+    if br is not None and br < eff_min:
+        # استثناء القائد
+        leader_flag = _is_relative_leader_vs_btc(base)
+        if not leader_flag:
+            return _rej("breadth_low", ratio=round(br,2), min=round(eff_min,2))
 
     ctx = _get_htf_context(symbol)
     if not ctx: return _rej("htf_none")
@@ -840,7 +868,7 @@ def check_signal_new(symbol):
     atr_min = float(cfg.get("ATR_MIN_FOR_TREND", 0.002))
     if relax_lvl == 1: atr_min *= RELAX_ATR_MIN_SCALE_1
     if relax_lvl == 2: atr_min *= RELAX_ATR_MIN_SCALE_2
-    atr_min *= f_atr  # تليين الجولة
+    atr_min *= f_atr
     if atrp < atr_min: return _rej("atr_low", atrp=round(atrp,5), min=round(atr_min,5))
 
     notional = price * float(closed["volume"])
@@ -852,7 +880,7 @@ def check_signal_new(symbol):
     need_rvol = need_rvol_base
     if relax_lvl == 1: need_rvol = max(0.8, need_rvol_base - RELAX_RVOL_DELTA_1)
     if relax_lvl == 2: need_rvol = max(0.75, need_rvol_base - RELAX_RVOL_DELTA_2)
-    need_rvol = max(0.70, need_rvol * f_rvol)  # تليين الجولة
+    need_rvol = max(0.70, need_rvol * f_rvol)
     if pd.isna(rvol) or rvol < need_rvol: return _rej("rvol", rvol=round(rvol,2), need=round(need_rvol,2))
 
     # فلتر ترند EMA200 (اختياري)
@@ -860,7 +888,7 @@ def check_signal_new(symbol):
         if not (float(closed.get("ema50", price)) > float(closed.get("ema200", price)) and price > float(closed.get("ema200", price))):
             return _rej("ema200_trend")
 
-    # اختيار النمط الأساسي (hybrid)
+    # اختيار النمط (hybrid)
     def _brk_ok():
         hi_range = float(df["high"].iloc[-NR_WINDOW-2:-2].max())
         is_nr_recent = bool(df["is_nr"].iloc[-3:-1].all())
@@ -881,7 +909,7 @@ def check_signal_new(symbol):
             if m == "pullback" and _entry_pullback_logic(df, closed, prev, atr, ctx, cfg):
                 chosen_mode = "pullback"; mode_ok = True; break
 
-    # بديل: دخول Golden Cross (اختياري)
+    # بديل: Golden Cross
     golden_cross_ok = False
     if ENABLE_GOLDEN_CROSS_ENTRY:
         try:
@@ -914,7 +942,7 @@ def check_signal_new(symbol):
     if not (lb <= dist_atr <= ub):
         return _rej("dist_to_ema50", dist_atr=round(dist_atr,3), lb=lb, ub=ub)
 
-    # حارس الـ Exhaustion (RSI + مسافة ATR عن EMA50)
+    # Exhaustion guard
     rsi_val = float(closed.get("rsi", 50))
     if (chosen_mode in ("breakout","pullback","golden_cross")) and (rsi_val >= EXH_RSI_MAX) and (dist_atr >= EXH_EMA50_DIST_ATR):
         return _rej("exhaustion_guard", rsi=rsi_val, dist_atr=round(dist_atr,2))
@@ -947,11 +975,14 @@ def check_signal_new(symbol):
 
     _LAST_ENTRY_BAR_TS[key] = ts
     _pass("signal_ok", mode=chosen_mode, score=score, rvol=round(rvol,2), atrp=round(atrp,4))
-
     _mark_signal_now()
 
-    return {"decision": "buy", "score": score, "reason": why, "pattern": patt, "ts": ts,
-            "chosen_mode": chosen_mode, "atrp": atrp, "rsi": rsi_val, "dist_ema50_atr": dist_atr}
+    return {
+        "decision": "buy",
+        "score": score, "reason": why, "pattern": patt, "ts": ts,
+        "chosen_mode": chosen_mode, "atrp": atrp, "rsi": rsi_val, "dist_ema50_atr": dist_atr,
+        "leader_flag": bool(leader_flag)
+    }
 
 # ================== OLD/SRR/BRT/VBR ==================
 def check_signal_old(symbol): return check_signal_new(symbol)
@@ -1088,7 +1119,7 @@ def execute_buy(symbol):
     """
     تنفيذ شراء Spot-only للرمز المحدّد.
     - يستخدم Position sizing ديناميكي إذا USE_DYNAMIC_RISK=1 (افتراضي) + تعزيز حسب Score.
-    - يخضع لمنطق الحظر/المخاطر.
+    - يخضع لمنطق الحظر/المخاطر والسِعة.
     """
     base, variant = _split_symbol_variant(symbol)
 
@@ -1120,10 +1151,8 @@ def execute_buy(symbol):
 
     mg = _mgmt(variant)
     custom = (_sig_inner.get("custom") if isinstance(_sig_inner, dict) else {}) or {}
-    if "sl" in custom and isinstance(custom["sl"], (int, float)):
-        sl = float(custom["sl"])
-    if "tp1" in custom and isinstance(custom["tp1"], (int, float)):
-        targets[0] = min(targets[0], float(custom["tp1"]))
+    if "sl" in custom and isinstance(custom["sl"], (int, float)): sl = float(custom["sl"])
+    if "tp1" in custom and isinstance(custom["tp1"], (int, float)): targets[0] = min(targets[0], float(custom["tp1"]))
 
     max_bars_to_tp1 = MAX_BARS_BASE
     try:
@@ -1138,17 +1167,11 @@ def execute_buy(symbol):
             max_bars_to_tp1 = max(6, max_bars_to_tp1 - 2)
 
     sig = {
-        "entry": price_fallback,
-        "sl": sl,
-        "targets": targets,
-        "partials": [],
+        "entry": price_fallback, "sl": sl, "targets": targets, "partials": [],
         "messages": {"entry": f"🚀 دخول {_sig_inner.get('pattern','Opportunity')}"},
-        "score": _sig_inner.get("score"),
-        "pattern": _sig_inner.get("pattern"),
-        "reason": _sig_inner.get("reason"),
-        "max_hold_hours": mg.get("TIME_HRS"),
+        "score": _sig_inner.get("score"), "pattern": _sig_inner.get("pattern"), "reason": _sig_inner.get("reason"),
+        "max_hold_hours": mg.get("TIME_HRS"), "max_bars_to_tp1": max_bars_to_tp1
     }
-    sig["max_bars_to_tp1"] = max_bars_to_tp1
 
     price = float(sig["entry"]) if isinstance(sig, dict) else None
     usdt = float(fetch_balance("USDT") or 0)
@@ -1163,8 +1186,8 @@ def execute_buy(symbol):
         equity = usdt
         base_risk = equity * RISK_PCT_OF_EQUITY
         risk_usdt = min(MAX_TRADE_USDT, max(MIN_TRADE_USDT, base_risk))
-        atrp = (atr_val / max(price, 1e-9)) if atr_val else 0.0
-        vol_factor = 1.0 / (1.0 + ATR_RISK_SCALER * max(0.0, atrp))
+        atrp_now = (atr_val / max(price, 1e-9)) if atr_val else 0.0
+        vol_factor = 1.0 / (1.0 + ATR_RISK_SCALER * max(0.0, atrp_now))
         sc = int(_sig_inner.get("score", 0))
         score_boost = 1.0
         if sc >= 88: score_boost = 1.25
@@ -1172,6 +1195,14 @@ def execute_buy(symbol):
         trade_usdt = max(MIN_TRADE_USDT, min(MAX_TRADE_USDT, risk_usdt * vol_factor * score_boost))
     else:
         trade_usdt = TRADE_AMOUNT_USDT
+
+    # تحجيم بالحِسبان السِعة + استثناء القائد
+    br = _get_breadth_ratio_cached()
+    if br is not None:
+        if br < 0.45:  trade_usdt *= 0.70
+        elif br < 0.55: trade_usdt *= 0.85
+    if bool(_sig_inner.get("leader_flag", False)):
+        trade_usdt *= 0.50  # نصف الحجم عند الدخول باستثناء القائد
 
     if usdt < max(MIN_TRADE_USDT, trade_usdt):
         return None, "🚫 رصيد USDT غير كافٍ."
@@ -1210,7 +1241,6 @@ def execute_buy(symbol):
     }
     save_position(symbol, pos)
     register_trade_opened()
-
     _SYMBOL_LAST_TRADE_AT[f"{base}|{variant}"] = now_riyadh()
 
     try:
@@ -1496,8 +1526,28 @@ def build_daily_report_text():
     )
     return summary + table
 
-# ===== دوال تشخيص اختيارية (لا تؤثر على main.py) =====
-_reject_reasons_round: Dict[str, List[str]] = {}
+# ===== دوال تشخيص/ملخص رفض =====
+_last_emit_ts = 0
+def maybe_emit_reject_summary():
+    """يرسل ملخصًا لأكثر أسباب الرفض خلال آخر 30 دقيقة + حالة السِعة والمرونة."""
+    global _last_emit_ts
+    now = time.time()
+    if now - _last_emit_ts < 1800:  # كل 30 دقيقة
+        return
+    _last_emit_ts = now
+    try:
+        top = sorted(_REJ_SUMMARY.items(), key=lambda x: x[1], reverse=True)[:5]
+        br = _BREADTH_CACHE.get("ratio")
+        f_atr, f_rvol, notional_min = _round_relax_factors()
+        msg = (
+            "🧪 <b>Reject Summary (30m)</b>\n"
+            " • " + (" | ".join(f"{k}:{v}" for k,v in top) if top else "No data") + "\n"
+            f" • breadth={br:.2f} (eff_min≈{_effective_breadth_min():.2f})\n"
+            f" • soften: ATR×{f_atr:.2f}, RVOL×{f_rvol:.2f}, Notional≥{int(notional_min)}"
+        )
+        _tg(msg)
+    except Exception:
+        pass
 
 def check_signal_debug(symbol: str):
     r = check_signal(symbol)
@@ -1509,6 +1559,3 @@ def check_signal_debug(symbol: str):
     else:
         reasons = ["other"]
     return r, reasons
-
-def maybe_emit_reject_summary():
-    return
