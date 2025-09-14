@@ -1,4 +1,4 @@
-# main.py — Sync loop (15m/5m) with per-round cache + perf metrics + breadth status
+# main.py — Sync loop (HTF/LTF) with per-round cache + perf metrics + breadth status
 import os
 import time
 import random
@@ -16,9 +16,9 @@ from strategy import (
     check_signal, execute_buy, manage_position, load_position,
     count_open_positions, build_daily_report_text,
     reset_cycle_cache, metrics_snapshot, metrics_format,
-    maybe_emit_reject_summary,  # قد تكون موجودة في نسختك
-    check_signal_debug,         # قد تكون موجودة في نسختك
-    breadth_status              # ← جديد: لعرض حالة السِعة
+    maybe_emit_reject_summary,   # قد تكون موجودة في نسختك
+    check_signal_debug,          # قد تكون موجودة في نسختك
+    breadth_status               # جديد: لعرض حالة السِعة
 )
 
 # كاش أسعار جماعي من okx_api لتقليل الضغط (اختياري)
@@ -67,7 +67,8 @@ def send_telegram_message(text, parse_mode=None, disable_notification=False):
         print(f"[TG] Error: {e}")
 
 def _is_error_text(text: str) -> bool:
-    if not text: return False
+    if not text:
+        return False
     t = str(text).strip()
     return t.startswith("⚠️") or t.startswith("❌") or "خطأ" in t or "Error" in t
 
@@ -158,10 +159,14 @@ if __name__ == "__main__":
         except Exception:
             pass
 
-    # معلومات بدء مع عرض الإطارات الزمنية الفعلية + حالة السعة
+    # معلومات بدء مع عرض الإطارات الزمنية الفعلية + حالة السعة (بدون تداخل f-string)
     try:
-        bs0 = breadth_status()
-        bs_line = f"breadth: {('—' if bs0.get('ratio') is None else f'{bs0['ratio']:.2f}')}, min={bs0.get('min', 0):.2f}, ok={'✅' if bs0.get('ok') else '❌'}"
+        bs0 = breadth_status() or {}
+        ratio_txt = "—" if bs0.get("ratio") is None else f"{bs0.get('ratio', 0.0):.2f}"
+        min_txt   = f"{bs0.get('min', 0.0):.2f}"
+        ok_txt    = "✅" if bs0.get("ok") else "❌"
+        bs_line   = f"breadth: {ratio_txt}, min={min_txt}, ok={ok_txt}"
+
         tg_info(
             f"🚀 تشغيل البوت — {len(SYMBOLS)} رمز | HTF={STRAT_HTF_TIMEFRAME} / LTF={STRAT_LTF_TIMEFRAME} ✅\n"
             f"📡 {bs_line}",
@@ -226,7 +231,7 @@ if __name__ == "__main__":
                         if is_buy:
                             try:
                                 order, msg = execute_buy(symbol)
-                                # 👇 تعديل مهم: لا نُعيد إرسال رسائل النجاح (strategy سترسل إشعاراتها)
+                                # لا نُعيد إرسال رسائل النجاح (strategy سترسل إشعاراتها)
                                 # نُرسل فقط رسائل الأخطاء هنا
                                 if msg and _is_error_text(msg):
                                     tg_error(msg)
@@ -269,9 +274,10 @@ if __name__ == "__main__":
                         except Exception:
                             bs = {}
                         b_ratio = bs.get("ratio")
-                        b_min   = bs.get("min")
-                        b_ok    = bs.get("ok")
-                        b_line  = f"breadth: <b>{'—' if b_ratio is None else f'{b_ratio:.2f}'}</b> | min: <b>{b_min:.2f}</b> | {('✅ OK' if b_ok else '❌ LOW')}"
+                        b_min   = bs.get("min", 0.0)
+                        b_ok    = bs.get("ok", True)
+                        b_ratio_txt = "—" if b_ratio is None else f"{b_ratio:.2f}"
+                        b_line  = f"breadth: <b>{b_ratio_txt}</b> | min: <b>{b_min:.2f}</b> | {('✅ OK' if b_ok else '❌ LOW')}"
 
                         perf_text = (
                             "⏱️ <b>Round Perf</b>\n"
