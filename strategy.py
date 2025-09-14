@@ -1499,12 +1499,19 @@ def close_trade(symbol, exit_price, pnl_net, reason="MANUAL"):
     clear_position(symbol)
 
 # ================== تقرير يومي ==================
+# ================== تقرير يومي ==================
 def _fmt_table(rows, headers):
     widths = [len(h) for h in headers]
     for r in rows:
-        for i, c in enumerate(r): widths[i] = max(widths[i], len(str(c)))
-    def fmt_row(r): return "  ".join(str(c).ljust(widths[i]) for i, c in enumerate(r))
-    return "<pre>" + fmt_row(headers) + "\n" + "\n".join(fmt_row(r) for r in rows) + "</pre>"
+        for i, c in enumerate(r):
+            widths[i] = max(widths[i], len(str(c)))
+
+    def fmt_row(r):
+        return "  ".join(str(c).ljust(widths[i]) for i, c in enumerate(r))
+
+    header_line = fmt_row(headers)
+    body_lines = "\n".join(fmt_row(r) for r in rows)
+    return "<pre>" + header_line + "\n" + body_lines + "</pre>"
 
 def build_daily_report_text():
     """ينشئ نص تقرير يومي مضغوط (HTML) مع ملخص المخاطر وصفقات اليوم)."""
@@ -1513,23 +1520,15 @@ def build_daily_report_text():
     todays = [t for t in closed if str(t.get("closed_at", "")).startswith(today)]
     s = load_risk_state()
 
-    # صياغة ذكية لعبارة Auto-Relax
-    hrs = _hours_since_last_signal()
-    if hrs is None:
-        relax_str = "Auto-Relax: لا توجد إشارات بعد."
-    elif hrs >= 72:
-        relax_str = f"Auto-Relax: آخر إشارة منذ ~{hrs/24:.1f}d."
-    else:
-        relax_str = f"Auto-Relax: آخر إشارة منذ ~{hrs:.1f}h."
-
     if not todays:
+        hrs = _hours_since_last_signal()
         extra = (
             f"\nوضع المخاطر: "
-            f"{'محظور حتى ' + s.get('blocked_until') if s.get('blocked_until') else 'سماح'} "
-            f"• صفقات اليوم: {s.get('trades_today', 0)} "
-            f"• PnL اليومي: {s.get('daily_pnl', 0.0):.2f}$"
+            f"{'محظور حتى ' + s.get('blocked_until') if s.get('blocked_until') else 'سماح'}"
+            f" • صفقات اليوم: {s.get('trades_today', 0)}"
+            f" • PnL اليومي: {float(s.get('daily_pnl', 0.0)):.2f}$"
         )
-        return f"📊 <b>تقرير اليوم {today}</b>\nلا توجد صفقات اليوم.{extra}\n{relax_str}"
+        return f"📊 <b>تقرير اليوم {today}</b>\nلا توجد صفقات اليوم.{extra}\nAuto-Relax: آخر إشارة منذ ~{hrs:.1f}h."
 
     total_pnl = sum(float(t.get("profit", 0.0)) for t in todays)
     wins = [t for t in todays if float(t.get("profit", 0.0)) > 0]
@@ -1543,6 +1542,7 @@ def build_daily_report_text():
             if t.get(f"tp{i}_hit"):
                 tp_hits.append(f"T{i}")
         tp_str = ",".join(tp_hits) if tp_hits else "-"
+
         rows.append([
             t.get("symbol", "-"),
             f"{float(t.get('amount', 0)):, .6f}".replace(' ', ''),
@@ -1552,7 +1552,8 @@ def build_daily_report_text():
             f"{round(float(t.get('pnl_pct', 0)) * 100, 2)}%",
             str(t.get("score", "-")),
             t.get("pattern", "-"),
-            (t.get("entry_reason", t.get('reason', '-'))[:40] + ("…" if len(t.get("entry_reason", t.get('reason', ''))) > 40 else "")),
+            (t.get("entry_reason", t.get("reason", "-"))[:40] +
+             ("…" if len(t.get("entry_reason", t.get("reason", ""))) > 40 else "")),
             tp_str,
             t.get("reason", "-")
         ])
@@ -1561,21 +1562,22 @@ def build_daily_report_text():
 
     risk_line = (
         f"وضع المخاطر: "
-        f"{'محظور حتى ' + s.get('blocked_until') if s.get('blocked_until') else 'سماح'} • "
-        f"اليومي: <b>{s.get('daily_pnl', 0.0):.2f}$</b> • "
-        f"متتالية خسائر: <b>{s.get('consecutive_losses', 0)}</b> • "
-        f"صفقات اليوم: <b>{s.get('trades_today', 0)}</b>"
+        f"{'محظور حتى ' + s.get('blocked_until') if s.get('blocked_until') else 'سماح'}"
+        f" • اليومي: <b>{float(s.get('daily_pnl', 0.0)):.2f}$</b>"
+        f" • متتالية خسائر: <b>{int(s.get('consecutive_losses', 0))}</b>"
+        f" • صفقات اليوم: <b>{int(s.get('trades_today', 0))}</b>"
     )
 
+    hrs = _hours_since_last_signal()
     summary = (
         f"📊 <b>تقرير اليوم {today}</b>\n"
         f"عدد الصفقات: <b>{len(todays)}</b> • ربح/خسارة: <b>{total_pnl:.2f}$</b>\n"
-        f"نسبة الفوز: <b>{win_rate}%</b> • {relax_str}\n"
+        f"نسبة الفوز: <b>{win_rate}%</b> • Auto-Relax منذ آخر إشارة: ~<b>{hrs:.1f}h</b>\n"
         f"{risk_line}\n"
     )
     return summary + table
 
-# ===== دوال تشخيص/ملخص رفض =====
+# ===== دوال تشخيص/ملخّص رفض =====
 _last_emit_ts = 0
 def maybe_emit_reject_summary():
     """يرسل ملخصًا لأكثر أسباب الرفض خلال آخر 30 دقيقة + حالة السِعة والمرونة."""
@@ -1588,10 +1590,11 @@ def maybe_emit_reject_summary():
         top = sorted(_REJ_SUMMARY.items(), key=lambda x: x[1], reverse=True)[:5]
         br = _BREADTH_CACHE.get("ratio")
         f_atr, f_rvol, notional_min = _round_relax_factors()
+        br_txt = "—" if br is None else f"{float(br):.2f}"
         msg = (
             "🧪 <b>Reject Summary (30m)</b>\n"
-            " • " + (" | ".join(f"{k}:{v}" for k,v in top) if top else "No data") + "\n"
-            f" • breadth={br:.2f} (eff_min≈{_breadth_min_auto():.2f})\n"
+            " • " + (" | ".join(f\"{k}:{v}\" for k, v in top) if top else "No data") + "\n"
+            f" • breadth={br_txt} (eff_min≈{_breadth_min_auto():.2f})\n"
             f" • soften: ATR×{f_atr:.2f}, RVOL×{f_rvol:.2f}, Notional≥{int(notional_min)}"
         )
         _tg(msg)
