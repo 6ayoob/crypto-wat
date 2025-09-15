@@ -1,4 +1,6 @@
+# -*- coding: utf-8 -*-
 # main.py — Sync loop (HTF/LTF) with per-round cache + perf metrics + breadth status
+
 import os
 import time
 import random
@@ -9,16 +11,19 @@ from datetime import datetime, timezone, timedelta
 
 import requests
 
-from config import TELEGRAM_TOKEN, TELEGRAM_CHAT_ID, SYMBOLS, STRAT_LTF_TIMEFRAME, STRAT_HTF_TIMEFRAME
+from config import (
+    TELEGRAM_TOKEN, TELEGRAM_CHAT_ID,
+    SYMBOLS, STRAT_LTF_TIMEFRAME, STRAT_HTF_TIMEFRAME
+)
 
 # الاستراتيجية
 from strategy import (
     check_signal, execute_buy, manage_position, load_position,
     count_open_positions, build_daily_report_text,
-    reset_cycle_cache, metrics_snapshot, metrics_format,
-    maybe_emit_reject_summary,   # قد تكون موجودة في نسختك
-    check_signal_debug,          # قد تكون موجودة في نسختك
-    breadth_status               # جديد: لعرض حالة السِعة
+    reset_cycle_cache, metrics_format,
+    maybe_emit_reject_summary,     # لو غير موجودة في نسختك سيتخطّاها try/except
+    check_signal_debug,            # لو غير موجودة سيتخطّاها try/except
+    breadth_status                 # يُتوقع أن تُرجع dict: {ratio,min,ok}
 )
 
 # كاش أسعار جماعي من okx_api لتقليل الضغط (اختياري)
@@ -33,7 +38,7 @@ MAX_OPEN_POSITIONS_OVERRIDE = None  # حد محلي لعدد الصفقات (ا�
 
 SCAN_INTERVAL_SEC    = int(os.getenv("SCAN_INTERVAL_SEC", "25"))   # فحص إشارات الدخول
 MANAGE_INTERVAL_SEC  = int(os.getenv("MANAGE_INTERVAL_SEC", "10")) # إدارة المراكز
-LOOP_SLEEP_SEC       = 1.0
+LOOP_SLEEP_SEC       = float(os.getenv("LOOP_SLEEP_SEC", "1.0"))
 
 ENABLE_DAILY_REPORT  = os.getenv("ENABLE_DAILY_REPORT", "1").lower() in ("1","true","yes")
 DAILY_REPORT_HOUR    = int(os.getenv("DAILY_REPORT_HOUR", "23"))
@@ -70,7 +75,7 @@ def _is_error_text(text: str) -> bool:
     if not text:
         return False
     t = str(text).strip()
-    return t.startswith("⚠️") or t.startswith("❌") or "خطأ" in t or "Error" in t
+    return t.startswith(("⚠️","❌")) or ("خطأ" in t) or ("Error" in t)
 
 def tg_info(text, parse_mode=None, silent=True):
     if SEND_INFO_TO_TELEGRAM:
@@ -109,12 +114,12 @@ def _handle_stop(signum, frame):
             _stop_flag = True
             msg = "⏹️ تم تأكيد إيقاف البوت بعد إشارة ثانية ضمن النافذة (debounce)."
             print(msg)
-            tg_info(msg, disable_notification=True)
+            tg_info(msg, silent=True)
         else:
             _last_stop_signal_ts = now
             msg = f"⚠️ استلمت إشارة إيقاف. لن يتم الإيقاف إلا إذا وصلت إشارة ثانية خلال {STOP_DEBOUNCE_WINDOW_SEC}ث."
             print(msg)
-            tg_info(msg, disable_notification=True)
+            tg_info(msg, silent=True)
         return
 
     # immediate
@@ -159,7 +164,7 @@ if __name__ == "__main__":
         except Exception:
             pass
 
-    # معلومات بدء مع عرض الإطارات الزمنية الفعلية + حالة السعة (بدون تداخل f-string)
+    # معلومات بدء مع عرض الإطارات الزمنية الفعلية + حالة السعة
     try:
         bs0 = breadth_status() or {}
         ratio_txt = "—" if bs0.get("ratio") is None else f"{bs0.get('ratio', 0.0):.2f}"
@@ -168,7 +173,7 @@ if __name__ == "__main__":
         bs_line   = f"breadth: {ratio_txt}, min={min_txt}, ok={ok_txt}"
 
         tg_info(
-            f"🚀 تشغيل البوت — {len(SYMBOLS)} رمز | HTF={STRAT_HTF_TIMEFRAME} / LTF={STRAT_LTF_TIMEFRAME} ✅\n"
+            f"🚀 تشغيل البوت — {len(SYMBOLS)} رمز | HTF={STRAT_HTF_TIMEFRAME} / LTF={STRAT_LTF_TIMEFRAME}\n"
             f"📡 {bs_line}",
             silent=True
         )
@@ -195,7 +200,10 @@ if __name__ == "__main__":
                 t_round_start = perf_counter()
                 try:
                     # 🔑 مسح كاش OHLCV للجولة الحالية مرة واحدة (يصفّر الميتريكس أيضًا)
-                    reset_cycle_cache()
+                    try:
+                        reset_cycle_cache()
+                    except Exception:
+                        pass
 
                     open_positions_count = _get_open_positions_count_safe()
 
@@ -231,8 +239,7 @@ if __name__ == "__main__":
                         if is_buy:
                             try:
                                 order, msg = execute_buy(symbol)
-                                # لا نُعيد إرسال رسائل النجاح (strategy سترسل إشعاراتها)
-                                # نُرسل فقط رسائل الأخطاء هنا
+                                # الاستراتيجية تتكفّل برسائل النجاح؛ هنا نرسل الأخطاء فقط
                                 if msg and _is_error_text(msg):
                                     tg_error(msg)
                                 # تحديث العدّ من المصدر بعد كل محاولة شراء
