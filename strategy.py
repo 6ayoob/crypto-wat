@@ -795,15 +795,7 @@ def _breadth_min_auto() -> float:
     except Exception:
         return BREADTH_MIN_RATIO
 
-# داخل check_signal_new() مباشرة بعد:
-#   br = _get_breadth_ratio_cached()
-#   eff_min = _breadth_min_auto()
 
-SOFT_BREADTH_ENABLE = os.getenv("SOFT_BREADTH_ENABLE", "1").lower() in ("1","true","yes","y")
-SOFT_BREADTH_SIZE_SCALE = float(os.getenv("SOFT_BREADTH_SIZE_SCALE", "0.5"))
-
-leader_flag = False
-if br is not None and br < eff_min:
     # استثناء القائد كما هو
     leader_flag = _is_relative_leader_vs_btc(base)
     if not leader_flag:
