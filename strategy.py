@@ -912,7 +912,7 @@ def _opportunity_score(df, prev, closed):
         pass
     return score, ", ".join(why), (pattern or "Generic")
 
-# ================== NEW/SRR — مع السِعة التلقائية + قائد ==================
+# ================== NEW/SRR — مع السِعة التلقائية + قائد + Soft Breadth ==================
 def check_signal_new(symbol):
     """يفحص إشارة شراء Spot فقط على الرمز المحدد (نسخ: new/srr/brt/vbr). يعيد dict{'decision':'buy', ...} أو None."""
     ok, reason = _risk_precheck_allow_new_entry()
@@ -932,15 +932,18 @@ def check_signal_new(symbol):
         if load_position(symbol):
             return _rej("already_open")
 
-        # Market breadth (تلقائي)
+        # === Market breadth (تلقائي) + Soft mode
         br = _get_breadth_ratio_cached()
         eff_min = _breadth_min_auto()   # ← استخدام الحدّ التلقائي
         leader_flag = False
+        breadth_soft = False
         if br is not None and br < eff_min:
             # استثناء القائد
             leader_flag = _is_relative_leader_vs_btc(base)
             if not leader_flag:
-                return _rej("breadth_low", ratio=round(br,2), min=round(eff_min,2))
+                # لا نرفض هنا؛ نعلّم الإشارة بأنها "soft breadth"
+                breadth_soft = True
+                _pass("breadth_soft", ratio=round(br,2), min=round(eff_min,2))
 
         ctx = _get_htf_context(symbol)
         if not ctx: return _rej("htf_none")
@@ -1081,7 +1084,8 @@ def check_signal_new(symbol):
             "decision": "buy",
             "score": score, "reason": why, "pattern": patt, "ts": ts,
             "chosen_mode": chosen_mode, "atrp": atrp, "rsi": rsi_val, "dist_ema50_atr": dist_atr,
-            "leader_flag": bool(leader_flag)
+            "leader_flag": bool(leader_flag),
+            "breadth_soft": bool(breadth_soft)  # ← جديد
         }
     finally:
         _CURRENT_SYMKEY = None
