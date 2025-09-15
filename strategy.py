@@ -102,6 +102,10 @@ BREADTH_TF = os.getenv("BREADTH_TF", "1h")
 BREADTH_TTL_SEC = int(os.getenv("BREADTH_TTL_SEC", "180"))
 BREADTH_SYMBOLS_ENV = os.getenv("BREADTH_SYMBOLS", "")  # CSV اختياري
 
+# Soft breadth sizing (نستخدمه لاحقًا داخل check_signal/execute_buy)
+SOFT_BREADTH_ENABLE = os.getenv("SOFT_BREADTH_ENABLE", "1").lower() in ("1","true","yes","y")
+SOFT_BREADTH_SIZE_SCALE = float(os.getenv("SOFT_BREADTH_SIZE_SCALE", "0.5"))
+
 # Exhaustion
 EXH_RSI_MAX = float(os.getenv("EXH_RSI_MAX", "76"))
 EXH_EMA50_DIST_ATR = float(os.getenv("EXH_EMA50_DIST_ATR", "2.8"))
@@ -349,6 +353,19 @@ def _df(data):
     except Exception:
         pass
     return df
+
+def _finite_or(default, *vals):
+    """
+    يرجع أول قيمة float نهائية (ليست NaN/Inf) من vals، وإلا يُرجع default.
+    """
+    for v in vals:
+        try:
+            f = float(v)
+            if math.isfinite(f):
+                return f
+        except Exception:
+            pass
+    return default
 
 def _split_symbol_variant(symbol: str):
     if "#" in symbol:
@@ -647,14 +664,26 @@ def _get_htf_context(symbol):
     df = _df(data); df["ema50_htf"] = ema(df["close"], HTF_EMA_TREND_PERIOD)
     if len(df) < HTF_SR_WINDOW + 3: return None
     df_prev = df.iloc[:-2]; w = min(HTF_SR_WINDOW, len(df_prev))
-    resistance = df_prev["high"].rolling(w).max().iloc[-1]
-    support    = df_prev["low"].rolling(w).min().iloc[-1]
-    closed = df.iloc[-2]
-    ema_now  = float(closed["ema50_htf"])
-    ema_prev = float(df["ema50_htf"].iloc[-7]) if len(df) >= 7 else ema_now
 
-    ctx: Dict[str, Any] = {"close": float(closed["close"]), "ema50_now": ema_now, "ema50_prev": ema_prev,
-           "support": float(support), "resistance": float(resistance), "mtf": {}}
+    resistance_raw = df_prev["high"].rolling(w).max().iloc[-1]
+    support_raw    = df_prev["low"].rolling(w).min().iloc[-1]
+    resistance = _finite_or(None, resistance_raw)
+    support    = _finite_or(None, support_raw)
+
+    closed = df.iloc[-2]
+    # اجعل EMA القيمي آمنة
+    ema_series = ema(df["close"], HTF_EMA_TREND_PERIOD)
+    ema_now  = _finite_or(float(closed["close"]), (ema_series.iloc[-2] if len(ema_series) >= 2 else None))
+    ema_prev = _finite_or(ema_now, (ema_series.iloc[-7] if len(ema_series) >= 7 else None))
+
+    ctx: Dict[str, Any] = {
+        "close": float(closed["close"]),
+        "ema50_now": float(ema_now),
+        "ema50_prev": float(ema_prev),
+        "support": support,
+        "resistance": resistance,
+        "mtf": {}
+    }
 
     if ENABLE_MTF_STRICT:
         def _tf_info(tf, bars=160):
@@ -663,9 +692,10 @@ def _get_htf_context(symbol):
                 if not d or len(d) < 80: return None
                 _dfx = _df(d); _dfx[f"ema{HTF_EMA_TREND_PERIOD}"] = ema(_dfx["close"], HTF_EMA_TREND_PERIOD)
                 row = _dfx.iloc[-2]
+                e = _finite_or(float(row["close"]), row.get(f"ema{HTF_EMA_TREND_PERIOD}"))
                 return {"tf": tf, "price": float(row["close"]),
-                        "ema": float(row[f"ema{HTF_EMA_TREND_PERIOD}"]),
-                        "trend_up": bool(row["close"] > row[f"ema{HTF_EMA_TREND_PERIOD}"])}
+                        "ema": float(e),
+                        "trend_up": bool(float(row["close"]) > float(e))}
             except Exception:
                 return None
 
@@ -796,16 +826,6 @@ def _breadth_min_auto() -> float:
     except Exception:
         return BREADTH_MIN_RATIO
 
-
-    # استثناء القائد كما هو
-    leader_flag = _is_relative_leader_vs_btc(base)
-    if not leader_flag:
-        if SOFT_BREADTH_ENABLE:
-            # لا نقفل الإشارة تماماً — نضع ختم "soft" ونقلص الحجم لاحقاً
-            _pass("breadth_soft", ratio=round(br,2), min=round(eff_min,2))
-        else:
-            return _rej("breadth_low", ratio=round(br,2), min=round(eff_min,2))
-
 # ===== سلوك القائد =====
 def _is_relative_leader_vs_btc(symbol_base: str, tf="1h", lookback=24, edge=0.02) -> bool:
     """يقيس متوسط التفوق النسبي لعوائد الرمز - عوائد BTC خلال نافذة بسيطة."""
@@ -866,21 +886,39 @@ def _round_relax_factors():
 
 # ================== منطق الدخول الأساسية ==================
 def _entry_pullback_logic(df, closed, prev, atr_ltf, htf_ctx, cfg):
-    ref_val = closed["ema21"] if cfg["PULLBACK_VALUE_REF"]=="ema21" else closed.get("vwap", closed["ema21"])
-    if pd.isna(ref_val): ref_val = closed["ema21"]
-    near_val = (closed["close"] >= ref_val) and (closed["low"] <= ref_val)
+    # اختر المرجع حسب الإعداد، مع fallbacks آمنة
+    if cfg["PULLBACK_VALUE_REF"] == "ema21":
+        ref_val = _finite_or(None, closed.get("ema21"))
+    else:
+        ref_val = _finite_or(None, closed.get("vwap"))
+        if ref_val is None:
+            ref_val = _finite_or(None, closed.get("ema21"))
+    # fallback نهائي إلى close (حتى لا نفقد المقارنة)
+    ref_val = _finite_or(float(closed["close"]), ref_val, closed.get("ema50"), closed.get("close"))
+
+    close_v = _finite_or(None, closed.get("close"))
+    low_v   = _finite_or(None, closed.get("low"))
+    if close_v is None or low_v is None:
+        return False
+
+    near_val = (close_v >= ref_val) and (low_v <= ref_val)
     if not near_val: return False
+
     if cfg["PULLBACK_CONFIRM"] == "bullish_engulf":
         return _bullish_engulf(prev, closed)
     elif cfg["PULLBACK_CONFIRM"] == "bos":
-        swing_high, _ = _swing_points(df); return bool(swing_high and closed["close"] > swing_high)
+        swing_high, _ = _swing_points(df)
+        sh = _finite_or(None, swing_high)
+        return bool(sh is not None and close_v > sh)
+
     return True
 
 def _entry_breakout_logic(df, closed, prev, atr_ltf, htf_ctx, cfg):
     hi_range = float(df["high"].iloc[-NR_WINDOW-2:-2].max())
     is_nr_recent = bool(df["is_nr"].iloc[-3:-1].all())
-    vwap_ok = closed["close"] > float(closed.get("vwap", closed["ema21"]))
-    return (closed["close"] > hi_range) and (is_nr_recent and vwap_ok or vwap_ok)
+    vwap_ref = _finite_or(float(closed["close"]), closed.get("vwap"), closed.get("ema21"), closed.get("ema50"))
+    vwap_ok = float(closed["close"]) > vwap_ref
+    return (float(closed["close"]) > hi_range) and (is_nr_recent and vwap_ok or vwap_ok)
 
 # ---------- Scoring ----------
 def _opportunity_score(df, prev, closed):
@@ -904,14 +942,15 @@ def _opportunity_score(df, prev, closed):
     except Exception:
         pass
     return score, ", ".join(why), (pattern or "Generic")
-
 # ================== NEW/SRR — مع السِعة التلقائية + قائد + Soft Breadth ==================
 def check_signal_new(symbol):
     """يفحص إشارة شراء Spot فقط على الرمز المحدد (نسخ: new/srr/brt/vbr). يعيد dict{'decision':'buy', ...} أو None."""
     ok, reason = _risk_precheck_allow_new_entry()
-    if not ok: return _rej("risk_precheck", reason=reason)
+    if not ok:
+        return _rej("risk_precheck", reason=reason)
 
-    base, variant = _split_symbol_variant(symbol); cfg = get_cfg(variant)
+    base, variant = _split_symbol_variant(symbol)
+    cfg = get_cfg(variant)
     key = f"{base}|{variant}"
 
     # لتسجيل آخر سبب رفض لهذا الرمز/النسخة
@@ -936,36 +975,42 @@ def check_signal_new(symbol):
             if not leader_flag:
                 # لا نرفض هنا؛ نعلّم الإشارة بأنها "soft breadth"
                 breadth_soft = True
-                _pass("breadth_soft", ratio=round(br,2), min=round(eff_min,2))
+                _pass("breadth_soft", ratio=round(br, 2), min=round(eff_min, 2))
 
+        # === HTF context
         ctx = _get_htf_context(symbol)
-if not ctx:
-    return _rej("htf_none")
+        if not ctx:
+            return _rej("htf_none")
 
-ema50_now  = _safe_num(ctx.get("ema50_now"), None)
-ema50_prev = _safe_num(ctx.get("ema50_prev"), None)
-ctx_close  = _safe_num(ctx.get("close"), None)
+        ema50_now  = _finite_or(None, ctx.get("ema50_now"))
+        ema50_prev = _finite_or(None, ctx.get("ema50_prev"))
+        ctx_close  = _finite_or(None, ctx.get("close"))
 
-# لو أي قيمة ناقصة، ارفض بسبب نقص بيانات بدل ما نقارن None مع float
-if None in (ema50_now, ema50_prev, ctx_close):
-    return _rej("htf_ctx_nan")
+        # لو أي قيمة ناقصة، ارفض بسبب نقص بيانات بدل ما نقارن None مع float
+        if None in (ema50_now, ema50_prev, ctx_close):
+            return _rej("htf_ctx_nan")
 
-if not ((ema50_now - ema50_prev) > 0 and ctx_close > ema50_now):
-    return _rej("htf_trend")
+        if not ((ema50_now - ema50_prev) > 0 and ctx_close > ema50_now):
+            return _rej("htf_trend")
 
-
+        # === LTF data
         data = get_ohlcv_cached(base, LTF_TIMEFRAME, 260)
-        if not data: return _rej("ltf_fetch")
-        df = _df(data); df = _ensure_ltf_indicators(df)
-        if len(df) < 200: return _rej("ltf_len", n=len(df))
+        if not data:
+            return _rej("ltf_fetch")
+        df = _df(data)
+        df = _ensure_ltf_indicators(df)
+        if len(df) < 200:
+            return _rej("ltf_len", n=len(df))
 
         prev, closed = df.iloc[-3], df.iloc[-2]
         ts = int(closed["timestamp"])
-        if _LAST_ENTRY_BAR_TS.get(key) == ts: return _rej("dup_bar")
+        if _LAST_ENTRY_BAR_TS.get(key) == ts:
+            return _rej("dup_bar")
 
         price = float(closed["close"])
         atr = _atr_from_df(df)
-        if not atr or atr <= 0: return _rej("atr_nan")
+        if not atr or atr <= 0:
+            return _rej("atr_nan")
         atrp = atr / max(price, 1e-9)
 
         # تليين الجولة + Auto-Relax بالساعات
@@ -973,10 +1018,13 @@ if not ((ema50_now - ema50_prev) > 0 and ctx_close > ema50_now):
         relax_lvl = _relax_level_current()
 
         atr_min = float(cfg.get("ATR_MIN_FOR_TREND", 0.002))
-        if relax_lvl == 1: atr_min *= RELAX_ATR_MIN_SCALE_1
-        if relax_lvl == 2: atr_min *= RELAX_ATR_MIN_SCALE_2
+        if relax_lvl == 1:
+            atr_min *= RELAX_ATR_MIN_SCALE_1
+        if relax_lvl == 2:
+            atr_min *= RELAX_ATR_MIN_SCALE_2
         atr_min *= f_atr
-        if atrp < atr_min: return _rej("atr_low", atrp=round(atrp,5), min=round(atr_min,5))
+        if atrp < atr_min:
+            return _rej("atr_low", atrp=round(atrp, 5), min=round(atr_min, 5))
 
         notional = price * float(closed["volume"])
         if notional < notional_min:
@@ -985,20 +1033,23 @@ if not ((ema50_now - ema50_prev) > 0 and ctx_close > ema50_now):
         rvol = float(closed.get("rvol", 0) or 0)
         need_rvol_base = float(cfg.get("RVOL_MIN", 1.2)) * 0.95
         need_rvol = need_rvol_base
-        if relax_lvl == 1: need_rvol = max(0.8, need_rvol_base - RELAX_RVOL_DELTA_1)
-        if relax_lvl == 2: need_rvol = max(0.75, need_rvol_base - RELAX_RVOL_DELTA_2)
+        if relax_lvl == 1:
+            need_rvol = max(0.8, need_rvol_base - RELAX_RVOL_DELTA_1)
+        if relax_lvl == 2:
+            need_rvol = max(0.75, need_rvol_base - RELAX_RVOL_DELTA_2)
         need_rvol = max(0.70, need_rvol * f_rvol)
-        if pd.isna(rvol) or rvol < need_rvol: return _rej("rvol", rvol=round(rvol,2), need=round(need_rvol,2))
+        if pd.isna(rvol) or rvol < need_rvol:
+            return _rej("rvol", rvol=round(rvol, 2), need=round(need_rvol, 2))
 
         # فلتر ترند EMA200 (اختياري)
-       if USE_EMA200_TREND_FILTER:
-    e50  = _safe_num(closed.get("ema50"), None)
-    e200 = _safe_num(closed.get("ema200"), None)
-    p    = _safe_num(price, None)
-    if None in (e50, e200, p):
-        return _rej("ema200_trend_data")  # نقص بيانات
-    if not (e50 > e200 and p > e200):
-        return _rej("ema200_trend")
+        if USE_EMA200_TREND_FILTER:
+            e50  = _finite_or(None, closed.get("ema50"))
+            e200 = _finite_or(None, closed.get("ema200"))
+            p    = _finite_or(None, price)
+            if None in (e50, e200, p):
+                return _rej("ema200_trend_data")  # نقص بيانات
+            if not (e50 > e200 and p > e200):
+                return _rej("ema200_trend")
 
         # اختيار النمط (hybrid)
         def _brk_ok():
@@ -1008,14 +1059,17 @@ if not ((ema50_now - ema50_prev) > 0 and ctx_close > ema50_now):
             buf = float(cfg.get("BREAKOUT_BUFFER_LTF", 0.0015))
             return (price > hi_range * (1.0 + buf)) and (is_nr_recent or vwap_ok)
 
-        chosen_mode = None; mode_ok = False
+        chosen_mode = None
+        mode_ok = False
         entry_mode = cfg.get("ENTRY_MODE", "hybrid")
         if entry_mode == "pullback":
-            chosen_mode = "pullback"; mode_ok = _entry_pullback_logic(df, closed, prev, atr, ctx, cfg)
+            chosen_mode = "pullback"
+            mode_ok = _entry_pullback_logic(df, closed, prev, atr, ctx, cfg)
         elif entry_mode == "breakout":
-            chosen_mode = "breakout"; mode_ok = _brk_ok()
+            chosen_mode = "breakout"
+            mode_ok = _brk_ok()
         else:
-            for m in cfg.get("HYBRID_ORDER", ["breakout","pullback"]):
+            for m in cfg.get("HYBRID_ORDER", ["breakout", "pullback"]):
                 if m == "breakout" and _brk_ok():
                     chosen_mode = "breakout"; mode_ok = True; break
                 if m == "pullback" and _entry_pullback_logic(df, closed, prev, atr, ctx, cfg):
@@ -1044,20 +1098,23 @@ if not ((ema50_now - ema50_prev) > 0 and ctx_close > ema50_now):
         dist_atr = dist / atr
         if chosen_mode == "pullback":
             lb, ub = 0.15, 2.5
-            if rvol >= need_rvol * 1.20: lb = 0.10
+            if rvol >= need_rvol * 1.20:
+                lb = 0.10
         elif chosen_mode == "breakout":
             lb, ub = 0.50, 4.0
-            if rvol >= need_rvol * 1.30: ub = 4.5
+            if rvol >= need_rvol * 1.30:
+                ub = 4.5
         else:  # golden_cross
             lb, ub = 0.00, 4.0
-            if rvol >= need_rvol * 1.30: ub = 4.5
+            if rvol >= need_rvol * 1.30:
+                ub = 4.5
         if not (lb <= dist_atr <= ub):
-            return _rej("dist_to_ema50", dist_atr=round(dist_atr,3), lb=lb, ub=ub)
+            return _rej("dist_to_ema50", dist_atr=round(dist_atr, 3), lb=lb, ub=ub)
 
         # Exhaustion guard
         rsi_val = float(closed.get("rsi", 50))
         if (chosen_mode in ("breakout","pullback","golden_cross")) and (rsi_val >= EXH_RSI_MAX) and (dist_atr >= EXH_EMA50_DIST_ATR):
-            return _rej("exhaustion_guard", rsi=rsi_val, dist_atr=round(dist_atr,2))
+            return _rej("exhaustion_guard", rsi=rsi_val, dist_atr=round(dist_atr, 2))
 
         # نطاقات RSI حسب النمط
         if chosen_mode == "pullback" and not (RSI_MIN_PULLBACK - 3 < rsi_val < RSI_MAX_PULLBACK + 2):
@@ -1072,15 +1129,18 @@ if not ((ema50_now - ema50_prev) > 0 and ctx_close > ema50_now):
         for name, ent in sr_multi.items():
             res = ent.get("resistance")
             if res and (res - price) < (ent["near_mult"] * atr):
-                near_res_any = True; break
+                near_res_any = True
+                break
         ctx_res_near = (ctx.get("resistance") and (ctx["resistance"] - price) < 1.2*atr)
         near_res = (res_ltf and (res_ltf - price) < 0.8*atr) or ctx_res_near or near_res_any
         if near_res and chosen_mode != "breakout":
             return _rej("near_res_block")
 
         score, why, patt = _opportunity_score(df, prev, closed)
-        if chosen_mode == "breakout": patt = "NR_Breakout"
-        if chosen_mode == "golden_cross": patt = "EMA50x200_Golden"; score += 12
+        if chosen_mode == "breakout":
+            patt = "NR_Breakout"
+        if chosen_mode == "golden_cross":
+            patt = "EMA50x200_Golden"; score += 12
 
         if score < SCORE_THRESHOLD:
             return _rej("score_low", score=score)
@@ -1197,8 +1257,8 @@ def _compute_sl_tp(entry, atr_val, cfg, variant, symbol=None, df=None, ctx=None,
                     tp1 = entry + cfg.get("TP1_ATR_MULT", 1.6) * atr_val
                     atr_tp2 = entry + cfg.get("TP2_ATR_MULT", 3.2) * atr_val
                 else:
-                    tp1 = entry * (1 + cfg.get("TP1_PCT", 0.03))
-                    atr_tp2 = entry * (1 + cfg.get("TP2_PCT", 0.06))
+                    tp1 = entry * (1 + cfg.get("TP1_PCT", 0.03"))
+                    atr_tp2 = entry * (1 + cfg.get("TP2_PCT", 0.06"))
     except Exception:
         tp1 = atr_tp1
 
@@ -1271,8 +1331,10 @@ def execute_buy(symbol):
 
     mg = _mgmt(variant)
     custom = (_sig_inner.get("custom") if isinstance(_sig_inner, dict) else {}) or {}
-    if "sl" in custom and isinstance(custom["sl"], (int, float)): sl = float(custom["sl"])
-    if "tp1" in custom and isinstance(custom["tp1"], (int, float)): targets[0] = min(targets[0], float(custom["tp1"]))
+    if "sl" in custom and isinstance(custom["sl"], (int, float)):
+        sl = float(custom["sl"])
+    if "tp1" in custom and isinstance(custom["tp1"], (int, float)):
+        targets[0] = min(targets[0], float(custom["tp1"]))
 
     # ===== إعداد max_bars_to_tp1 ديناميكيًا =====
     max_bars_to_tp1 = MAX_BARS_BASE
@@ -1319,11 +1381,10 @@ def execute_buy(symbol):
         trade_usdt = TRADE_AMOUNT_USDT
 
     # ===== تحجيم بالحِسبان السِعة (Breadth) + Soft + استثناء القائد =====
-       # ===== تحجيم بالحِسبان السِعة (Breadth) + Soft + استثناء القائد =====
     br = _get_breadth_ratio_cached()
     eff_min = _breadth_min_auto()
 
-    # تحجيمك الأصلي حسب السِعة
+    # تحجيم أصلي حسب السِعة
     if br is not None:
         if br < 0.45:
             trade_usdt *= 0.70
@@ -1331,10 +1392,7 @@ def execute_buy(symbol):
             trade_usdt *= 0.85
 
     # وضع Soft: تقليص الحجم بدل الإلغاء (باستثناء القائد)
-    SOFT_BREADTH_ENABLE = os.getenv("SOFT_BREADTH_ENABLE", "1").lower() in ("1","true","yes","y")
-    SOFT_BREADTH_SIZE_SCALE = float(os.getenv("SOFT_BREADTH_SIZE_SCALE", "0.5"))
     is_leader = bool(_sig_inner.get("leader_flag", False))
-
     if SOFT_BREADTH_ENABLE and (br is not None) and (br < eff_min) and (not is_leader):
         trade_usdt *= SOFT_BREADTH_SIZE_SCALE
         try:
@@ -1419,7 +1477,8 @@ def manage_position(symbol):
     يعيد True إذا أُغلِقت الصفقة (كليًا) في هذه الاستدعاء.
     """
     pos = load_position(symbol)
-    if not pos: return False
+    if not pos:
+        return False
 
     base = pos["symbol"].split("#")[0]
     current = float(fetch_price(base))
@@ -1453,7 +1512,7 @@ def manage_position(symbol):
                     exit_px = float(order.get("average") or order.get("price") or current)
                     pnl_net = (exit_px - entry) * amount - (entry + exit_px) * amount * (FEE_BPS_ROUNDTRIP/10000.0)
                     close_trade(symbol, exit_px, pnl_net, reason="HTF_STOP")
-                    try: 
+                    try:
                         if STRAT_TG_SEND: _tg(f"🛑 وقف HTF {symbol} عند <code>{exit_px:.6f}</code>")
                     except Exception: pass
                     return True
@@ -1470,7 +1529,7 @@ def manage_position(symbol):
                     exit_px = float(order.get("average") or order.get("price") or current)
                     pnl_net = (exit_px - entry) * amount - (entry + exit_px) * amount * (FEE_BPS_ROUNDTRIP/10000.0)
                     close_trade(symbol, exit_px, pnl_net, reason="TIME_EXIT")
-                    try: 
+                    try:
                         if STRAT_TG_SEND: _tg(pos["messages"]["time"] if pos.get("messages") else "⌛ خروج زمني")
                     except Exception: pass
                     return True
@@ -1491,7 +1550,7 @@ def manage_position(symbol):
                     exit_px = float(order.get("average") or order.get("price") or current)
                     pnl_net = (exit_px - entry) * amount - (entry + exit_px) * amount * (FEE_BPS_ROUNDTRIP/10000.0)
                     close_trade(symbol, exit_px, pnl_net, reason="TIME_HOLD_MAX")
-                    try: 
+                    try:
                         if STRAT_TG_SEND: _tg("⌛ خروج لانتهاء مدة الاحتفاظ")
                     except Exception: pass
                     return True
@@ -1533,7 +1592,7 @@ def manage_position(symbol):
                             if lock_sl > pos["stop_loss"]:
                                 pos["stop_loss"] = float(lock_sl)
                                 save_position(symbol, pos)
-                                try: 
+                                try:
                                     if STRAT_TG_SEND: _tg(f"🔒 تحريك وقف الخسارة لقفل ربح مبدئي: <code>{lock_sl:.6f}</code>")
                                 except Exception: pass
                     except Exception:
@@ -1548,7 +1607,7 @@ def manage_position(symbol):
                                 new_sl = current - atr_val2
                                 if new_sl > pos["stop_loss"] * (1 + TRAIL_MIN_STEP_RATIO):
                                     pos["stop_loss"] = float(new_sl); save_position(symbol, pos)
-                                    try: 
+                                    try:
                                         if STRAT_TG_SEND: _tg(f"🧭 <b>Trailing SL</b> {symbol} → <code>{new_sl:.6f}</code>")
                                     except Exception: pass
 
@@ -1562,7 +1621,7 @@ def manage_position(symbol):
                 new_sl = current - _mgmt(variant).get("TRAIL_ATR", 1.0) * atr_val3
                 if new_sl > pos["stop_loss"] * (1 + TRAIL_MIN_STEP_RATIO):
                     pos["stop_loss"] = float(new_sl); save_position(symbol, pos)
-                    try: 
+                    try:
                         if STRAT_TG_SEND: _tg(f"🧭 <b>Trailing SL</b> {symbol} → <code>{new_sl:.6f}</code>")
                     except Exception: pass
 
@@ -1583,20 +1642,21 @@ def manage_position(symbol):
             return True
 
     return False
-
 # ================== إغلاق وتسجيل ==================
 def close_trade(symbol, exit_price, pnl_net, reason="MANUAL"):
     """يغلق الصفقة ويدوّنها في closed_positions.json ويحدّث مخاطر اليوم/الساعة."""
     pos = load_position(symbol)
-    if not pos: return
+    if not pos:
+        return
     closed = load_closed_positions()
 
-    entry = float(pos["entry_price"]); amount = float(pos["amount"])
-    pnl_pct = ((exit_price / entry) - 1.0) if entry else 0.0
+    entry = float(pos.get("entry_price", 0.0))
+    amount = float(pos.get("amount", 0.0))
+    pnl_pct = ((float(exit_price) / entry) - 1.0) if entry else 0.0
 
     tp_hits = {}
     try:
-        if "targets" in pos and "tp_hits" in pos:
+        if "targets" in pos and "tp_hits" in pos and isinstance(pos["tp_hits"], list):
             for i, hit in enumerate(pos["tp_hits"], start=1):
                 tp_hits[f"tp{i}_hit"] = bool(hit)
     except Exception:
@@ -1604,11 +1664,11 @@ def close_trade(symbol, exit_price, pnl_net, reason="MANUAL"):
 
     closed.append({
         "symbol": pos.get("symbol", symbol),
-        "entry_price": entry,
+        "entry_price": float(entry),
         "exit_price": float(exit_price),
-        "amount": amount,
+        "amount": float(amount),
         "profit": float(pnl_net),
-        "pnl_pct": round(pnl_pct, 6),
+        "pnl_pct": round(float(pnl_pct), 6),
         "reason": reason,
         "opened_at": pos.get("opened_at"),
         "closed_at": now_riyadh().isoformat(timespec="seconds"),
@@ -1619,12 +1679,12 @@ def close_trade(symbol, exit_price, pnl_net, reason="MANUAL"):
         **tp_hits
     })
     save_closed_positions(closed)
-    register_trade_result(pnl_net)
+    register_trade_result(float(pnl_net))
     clear_position(symbol)
 
 # ================== تقرير يومي ==================
 def _fmt_table(rows, headers):
-    widths = [len(h) for h in headers]
+    widths = [len(str(h)) for h in headers]
     for r in rows:
         for i, c in enumerate(r):
             widths[i] = max(widths[i], len(str(c)))
@@ -1636,6 +1696,17 @@ def _fmt_table(rows, headers):
     body_lines = "\n".join(fmt_row(r) for r in rows)
     return "<pre>" + header_line + "\n" + body_lines + "</pre>"
 
+def _fmt_blocked_until_text():
+    s = load_risk_state()
+    bu = s.get("blocked_until")
+    if not bu:
+        return "سماح"
+    try:
+        dt = datetime.fromisoformat(bu)
+        return f"محظور حتى {dt.strftime('%H:%M')}"
+    except Exception:
+        return f"محظور حتى {bu}"
+
 def build_daily_report_text():
     """ينشئ نص تقرير يومي مضغوط (HTML) مع ملخص المخاطر وصفقات اليوم)."""
     closed = load_closed_positions()
@@ -1643,15 +1714,17 @@ def build_daily_report_text():
     todays = [t for t in closed if str(t.get("closed_at", "")).startswith(today)]
     s = load_risk_state()
 
+    hrs = _hours_since_last_signal()
+    relax_line = _format_relax_str() if ' _format_relax_str' in globals() else f"Auto-Relax: آخر إشارة منذ ~{(hrs or 0):.1f}h."
+
     if not todays:
-        hrs = _hours_since_last_signal()
         extra = (
             f"\nوضع المخاطر: "
-            f"{'محظور حتى ' + s.get('blocked_until') if s.get('blocked_until') else 'سماح'}"
-            f" • صفقات اليوم: {s.get('trades_today', 0)}"
+            f"{_fmt_blocked_until_text()}"
+            f" • صفقات اليوم: {int(s.get('trades_today', 0))}"
             f" • PnL اليومي: {float(s.get('daily_pnl', 0.0)):.2f}$"
         )
-        return f"📊 <b>تقرير اليوم {today}</b>\nلا توجد صفقات اليوم.{extra}\nAuto-Relax: آخر إشارة منذ ~{(hrs or 0):.1f}h."
+        return f"📊 <b>تقرير اليوم {today}</b>\nلا توجد صفقات اليوم.{extra}\n{relax_line}"
 
     total_pnl = sum(float(t.get("profit", 0.0)) for t in todays)
     wins = [t for t in todays if float(t.get("profit", 0.0)) > 0]
@@ -1660,23 +1733,32 @@ def build_daily_report_text():
     headers = ["الرمز#النسخة", "الكمية", "دخول", "خروج", "P/L$", "P/L%", "Score", "نمط", "سبب", "TP_hits", "Exit"]
     rows = []
     for t in todays:
+        # TP hits summary
         tp_hits = []
         for i in range(1, 8):
             if t.get(f"tp{i}_hit"):
                 tp_hits.append(f"T{i}")
         tp_str = ",".join(tp_hits) if tp_hits else "-"
 
+        # safe numeric formatters
+        def f6(x): 
+            try: return "{:,.6f}".format(float(x))
+            except Exception: return str(x)
+        def f2(x): 
+            try: return "{:,.2f}".format(float(x))
+            except Exception: return str(x)
+
         rows.append([
             t.get("symbol", "-"),
-            f"{float(t.get('amount', 0)):, .6f}".replace(' ', ''),
-            f"{float(t.get('entry_price', 0)):, .6f}".replace(' ', ''),
-            f"{float(t.get('exit_price', 0)):, .6f}".replace(' ', ''),
-            f"{float(t.get('profit', 0)):, .2f}".replace(' ', ''),
-            f"{round(float(t.get('pnl_pct', 0)) * 100, 2)}%",
+            f6(t.get('amount', 0)),
+            f6(t.get('entry_price', 0)),
+            f6(t.get('exit_price', 0)),
+            f2(t.get('profit', 0)),
+            f"{round(float(t.get('pnl_pct', 0))*100, 2)}%",
             str(t.get("score", "-")),
             t.get("pattern", "-"),
             (t.get("entry_reason", t.get("reason", "-"))[:40] +
-             ("…" if len(t.get("entry_reason", t.get("reason", ""))) > 40 else "")),
+             ("…" if len(str(t.get("entry_reason", t.get("reason", "")))) > 40 else "")),
             tp_str,
             t.get("reason", "-")
         ])
@@ -1685,17 +1767,16 @@ def build_daily_report_text():
 
     risk_line = (
         f"وضع المخاطر: "
-        f"{'محظور حتى ' + s.get('blocked_until') if s.get('blocked_until') else 'سماح'}"
+        f"{_fmt_blocked_until_text()}"
         f" • اليومي: <b>{float(s.get('daily_pnl', 0.0)):.2f}$</b>"
         f" • متتالية خسائر: <b>{int(s.get('consecutive_losses', 0))}</b>"
         f" • صفقات اليوم: <b>{int(s.get('trades_today', 0))}</b>"
     )
 
-    hrs = _hours_since_last_signal()
     summary = (
         f"📊 <b>تقرير اليوم {today}</b>\n"
         f"عدد الصفقات: <b>{len(todays)}</b> • ربح/خسارة: <b>{total_pnl:.2f}$</b>\n"
-        f"نسبة الفوز: <b>{win_rate}%</b> • Auto-Relax منذ آخر إشارة: ~<b>{(hrs or 0):.1f}h</b>\n"
+        f"نسبة الفوز: <b>{win_rate}%</b> • {relax_line}\n"
         f"{risk_line}\n"
     )
     return summary + table
