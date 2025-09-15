@@ -1230,7 +1230,7 @@ def execute_buy(symbol):
     """
     تنفيذ شراء Spot-only للرمز المحدّد.
     - يستخدم Position sizing ديناميكي إذا USE_DYNAMIC_RISK=1 (افتراضي) + تعزيز حسب Score.
-    - يخضع لمنطق الحظر/المخاطر والسِعة (مع Soft Breadth).
+    - يخضع لمنطق الحظر/المخاطر والسِعة (مع Soft Breadth + استثناء القائد).
     """
     base, variant = _split_symbol_variant(symbol)
 
@@ -1265,6 +1265,7 @@ def execute_buy(symbol):
     if "sl" in custom and isinstance(custom["sl"], (int, float)): sl = float(custom["sl"])
     if "tp1" in custom and isinstance(custom["tp1"], (int, float)): targets[0] = min(targets[0], float(custom["tp1"]))
 
+    # ===== إعداد max_bars_to_tp1 ديناميكيًا =====
     max_bars_to_tp1 = MAX_BARS_BASE
     try:
         atrp = float(_sig_inner.get("atrp", atr_val / max(price_fallback, 1e-9)))
@@ -1287,6 +1288,7 @@ def execute_buy(symbol):
     price = float(sig["entry"]) if isinstance(sig, dict) else None
     usdt = float(fetch_balance("USDT") or 0)
 
+    # ===== Position sizing =====
     USE_DYNAMIC_RISK = os.getenv("USE_DYNAMIC_RISK", "1").lower() in ("1","true","yes","y")
     RISK_PCT_OF_EQUITY = float(os.getenv("RISK_PCT_OF_EQUITY", "0.02"))
     MIN_TRADE_USDT = float(os.getenv("MIN_TRADE_USDT", "10"))
@@ -1307,31 +1309,36 @@ def execute_buy(symbol):
     else:
         trade_usdt = TRADE_AMOUNT_USDT
 
-    # ===== تحجيم بالحِسبان السِعة (Breadth) + وضع Soft + استثناء القائد =====
+    # ===== تحجيم بالحِسبان السِعة (Breadth) + Soft + استثناء القائد =====
     br = _get_breadth_ratio_cached()
     eff_min = _breadth_min_auto()
 
-    # خطواتك الأصلية
+    # تخفيف عام حسب النسب الثابتة
     if br is not None:
         if br < 0.45:  trade_usdt *= 0.70
         elif br < 0.55: trade_usdt *= 0.85
 
-    # وضع Soft: إذا السِعة دون الحد الديناميكي، قلّص الحجم بدل الإلغاء (إلا لو الرمز قائد)
+    # وضع Soft Breadth المستلم من check_signal_new
     SOFT_BREADTH_ENABLE = os.getenv("SOFT_BREADTH_ENABLE", "1").lower() in ("1","true","yes","y")
     SOFT_BREADTH_SIZE_SCALE = float(os.getenv("SOFT_BREADTH_SIZE_SCALE", "0.5"))
     is_leader = bool(_sig_inner.get("leader_flag", False))
+    is_soft   = bool(_sig_inner.get("breadth_soft", False))
 
-    if SOFT_BREADTH_ENABLE and (br is not None) and (br < eff_min) and (not is_leader):
+    if SOFT_BREADTH_ENABLE and is_soft and (not is_leader):
         trade_usdt *= SOFT_BREADTH_SIZE_SCALE
         try:
-            sig["messages"]["breadth_soft"] = f"⚠️ Soft breadth: ratio={br:.2f} < min={eff_min:.2f} → size×{SOFT_BREADTH_SIZE_SCALE}"
+            sig["messages"]["breadth_soft"] = (
+                f"⚠️ Soft breadth: ratio={(br if br is not None else float('nan')):.2f} "
+                f"< min={eff_min:.2f} → size×{SOFT_BREADTH_SIZE_SCALE}"
+            )
         except Exception:
             pass
 
-    # استثناء القائد: نصف الحجم (كما لديك مسبقًا)
+    # استثناء القائد: نصف الحجم (كما في منطقك السابق)
     if is_leader:
         trade_usdt *= 0.50
 
+    # ===== التحقق من الرصيد و الحد الأدنى =====
     if usdt < max(MIN_TRADE_USDT, trade_usdt):
         return None, "🚫 رصيد USDT غير كافٍ."
 
@@ -1339,17 +1346,20 @@ def execute_buy(symbol):
     if amount * price < MIN_NOTIONAL_USDT:
         return None, "🚫 قيمة الصفقة أقل من الحد الأدنى."
 
+    # ===== تنفيذ الأمر =====
     order = place_market_order(base, "buy", amount)
     if not order:
         return None, "⚠️ فشل تنفيذ الصفقة."
 
     fill_px = float(order.get("average") or order.get("price") or price)
 
+    # ===== توزيع الجزئيات حسب Score و ATR =====
     sig["partials"] = _partials_for(int(sig["score"] or 0), len(sig["targets"]), atrp)
     ssum = sum(sig["partials"])
     if ssum <= 0: sig["partials"] = [1.0] + [0.0]*(len(sig["targets"])-1)
-    else: sig["partials"] = [round(x/ssum, 6) for x in sig["partials"]][:len(sig["targets"])]
+    else: sig["partials"] = [round(x/ssum, 6) for x in sig["partials"])][:len(sig["targets"])]
 
+    # ===== حفظ الصفقة =====
     pos = {
         "symbol": symbol,
         "amount": float(amount),
@@ -1371,6 +1381,7 @@ def execute_buy(symbol):
     register_trade_opened()
     _SYMBOL_LAST_TRADE_AT[f"{base}|{variant}"] = now_riyadh()
 
+    # ===== إخطار (اختياري) =====
     try:
         if STRAT_TG_SEND:
             msg = (
@@ -1387,7 +1398,6 @@ def execute_buy(symbol):
         pass
 
     return order, f"✅ شراء {symbol} | SL: {pos['stop_loss']:.6f} | 💰 {trade_usdt:.2f}$"
-
 
 # ================== إدارة الصفقة ==================
 def manage_position(symbol):
