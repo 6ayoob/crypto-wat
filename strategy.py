@@ -939,9 +939,20 @@ def check_signal_new(symbol):
                 _pass("breadth_soft", ratio=round(br,2), min=round(eff_min,2))
 
         ctx = _get_htf_context(symbol)
-        if not ctx: return _rej("htf_none")
-        if not ((ctx["ema50_now"] - ctx["ema50_prev"]) > 0 and ctx["close"] > ctx["ema50_now"]):
-            return _rej("htf_trend")
+if not ctx:
+    return _rej("htf_none")
+
+ema50_now  = _safe_num(ctx.get("ema50_now"), None)
+ema50_prev = _safe_num(ctx.get("ema50_prev"), None)
+ctx_close  = _safe_num(ctx.get("close"), None)
+
+# لو أي قيمة ناقصة، ارفض بسبب نقص بيانات بدل ما نقارن None مع float
+if None in (ema50_now, ema50_prev, ctx_close):
+    return _rej("htf_ctx_nan")
+
+if not ((ema50_now - ema50_prev) > 0 and ctx_close > ema50_now):
+    return _rej("htf_trend")
+
 
         data = get_ohlcv_cached(base, LTF_TIMEFRAME, 260)
         if not data: return _rej("ltf_fetch")
@@ -980,9 +991,14 @@ def check_signal_new(symbol):
         if pd.isna(rvol) or rvol < need_rvol: return _rej("rvol", rvol=round(rvol,2), need=round(need_rvol,2))
 
         # فلتر ترند EMA200 (اختياري)
-        if USE_EMA200_TREND_FILTER:
-            if not (float(closed.get("ema50", price)) > float(closed.get("ema200", price)) and price > float(closed.get("ema200", price))):
-                return _rej("ema200_trend")
+       if USE_EMA200_TREND_FILTER:
+    e50  = _safe_num(closed.get("ema50"), None)
+    e200 = _safe_num(closed.get("ema200"), None)
+    p    = _safe_num(price, None)
+    if None in (e50, e200, p):
+        return _rej("ema200_trend_data")  # نقص بيانات
+    if not (e50 > e200 and p > e200):
+        return _rej("ema200_trend")
 
         # اختيار النمط (hybrid)
         def _brk_ok():
