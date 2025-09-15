@@ -800,6 +800,15 @@ def _rej(stage, **kv):
          _REJ_SUMMARY[stage] = int(_REJ_SUMMARY.get(stage, 0)) + 1
      except Exception:
          pass
+       try:
++        if _CURRENT_SYMKEY:
++            _LAST_REJECT[_CURRENT_SYMKEY] = {
++                "stage": stage,
++                "details": {k: (float(v) if isinstance(v, (int, float)) else v) for k, v in kv.items()},
++                "ts": now_riyadh().isoformat(timespec="seconds")
++            }
++    except Exception:
++        pass
     if DEBUG_LOG_SIGNALS:
         kvs = " ".join(f"{k}={v}" for k, v in kv.items())
         logger.info(f"[REJECT] {stage} | {kvs}")
