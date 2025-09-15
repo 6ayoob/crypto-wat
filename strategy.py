@@ -1180,91 +1180,112 @@ def get_last_reject(symbol: str) -> Optional[Dict[str, Any]]:
 
 # ================== SL/TP ==================
 def _compute_sl_tp(entry, atr_val, cfg, variant, symbol=None, df=None, ctx=None, closed=None):
+    """
+    يحسب SL و TP1 و TP2 بشكل متّسق وآمن من أخطاء المسافات/الأنواع.
+    """
     mg = _mgmt(variant)
+
+    # ===== SL =====
     sl = None
     try:
         if mg.get("SL") == "atr":
-            sl = entry - mg.get("SL_MULT", 1.0) * atr_val
+            sl = float(entry) - float(mg.get("SL_MULT", 1.0)) * float(atr_val)
         elif mg.get("SL") == "pct":
-            sl = entry * (1 - float(mg.get("SL_PCT", cfg.get("STOP_LOSS_PCT", 0.02))))
+            sl = float(entry) * (1.0 - float(mg.get("SL_PCT", cfg.get("STOP_LOSS_PCT", 0.02))))
         elif mg.get("SL") in ("atr_below_sweep", "atr_below_retest"):
             base_level = None
             try:
                 if df is not None and len(df) > 10:
                     _, sw_low = _swing_points(df, left=2, right=2)
-                    _, llv = recent_swing(df, lookback=60)
+                    _, llv    = recent_swing(df, lookback=60)
                     base_level = max(float(sw_low or 0), float(llv or 0)) or None
             except Exception:
                 base_level = None
-            if base_level and base_level < entry:
-                sl = float(base_level) - mg.get("SL_MULT", 1.0) * atr_val
+            if base_level and base_level < float(entry):
+                sl = float(base_level) - float(mg.get("SL_MULT", 1.0)) * float(atr_val)
             else:
-                sl = entry - mg.get("SL_MULT", 1.0) * atr_val
+                sl = float(entry) - float(mg.get("SL_MULT", 1.0)) * float(atr_val)
         else:
-            if cfg.get("USE_ATR_SL_TP") and atr_val and atr_val > 0:
-                sl  = entry - cfg.get("SL_ATR_MULT", 1.6)  * atr_val
+            if cfg.get("USE_ATR_SL_TP") and atr_val and float(atr_val) > 0:
+                sl = float(entry) - float(cfg.get("SL_ATR_MULT", 1.6)) * float(atr_val)
             else:
-                sl  = entry * (1 - cfg.get("STOP_LOSS_PCT", 0.02))
+                sl = float(entry) * (1.0 - float(cfg.get("STOP_LOSS_PCT", 0.02)))
     except Exception:
-        sl = entry - 1.0 * atr_val
+        sl = float(entry) - 1.0 * float(atr_val)
 
-    vwap_val = None; nearest_res = None
+    # ===== مصادر TP المرشّحة =====
+    vwap_val = None
+    nearest_res = None
+
+    # أقرب مقاومة من الطبقات المتعددة
     try:
         sr_multi = get_sr_multi(symbol) if symbol else {}
-        for name, ent in sr_multi.items():
+        for _, ent in sr_multi.items():
             res = ent.get("resistance")
-            if res and res > entry:
+            if res and res > float(entry):
                 nearest_res = res if nearest_res is None else min(nearest_res, res)
     except Exception:
         pass
+
+    # VWAP من الشمعة المغلقة
     try:
-        if closed is None and df is not None:
+        if closed is None and df is not None and len(df) >= 2:
             closed = df.iloc[-2]
-        vwap_val = float(closed.get("vwap")) if closed is not None else None
+        if closed is not None:
+            vwap_val = float(closed.get("vwap")) if closed.get("vwap") is not None else None
     except Exception:
         vwap_val = None
 
-    mg_tp1 = float(mg.get("TP1_ATR", 1.2))
-    mg_tp2 = float(mg.get("TP2_ATR", 2.2)) if mg.get("TP2_ATR") else 2.2
-    atr_tp1 = entry + mg_tp1 * atr_val
-    atr_tp2 = entry + mg_tp2 * atr_val
+    # ===== TP1/TP2 عبر إدارة الإستراتيجية =====
+    mg_tp1  = float(mg.get("TP1_ATR", 1.2))
+    mg_tp2  = float(mg.get("TP2_ATR", 2.2)) if mg.get("TP2_ATR") else 2.2
+    atr_tp1 = float(entry) + mg_tp1 * float(atr_val)
+    atr_tp2 = float(entry) + mg_tp2 * float(atr_val)
 
     mode = mg.get("TP1")
     try:
         if mode == "sr_or_atr":
-            sr_tp = nearest_res if (nearest_res and nearest_res > entry) else None
+            sr_tp = nearest_res if (nearest_res and nearest_res > float(entry)) else None
             tp1 = float(min(sr_tp, atr_tp1)) if sr_tp else float(atr_tp1)
+
         elif mode == "range_or_atr":
             sr_tp = None
             try:
                 if df is not None and len(df) > 20:
                     hhv = float(df.iloc[:-1]["high"].rolling(SR_WINDOW, min_periods=10).max().iloc[-1])
-                    sr_tp = hhv if hhv > entry else None
+                    if hhv > float(entry):
+                        sr_tp = hhv
             except Exception:
-                sr_tp = None
-            sr_tp = nearest_res if (nearest_res and nearest_res > entry) else sr_tp
+                sr_tp = sr_tp
+            if nearest_res and nearest_res > float(entry):
+                sr_tp = min(sr_tp, nearest_res) if sr_tp else nearest_res
             tp1 = float(min(sr_tp, atr_tp1)) if sr_tp else float(atr_tp1)
+
         elif mode == "vwap_or_sr":
             candidates = []
-            if vwap_val and vwap_val > entry: candidates.append(float(vwap_val))
-            if nearest_res and nearest_res > entry: candidates.append(float(nearest_res))
+            if vwap_val and vwap_val > float(entry):
+                candidates.append(float(vwap_val))
+            if nearest_res and nearest_res > float(entry):
+                candidates.append(float(nearest_res))
             tp1 = float(min(candidates)) if candidates else float(atr_tp1)
-            else:
-        if mg.get("TP1_PCT"):
-            tp1 = entry * (1 + float(mg.get("TP1_PCT")))
+
         else:
-            if cfg.get("USE_ATR_SL_TP") and atr_val and atr_val > 0:
-                tp1 = entry + cfg.get("TP1_ATR_MULT", 1.6) * atr_val
-                atr_tp2 = entry + cfg.get("TP2_ATR_MULT", 3.2) * atr_val
+            # الفرع الافتراضي (هنا كان الخلل عندك بسبب else في غير مكانه)
+            if mg.get("TP1_PCT"):
+                tp1 = float(entry) * (1.0 + float(mg.get("TP1_PCT")))
             else:
-                tp1 = entry * (1 + float(cfg.get("TP1_PCT", 0.03)))
-                atr_tp2 = entry * (1 + float(cfg.get("TP2_PCT", 0.06)))
-
+                if cfg.get("USE_ATR_SL_TP") and atr_val and float(atr_val) > 0:
+                    tp1     = float(entry) + float(cfg.get("TP1_ATR_MULT", 1.6)) * float(atr_val)
+                    atr_tp2 = float(entry) + float(cfg.get("TP2_ATR_MULT", 3.2)) * float(atr_val)
+                else:
+                    tp1     = float(entry) * (1.0 + float(cfg.get("TP1_PCT", 0.03)))
+                    atr_tp2 = float(entry) * (1.0 + float(cfg.get("TP2_PCT", 0.06)))
     except Exception:
-        tp1 = atr_tp1
+        tp1 = float(atr_tp1)
 
-    tp2 = atr_tp2
+    tp2 = float(atr_tp2)
     return float(sl), float(tp1), float(tp2)
+
 
 def _build_extra_targets(entry: float, atr_val: float, variant: str, first_two: Tuple[float, float]) -> List[float]:
     if not ENABLE_MULTI_TARGETS:
