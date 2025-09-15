@@ -33,6 +33,7 @@ from datetime import datetime, timedelta, timezone
 from typing import Optional, Tuple, Dict, Any, List
 import pandas as pd
 import numpy as np
+import math
 
 from okx_api import fetch_ohlcv, fetch_price, place_market_order, fetch_balance
 from config import (
