@@ -1310,35 +1310,36 @@ def execute_buy(symbol):
         trade_usdt = TRADE_AMOUNT_USDT
 
     # ===== تحجيم بالحِسبان السِعة (Breadth) + Soft + استثناء القائد =====
+       # ===== تحجيم بالحِسبان السِعة (Breadth) + Soft + استثناء القائد =====
     br = _get_breadth_ratio_cached()
     eff_min = _breadth_min_auto()
 
-    # تخفيف عام حسب النسب الثابتة
+    # تحجيمك الأصلي حسب السِعة
     if br is not None:
-        if br < 0.45:  trade_usdt *= 0.70
-        elif br < 0.55: trade_usdt *= 0.85
+        if br < 0.45:
+            trade_usdt *= 0.70
+        elif br < 0.55:
+            trade_usdt *= 0.85
 
-    # وضع Soft Breadth المستلم من check_signal_new
+    # وضع Soft: تقليص الحجم بدل الإلغاء (باستثناء القائد)
     SOFT_BREADTH_ENABLE = os.getenv("SOFT_BREADTH_ENABLE", "1").lower() in ("1","true","yes","y")
     SOFT_BREADTH_SIZE_SCALE = float(os.getenv("SOFT_BREADTH_SIZE_SCALE", "0.5"))
     is_leader = bool(_sig_inner.get("leader_flag", False))
-    is_soft   = bool(_sig_inner.get("breadth_soft", False))
 
-    if SOFT_BREADTH_ENABLE and is_soft and (not is_leader):
+    if SOFT_BREADTH_ENABLE and (br is not None) and (br < eff_min) and (not is_leader):
         trade_usdt *= SOFT_BREADTH_SIZE_SCALE
         try:
             sig["messages"]["breadth_soft"] = (
-                f"⚠️ Soft breadth: ratio={(br if br is not None else float('nan')):.2f} "
-                f"< min={eff_min:.2f} → size×{SOFT_BREADTH_SIZE_SCALE}"
+                f"⚠️ Soft breadth: ratio={br:.2f} < min={eff_min:.2f} → size×{SOFT_BREADTH_SIZE_SCALE}"
             )
         except Exception:
             pass
 
-    # استثناء القائد: نصف الحجم (كما في منطقك السابق)
+    # استثناء القائد: نصف الحجم
     if is_leader:
         trade_usdt *= 0.50
 
-    # ===== التحقق من الرصيد و الحد الأدنى =====
+    # ===== فحوصات الرصيد والحد الأدنى =====
     if usdt < max(MIN_TRADE_USDT, trade_usdt):
         return None, "🚫 رصيد USDT غير كافٍ."
 
@@ -1353,11 +1354,13 @@ def execute_buy(symbol):
 
     fill_px = float(order.get("average") or order.get("price") or price)
 
-    # ===== توزيع الجزئيات حسب Score و ATR =====
+    # ===== توزيع الجزئيات (Partials) — مصحّح بدون القوس الزائد =====
     sig["partials"] = _partials_for(int(sig["score"] or 0), len(sig["targets"]), atrp)
     ssum = sum(sig["partials"])
-    if ssum <= 0: sig["partials"] = [1.0] + [0.0]*(len(sig["targets"])-1)
-    else: sig["partials"] = [round(x/ssum, 6) for x in sig["partials"]][:len(sig["targets"])]
+    if ssum <= 0:
+        sig["partials"] = [1.0] + [0.0] * (len(sig["targets"]) - 1)
+    else:
+        sig["partials"] = [round(x/ssum, 6) for x in sig["partials"]][:len(sig["targets"])]
 
     # ===== حفظ الصفقة =====
     pos = {
@@ -1381,7 +1384,7 @@ def execute_buy(symbol):
     register_trade_opened()
     _SYMBOL_LAST_TRADE_AT[f"{base}|{variant}"] = now_riyadh()
 
-    # ===== إخطار (اختياري) =====
+    # ===== تنبيه تيليجرام =====
     try:
         if STRAT_TG_SEND:
             msg = (
@@ -1398,6 +1401,7 @@ def execute_buy(symbol):
         pass
 
     return order, f"✅ شراء {symbol} | SL: {pos['stop_loss']:.6f} | 💰 {trade_usdt:.2f}$"
+
 
 # ================== إدارة الصفقة ==================
 def manage_position(symbol):
