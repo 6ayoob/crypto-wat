@@ -792,14 +792,14 @@ def _is_relative_leader_vs_btc(symbol_base: str, tf="1h", lookback=24, edge=0.02
 
 # ================== أدوات رفض/تمرير ==================
 def _rej(stage, **kv):
-    # عدّاد التليين المحلي
-    if stage in _REJ_COUNTS:
-        _REJ_COUNTS[stage] += 1
-    # ملخص شامل لأي سبب
-    try:
-        _REJ_SUMMARY[stage] = int(_REJ_SUMMARY.get(stage, 0)) + 1
-    except Exception:
-        pass
+     # عدّاد التليين المحلي
+     if stage in _REJ_COUNTS:
+         _REJ_COUNTS[stage] += 1
+     # ملخص شامل لأي سبب
+     try:
+         _REJ_SUMMARY[stage] = int(_REJ_SUMMARY.get(stage, 0)) + 1
+     except Exception:
+         pass
     if DEBUG_LOG_SIGNALS:
         kvs = " ".join(f"{k}={v}" for k, v in kv.items())
         logger.info(f"[REJECT] {stage} | {kvs}")
