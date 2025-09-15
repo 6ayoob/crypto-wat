@@ -1249,16 +1249,17 @@ def _compute_sl_tp(entry, atr_val, cfg, variant, symbol=None, df=None, ctx=None,
             if vwap_val and vwap_val > entry: candidates.append(float(vwap_val))
             if nearest_res and nearest_res > entry: candidates.append(float(nearest_res))
             tp1 = float(min(candidates)) if candidates else float(atr_tp1)
-        else:
-            if mg.get("TP1_PCT"):
-                tp1 = entry * (1 + float(mg.get("TP1_PCT")))
             else:
-                if cfg.get("USE_ATR_SL_TP") and atr_val and atr_val > 0:
-                    tp1 = entry + cfg.get("TP1_ATR_MULT", 1.6) * atr_val
-                    atr_tp2 = entry + cfg.get("TP2_ATR_MULT", 3.2) * atr_val
-                else:
-                    tp1 = entry * (1 + cfg.get("TP1_PCT", 0.03"))
-                    atr_tp2 = entry * (1 + cfg.get("TP2_PCT", 0.06"))
+        if mg.get("TP1_PCT"):
+            tp1 = entry * (1 + float(mg.get("TP1_PCT")))
+        else:
+            if cfg.get("USE_ATR_SL_TP") and atr_val and atr_val > 0:
+                tp1 = entry + cfg.get("TP1_ATR_MULT", 1.6) * atr_val
+                atr_tp2 = entry + cfg.get("TP2_ATR_MULT", 3.2) * atr_val
+            else:
+                tp1 = entry * (1 + float(cfg.get("TP1_PCT", 0.03)))
+                atr_tp2 = entry * (1 + float(cfg.get("TP2_PCT", 0.06)))
+
     except Exception:
         tp1 = atr_tp1
 
