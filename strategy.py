@@ -874,18 +874,21 @@ def _opportunity_score(df, prev, closed):
 
 # ================== NEW/SRR — مع السِعة التلقائية + قائد ==================
 def check_signal_new(symbol):
-    """يفحص إشارة شراء Spot فقط على الرمز المحدد (نسخ: new/srr/brt/vbr). يعيد dict{'decision':'buy', ...} أو None."""
-    ok, reason = _risk_precheck_allow_new_entry()
-    if not ok: return _rej("risk_precheck", reason=reason)
-
-    base, variant = _split_symbol_variant(symbol); cfg = get_cfg(variant)
-    key = f"{base}|{variant}"
-
-    last_t = _SYMBOL_LAST_TRADE_AT.get(key)
-    if last_t and (now_riyadh() - last_t) < timedelta(minutes=cfg["SYMBOL_COOLDOWN_MIN"]):
-        return _rej("cooldown")
-    if load_position(symbol):
-        return _rej("already_open")
+     """يفحص إشارة شراء Spot فقط على الرمز المحدد (نسخ: new/srr/brt/vbr). يعيد dict{'decision':'buy', ...} أو None."""
+     global _CURRENT_SYMKEY
+     ok, reason = _risk_precheck_allow_new_entry()
+     if not ok: return _rej("risk_precheck", reason=reason)
+ 
+     base, variant = _split_symbol_variant(symbol); cfg = get_cfg(variant)
+   key = f"{base}|{variant}"
+     _CURRENT_SYMKEY = key
+     try:
+ 
+     last_t = _SYMBOL_LAST_TRADE_AT.get(key)
+     if last_t and (now_riyadh() - last_t) < timedelta(minutes=cfg["SYMBOL_COOLDOWN_MIN"]):
+         return _rej("cooldown")
+     if load_position(symbol):
+         return _rej("already_open")
 
     # Market breadth (تلقائي)
     br = _get_breadth_ratio_cached()
