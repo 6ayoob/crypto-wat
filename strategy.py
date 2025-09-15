@@ -1357,7 +1357,7 @@ def execute_buy(symbol):
     sig["partials"] = _partials_for(int(sig["score"] or 0), len(sig["targets"]), atrp)
     ssum = sum(sig["partials"])
     if ssum <= 0: sig["partials"] = [1.0] + [0.0]*(len(sig["targets"])-1)
-    else: sig["partials"] = [round(x/ssum, 6) for x in sig["partials"])][:len(sig["targets"])]
+    else: sig["partials"] = [round(x/ssum, 6) for x in sig["partials"]][:len(sig["targets"])]
 
     # ===== حفظ الصفقة =====
     pos = {
