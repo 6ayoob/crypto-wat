@@ -699,6 +699,19 @@ def _breadth_refs() -> List[str]:
     if not uniq:
         uniq = ["BTC/USDT","ETH/USDT","BNB/USDT","SOL/USDT","XRP/USDT","ADA/USDT"]
     return uniq
+_TF_MIN = {"5m":5, "15m":15, "30m":30, "1h":60, "2h":120, "4h":240, "1d":1440}
+def _tf_minutes(tf: str) -> int: return _TF_MIN.get(tf.lower(), 60)
+
+def _row_is_recent_enough(df: pd.DataFrame, tf: str, bars_back: int = 2) -> bool:
+    try:
+        last_ts = int(df["timestamp"].iloc[-bars_back])
+        if last_ts < 10**12:  # seconds → ms
+            last_ts *= 1000
+        now_ms = int(time.time()*1000)
+        # نسمح حتى 2× إطار الزمن (احتياط)
+        return (now_ms - last_ts) <= (2 * _tf_minutes(tf) * 60 * 1000)
+    except Exception:
+        return False
 
 def _compute_breadth_ratio() -> Optional[float]:
     refs = _breadth_refs()
@@ -707,18 +720,29 @@ def _compute_breadth_ratio() -> Optional[float]:
     for sym in refs:
         try:
             d = get_ohlcv_cached(sym, BREADTH_TF, 120)
-            if not d or len(d) < 60: continue
+            if not d or len(d) < 60: 
+                continue
             df = _df(d)
+            # تجاهُل الشمعة إن كانت قديمة على TF
+            if not _row_is_recent_enough(df, BREADTH_TF, bars_back=2):
+                continue
             df["ema50"] = ema(df["close"], 50)
             row = df.iloc[-2]
             c = float(row["close"]); e = float(row["ema50"])
-            if c>0 and e>0:
+            # تأكد من صلاحية EMA وعدم NaN
+            if c > 0 and e > 0 and not (math.isfinite(c) and math.isfinite(e)) == False:
                 tot += 1
                 if c > e: ok += 1
         except Exception:
             continue
-    if tot == 0: return None
-    return ok / float(tot)
+    # لا تعتمد على عينة صغيرة جداً
+    if tot < 5:
+        return None
+    ratio = ok / float(tot)
+    # لو النسبة ≈ صفر (العينة سيئة/سوق خامل) نرجع None ليتحوّل لحالة "غير حاسمة" بدلاً من قفل كامل
+    if ratio <= 0.05:
+        return None
+    return ratio
 
 def _get_breadth_ratio_cached() -> Optional[float]:
     now_s = time.time()
