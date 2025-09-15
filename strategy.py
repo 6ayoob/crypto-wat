@@ -788,15 +788,30 @@ def _btc_strong_on_4h() -> bool:
         return False
 
 def _breadth_min_auto() -> float:
-    """
-    اختيار تلقائي بين الثابت والديناميكي:
-    - إذا BTC قوي على 4h → ديناميكي (_effective_breadth_min)
-    - غير ذلك → ثابت (BREADTH_MIN_RATIO)
-    """
+    # استخدم الديناميكي دائماً، مع سقف/أرضية معقولة
     try:
-        return _effective_breadth_min() if _btc_strong_on_4h() else BREADTH_MIN_RATIO
+        eff = _effective_breadth_min()
+        return max(0.40, min(0.70, eff))
     except Exception:
         return BREADTH_MIN_RATIO
+
+# داخل check_signal_new() مباشرة بعد:
+#   br = _get_breadth_ratio_cached()
+#   eff_min = _breadth_min_auto()
+
+SOFT_BREADTH_ENABLE = os.getenv("SOFT_BREADTH_ENABLE", "1").lower() in ("1","true","yes","y")
+SOFT_BREADTH_SIZE_SCALE = float(os.getenv("SOFT_BREADTH_SIZE_SCALE", "0.5"))
+
+leader_flag = False
+if br is not None and br < eff_min:
+    # استثناء القائد كما هو
+    leader_flag = _is_relative_leader_vs_btc(base)
+    if not leader_flag:
+        if SOFT_BREADTH_ENABLE:
+            # لا نقفل الإشارة تماماً — نضع ختم "soft" ونقلص الحجم لاحقاً
+            _pass("breadth_soft", ratio=round(br,2), min=round(eff_min,2))
+        else:
+            return _rej("breadth_low", ratio=round(br,2), min=round(eff_min,2))
 
 # ===== سلوك القائد =====
 def _is_relative_leader_vs_btc(symbol_base: str, tf="1h", lookback=24, edge=0.02) -> bool:
