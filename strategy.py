@@ -1226,7 +1226,7 @@ def execute_buy(symbol):
     """
     تنفيذ شراء Spot-only للرمز المحدّد.
     - يستخدم Position sizing ديناميكي إذا USE_DYNAMIC_RISK=1 (افتراضي) + تعزيز حسب Score.
-    - يخضع لمنطق الحظر/المخاطر والسِعة.
+    - يخضع لمنطق الحظر/المخاطر والسِعة (مع Soft Breadth).
     """
     base, variant = _split_symbol_variant(symbol)
 
@@ -1303,13 +1303,30 @@ def execute_buy(symbol):
     else:
         trade_usdt = TRADE_AMOUNT_USDT
 
-    # تحجيم بالحِسبان السِعة + استثناء القائد
+    # ===== تحجيم بالحِسبان السِعة (Breadth) + وضع Soft + استثناء القائد =====
     br = _get_breadth_ratio_cached()
+    eff_min = _breadth_min_auto()
+
+    # خطواتك الأصلية
     if br is not None:
         if br < 0.45:  trade_usdt *= 0.70
         elif br < 0.55: trade_usdt *= 0.85
-    if bool(_sig_inner.get("leader_flag", False)):
-        trade_usdt *= 0.50  # نصف الحجم عند الدخول باستثناء القائد
+
+    # وضع Soft: إذا السِعة دون الحد الديناميكي، قلّص الحجم بدل الإلغاء (إلا لو الرمز قائد)
+    SOFT_BREADTH_ENABLE = os.getenv("SOFT_BREADTH_ENABLE", "1").lower() in ("1","true","yes","y")
+    SOFT_BREADTH_SIZE_SCALE = float(os.getenv("SOFT_BREADTH_SIZE_SCALE", "0.5"))
+    is_leader = bool(_sig_inner.get("leader_flag", False))
+
+    if SOFT_BREADTH_ENABLE and (br is not None) and (br < eff_min) and (not is_leader):
+        trade_usdt *= SOFT_BREADTH_SIZE_SCALE
+        try:
+            sig["messages"]["breadth_soft"] = f"⚠️ Soft breadth: ratio={br:.2f} < min={eff_min:.2f} → size×{SOFT_BREADTH_SIZE_SCALE}"
+        except Exception:
+            pass
+
+    # استثناء القائد: نصف الحجم (كما لديك مسبقًا)
+    if is_leader:
+        trade_usdt *= 0.50
 
     if usdt < max(MIN_TRADE_USDT, trade_usdt):
         return None, "🚫 رصيد USDT غير كافٍ."
@@ -1352,15 +1369,21 @@ def execute_buy(symbol):
 
     try:
         if STRAT_TG_SEND:
-            _tg(f"{pos['messages'].get('entry','✅ دخول')}\n"
+            msg = (
+                f"{pos['messages'].get('entry','✅ دخول')}\n"
                 f"دخول: <code>{fill_px:.6f}</code>\n"
                 f"SL: <code>{pos['stop_loss']:.6f}</code>\n"
                 f"🎯 الأهداف: {', '.join(str(round(t,6)) for t in pos['targets'])}\n"
-                f"💰 حجم الصفقة: <b>{trade_usdt:.2f}$</b>")
+                f"💰 حجم الصفقة: <b>{trade_usdt:.2f}$</b>"
+            )
+            if pos.get("messages", {}).get("breadth_soft"):
+                msg += f"\n{pos['messages']['breadth_soft']}"
+            _tg(msg)
     except Exception:
         pass
 
     return order, f"✅ شراء {symbol} | SL: {pos['stop_loss']:.6f} | 💰 {trade_usdt:.2f}$"
+
 
 # ================== إدارة الصفقة ==================
 def manage_position(symbol):
