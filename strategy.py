@@ -185,6 +185,7 @@ def get_ohlcv_cached(symbol: str, tf: str, bars: int) -> list:
 
 # ================== تتبُّع ==================
 _LAST_REJECT: Dict[str, Any] = {}
+_CURRENT_SYMKEY: Optional[str] = None
 _LAST_ENTRY_BAR_TS: Dict[str, int] = {}
 _SYMBOL_LAST_TRADE_AT: Dict[str, datetime] = {}
 
