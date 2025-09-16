@@ -42,6 +42,21 @@ from config import (
     TELEGRAM_TOKEN, TELEGRAM_CHAT_ID,
     STRAT_LTF_TIMEFRAME, STRAT_HTF_TIMEFRAME
 )
+# ===== MTF strict flag (ساعة/4س/يومي) =====
+import os
+
+def _env_bool(name, default=False):
+    v = os.getenv(name)
+    if v is None:
+        return default
+    return str(v).strip().lower() in ("1","true","t","yes","y","on")
+
+# إذا كان موجود مسبقاً لا نعيد تعريفه (لتجنّب تعارض hot-reload)
+try:
+    ENABLE_MTF_STRICT
+except NameError:
+    # غيّره من ENV إن أردت: ENABLE_MTF_STRICT=1
+    ENABLE_MTF_STRICT = _env_bool("ENABLE_MTF_STRICT", False)
 
 # ===== لوج الاستراتيجية =====
 logger = logging.getLogger("strategy")
