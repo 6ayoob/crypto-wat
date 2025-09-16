@@ -321,6 +321,28 @@ PER_STRAT_MGMT = {
              "TRAIL_AFTER_TP1":True, "TRAIL_ATR":0.8, "TIME_HRS":3},
 }
 def _mgmt(variant: str): return PER_STRAT_MGMT.get(variant, PER_STRAT_MGMT["new"])
+def get_cfg(variant: str):
+    """
+    دمج إعدادات BASE_CFG مع Overrides الخاصة بكل نسخة.
+    النسخ المدعومة: new (افتراضي)، old، srr، brt، vbr.
+    """
+    cfg = dict(BASE_CFG)  # ننسخ الأساس
+    v = (variant or "new").lower()
+    if v == "new":
+        cfg.update(NEW_SCALP_OVERRIDES)
+    elif v == "srr":
+        cfg.update(SRR_OVERRIDES)
+    elif v == "brt":
+        cfg.update(BRT_OVERRIDES)
+    elif v == "vbr":
+        cfg.update(VBR_OVERRIDES)
+    elif v == "old":
+        # لا إضافات، نستخدم BASE_CFG كما هو
+        pass
+    else:
+        # أي قيمة غير معروفة ترجع new كافتراضي
+        cfg.update(NEW_SCALP_OVERRIDES)
+    return cfg
 
 # ================== دوال إشعار/وقت ==================
 def _tg(text, parse_mode="HTML"):
