@@ -343,6 +343,27 @@ def get_cfg(variant: str):
         # أي قيمة غير معروفة ترجع new كافتراضي
         cfg.update(NEW_SCALP_OVERRIDES)
     return cfg
+# --- safety shim: define get_cfg if missing (guards hot-reload mismatches) ---
+try:
+    get_cfg  # will raise NameError if not defined yet
+except NameError:
+    def get_cfg(variant: str):
+        cfg = dict(BASE_CFG)
+        v = (variant or "new").lower()
+        if v == "new":
+            cfg.update(NEW_SCALP_OVERRIDES)
+        elif v == "srr":
+            cfg.update(SRR_OVERRIDES)
+        elif v == "brt":
+            cfg.update(BRT_OVERRIDES)
+        elif v == "vbr":
+            cfg.update(VBR_OVERRIDES)
+        elif v == "old":
+            pass
+        else:
+            cfg.update(NEW_SCALP_OVERRIDES)
+        return cfg
+# ---------------------------------------------------------------------------
 
 # ================== دوال إشعار/وقت ==================
 def _tg(text, parse_mode="HTML"):
