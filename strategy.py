@@ -1838,3 +1838,36 @@ def build_daily_report_text():
         f"{risk_line}\n"
     )
     return summary + table
+# ================== تشخيص سهل (متوافق مع main.py) ==================
+def get_last_reject(symbol: str):
+    """
+    يرجّع آخر سبب رفض مسجَّل لهذا الرمز (يدعم وجود #variant).
+    """
+    # نحاول بالمفتاح كما هو أولاً
+    if symbol in _LAST_REJECT:
+        return _LAST_REJECT[symbol]
+    # ثم نجرب base|variant ثم base فقط
+    base, variant = _split_symbol_variant(symbol)
+    key1 = f"{base}|{variant}"
+    if key1 in _LAST_REJECT:
+        return _LAST_REJECT[key1]
+    if base in _LAST_REJECT:
+        return _LAST_REJECT[base]
+    return None
+
+def check_signal_debug(symbol: str):
+    """
+    يُعيد (result, reasons[]) للفحص السريع:
+    - إذا شراء: reasons=['buy_ok']
+    - إذا لا:  reasons=['<stage>:<details>'] من آخر رفض
+    """
+    r = check_signal(symbol)
+    if isinstance(r, dict) and r.get("decision") == "buy":
+        return r, ["buy_ok"]
+
+    last = get_last_reject(symbol)
+    if last:
+        stg = last.get("stage", "no_buy")
+        det = last.get("details", {})
+        return None, [f"{stg}:{det}"]
+    return None, ["no_buy"]
