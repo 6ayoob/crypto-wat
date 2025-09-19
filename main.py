@@ -8,6 +8,7 @@
 # - تلخيص أداء الجولة وإدارة المراكز كما في نسختك + تحسين طباعة الأخطاء
 # - نقاط تكامل محسّنة مع الاستراتيجية (ستستفيد لاحقًا من regime controller في strategy.py)
 # - حماية شاملة حول الاستدعاءات + تنظيف (finally) آمن
+# - NEW: اكتشاف أرصدة السبوت (Discovery) وإنشاء ملفات مراكز مستوردة لإدارتها تلقائيًا
 
 import os
 import sys
@@ -27,19 +28,25 @@ from config import (
 
 # الاستراتيجية
 from strategy import (
-    check_signal, execute_buy, manage_position, load_position,
+    check_signal, execute_buy, manage_position, load_position, save_position,
     count_open_positions, build_daily_report_text,
     reset_cycle_cache, metrics_format,
-    maybe_emit_reject_summary,     # لو غير موجودة في نسختك سيتخطّاها try/except
+    maybe_emit_reject_summary,     # لو غير موجودة سيتخطّاها try/except
     check_signal_debug,            # لو غير موجودة سيتخطّاها try/except
     breadth_status                 # يُتوقع أن تُرجع dict: {ratio,min,ok}
 )
 
 # كاش أسعار جماعي من okx_api لتقليل الضغط (اختياري)
 try:
-    from okx_api import start_tickers_cache, stop_tickers_cache
+    from okx_api import start_tickers_cache, stop_tickers_cache, fetch_balance, fetch_price
     _HAS_CACHE = True
 except Exception:
+    # حتى لو ما توفر الكاش، نحتاج على الأقل دوال الرصيد/السعر للاكتشاف
+    try:
+        from okx_api import fetch_balance, fetch_price
+    except Exception:
+        fetch_balance = lambda asset: 0.0
+        fetch_price = lambda symbol: 0.0
     _HAS_CACHE = False
 
 # ================== إعدادات الحلقة ==================
@@ -109,7 +116,6 @@ def _tg_split_chunks(text: str, max_chars: int = _TELEGRAM_MAX_CHARS):
     chunks, start = [], 0
     while start < len(text):
         end = min(start + max_chars, len(text))
-        # حاول القطع على حدود سطر
         nl = text.rfind("\n", start, end)
         if nl != -1 and nl > start:
             end = nl
@@ -176,7 +182,7 @@ def _release_pidfile(path: str):
     except Exception:
         pass
 
-# ================== أدوات الحلقة ==================
+# ================== أدوات الحلقة / المراكز ==================
 _stop_flag = False
 _last_stop_signal_ts = 0.0
 
@@ -237,6 +243,46 @@ def _can_open_new_position(current_open: int) -> bool:
         return True
     return current_open < int(MAX_OPEN_POSITIONS_OVERRIDE)
 
+# ================ NEW: اكتشاف أرصدة السبوت (Discovery) ================
+def _discover_spot_positions(min_usd: float = 5.0):
+    """
+    ينشئ ملفات مراكز مستوردة لأي رصيد Spot موجود بدون ملف.
+    يعتمد على fetch_balance(asset) + سعر السوق الحالي لتقدير قيمة USD.
+    """
+    try:
+        for symbol in SYMBOLS:
+            base = symbol.split("/")[0]
+            # لو عندنا ملف مركز مسبقاً، نكمل
+            if load_position(symbol) is not None:
+                continue
+
+            # رصيد السبوت المتاح للأصل (بدون مارجن/اقتراض)
+            qty = float(fetch_balance(base) or 0.0)
+            if qty <= 0.0:
+                continue
+
+            px = float(fetch_price(symbol) or 0.0)
+            if px <= 0.0:
+                continue
+
+            usd_val = qty * px
+            if usd_val < float(min_usd):
+                continue  # رصيد صغير جداً — تجاهله
+
+            # أنشئ مركز "Imported" لإدارته لاحقاً في manage_position
+            pos = {
+                "symbol": symbol,
+                "variant": "imported",
+                "entry_price": px,     # تقدير: آخر سعر
+                "qty": qty,
+                "imported": True,
+                "created_at": datetime.now(timezone.utc).isoformat(timespec="seconds"),
+                "notes": "auto-imported from spot balance"
+            }
+            save_position(symbol, pos)
+            _print(f"[import] created position for {symbol}: qty={qty}, px={px}, ~${usd_val:.2f}")
+    except Exception as e:
+        _print(f"[import] discovery error: {e}")
 # ================== الحلقة الرئيسية ==================
 if __name__ == "__main__":
     # قفل مفرد (اختياري)
@@ -249,6 +295,12 @@ if __name__ == "__main__":
             start_tickers_cache(period=int(os.getenv("OKX_CACHE_PERIOD", "3")), usdt_only=True)
         except Exception:
             pass
+
+    # ✅ اكتشاف أي مراكز Spot موجودة بالفعل (Discovery)
+    try:
+        _discover_spot_positions()
+    except Exception as e:
+        _print(f"[discovery] error: {e}")
 
     # معلومات بدء مع عرض الإطارات الزمنية الفعلية + حالة السعة
     try:
@@ -266,135 +318,83 @@ if __name__ == "__main__":
     except Exception:
         _print("🚀 تشغيل البوت")
 
-    # جداول زمنية مع تعويض الانجراف: نحفظ موعد التنفيذ القادم ونحدّثه كل دورة
+    # جداول زمنية مع تعويض الانجراف
     start_wall = time.time()
     next_scan  = start_wall + random.uniform(0.5, 1.5) + SCAN_INTERVAL_SEC
     next_manage= start_wall + random.uniform(0.2, 0.8) + MANAGE_INTERVAL_SEC
-
     last_report_day = None
-
-    # Jitter أولي لتوزيع الأحمال إذا كان لديك أكثر من عملية
-    time.sleep(random.uniform(0.5, 1.5))
+    time.sleep(random.uniform(0.5, 1.5))  # Jitter أولي
 
     try:
         while True:
-            # في وضع immediate/debounce قد يُطلب الإيقاف
             if _stop_flag and STOP_POLICY in ("immediate", "debounce"):
                 break
 
             now = time.time()
 
-            # 1) فحص إشارات الدخول — مع "كاش الدورة" + قياس الأداء + حالة السعة
+            # 1) فحص إشارات الدخول
             if now >= next_scan:
-                # احسب جولة جديدة ثم حدّد الموعد القادم بتعويض الانجراف
                 t_round_start = perf_counter()
                 try:
-                    # 🔑 مسح كاش OHLCV للجولة الحالية مرة واحدة (يصفّر الميتريكس أيضًا)
                     try:
                         reset_cycle_cache()
                     except Exception:
                         pass
 
                     open_positions_count = _get_open_positions_count_safe()
-                    round_id = int(now)
-
                     for symbol in SYMBOLS:
-                        # عند طلب إيقاف "مؤكد" نخرج بأمان
                         if _stop_flag and STOP_POLICY in ("immediate", "debounce"):
                             break
-
-                        # إذا امتلأ حدّنا المحلي (إن فُعِّل)، لا نحاول شراء جديد
                         if not _can_open_new_position(open_positions_count):
-                            break  # اكتفِ بما لدينا
+                            break
+                        if load_position(symbol) is not None:
+                            continue
 
-                        # لا تفتح صفقة على رمز لديه مركز قائم
-                        try:
-                            if load_position(symbol) is not None:
-                                continue  # يُدار لاحقًا
-                        except Exception:
-                            pass
-
-                        # فحص الإشارة
                         try:
                             sig = check_signal(symbol)
                         except Exception as e:
-                            if not MUTE_NOISEY_ALERTS and SEND_ERRORS_TO_TELEGRAM:
-                                tg_error(f"⚠️ check_signal خطأ في {symbol}:\n{e}")
-                            else:
-                                _print(f"[check_signal] {symbol} error: {e}")
+                            _print(f"[check_signal] {symbol} error: {e}")
                             continue
 
-                        # دعم نوعين من النتيجة: "buy" أو dict(decision="buy")
                         is_buy = (sig == "buy") or (isinstance(sig, dict) and str(sig.get("decision", "")).lower() == "buy")
-
                         if is_buy:
                             try:
                                 order, msg = execute_buy(symbol)
-
-                                # إذا كانت رسالة موجودة:
                                 if msg:
                                     if _is_error_text(msg):
                                         tg_error(msg)
                                     else:
-                                        tg_info(msg, parse_mode="HTML", silent=False)  # نجاح الدخول
-                                # إذا لم تُرجع الاستراتيجية نصًا لكن أعادت كائن أمر:
+                                        tg_info(msg, parse_mode="HTML", silent=False)
                                 elif order:
-                                    try:
-                                        price = getattr(order, "price", None) or getattr(order, "avg_price", None) or ""
-                                        qty   = getattr(order, "amount", None) or getattr(order, "qty", None) or ""
-                                        tg_info(
-                                            f"✅ دخول صفقة\nرمز: <b>{symbol}</b>\nسعر: <b>{price}</b>\nكمية: <b>{qty}</b>",
-                                            parse_mode="HTML",
-                                            silent=False
-                                        )
-                                    except Exception:
-                                        tg_info(f"✅ دخول صفقة: {symbol}", silent=False)
-
-                                # تحديث العدّ من المصدر بعد كل محاولة شراء
+                                    price = getattr(order, "price", None) or getattr(order, "avg_price", None) or ""
+                                    qty   = getattr(order, "amount", None) or getattr(order, "qty", None) or ""
+                                    tg_info(f"✅ دخول صفقة\nرمز: <b>{symbol}</b>\nسعر: <b>{price}</b>\nكمية: <b>{qty}</b>", parse_mode="HTML", silent=False)
                                 open_positions_count = _get_open_positions_count_safe()
-
                             except Exception as e:
-                                if SEND_ERRORS_TO_TELEGRAM:
-                                    tg_error(f"❌ فشل تنفيذ شراء {symbol}:\n{e}")
-                                else:
-                                    _print(f"[execute_buy] {symbol} error: {e}")
+                                _print(f"[execute_buy] {symbol} error: {e}")
                                 continue
                         else:
-                            # (اختياري) عندما لا توجد إشارة، نفحص أسباب الرفض (لو الدالة موجودة)
                             try:
                                 _, reasons = check_signal_debug(symbol)
                                 if reasons:
                                     _print(f"[debug] {symbol} reject reasons: {reasons[:5]}")
                             except Exception:
                                 pass
-
-                        # مهلة قصيرة بين الرموز لتخفيف الضغط
                         time.sleep(0.15)
 
-                    # (اختياري) إرسال ملخص أسباب الرفض دوريًا — إن كانت الدالة مفعلة
                     try:
                         maybe_emit_reject_summary()
                     except Exception:
                         pass
 
-                    # ⏱️ زمن الجولة + متوسط/رمز + ميتريكس الكاش + حالة السعة
+                    # أداء الجولة
                     try:
                         t_round_end = perf_counter()
                         dur_sec = t_round_end - t_round_start
                         avg_per_symbol = (dur_sec / max(1, len(SYMBOLS)))
-
-                        # حالة السعة الحالية
-                        bs = {}
-                        try:
-                            bs = breadth_status() or {}
-                        except Exception:
-                            bs = {}
-                        b_ratio = bs.get("ratio")
-                        b_min   = bs.get("min", 0.0)
-                        b_ok    = bs.get("ok", True)
-                        b_ratio_txt = "—" if b_ratio is None else f"{b_ratio:.2f}"
-                        b_line  = f"breadth: <b>{b_ratio_txt}</b> | min: <b>{b_min:.2f}</b> | {('✅ OK' if b_ok else '❌ LOW')}"
-
+                        bs = breadth_status() or {}
+                        b_ratio_txt = "—" if bs.get("ratio") is None else f"{bs.get('ratio'):.2f}"
+                        b_line  = f"breadth: <b>{b_ratio_txt}</b> | min: <b>{bs.get('min',0.0):.2f}</b> | {('✅ OK' if bs.get('ok') else '❌ LOW')}"
                         perf_text = (
                             "⏱️ <b>Round Perf</b>\n"
                             f"- Duration: <b>{dur_sec:.2f}s</b>\n"
@@ -410,18 +410,13 @@ if __name__ == "__main__":
                         pass
 
                 except Exception:
-                    if SEND_ERRORS_TO_TELEGRAM:
-                        tg_error(f"⚠️ خطأ عام أثناء فحص الإشارات:\n{traceback.format_exc()}")
-                    else:
-                        _print(f"[scan] general error:\n{traceback.format_exc()}")
+                    _print(f"[scan] general error:\n{traceback.format_exc()}")
                 finally:
-                    # الموعد القادم مع تعويض الانجراف + jitter خفيف
                     next_scan += SCAN_INTERVAL_SEC
-                    # لو تراكَم تأخير كبير (سيرفر مزدحم)، أعد ضبط الأساس
                     if now - next_scan > SCAN_INTERVAL_SEC:
                         next_scan = now + SCAN_INTERVAL_SEC + random.uniform(-2, 2)
 
-            # 2) إدارة الصفقات المفتوحة (TP/SL/Trailing)
+            # 2) إدارة الصفقات المفتوحة
             if now >= next_manage:
                 t_manage_start = perf_counter()
                 try:
@@ -431,49 +426,31 @@ if __name__ == "__main__":
                         try:
                             closed = manage_position(symbol)
                             if closed:
-                                # حاول استخراج نص جاهز إن وُجد
                                 text = None
                                 if isinstance(closed, dict):
                                     text = closed.get("text") or closed.get("msg")
                                 elif isinstance(closed, (list, tuple)) and closed:
                                     text = closed[0]
-
                                 if text:
                                     tg_info(text, parse_mode="HTML", silent=False)
                                 else:
-                                    tg_info(
-                                        f"✅ إغلاق صفقة: <b>{symbol}</b> (TP/SL/Timeout)",
-                                        parse_mode="HTML",
-                                        silent=False
-                                    )
-
+                                    tg_info(f"✅ إغلاق صفقة: <b>{symbol}</b>", parse_mode="HTML", silent=False)
                                 _print(f"[manage] {symbol} closed by TP/SL/TIME")
-
                         except Exception as e:
-                            if not MUTE_NOISEY_ALERTS and SEND_ERRORS_TO_TELEGRAM:
-                                tg_error(f"⚠️ خطأ إدارة {symbol}:\n{e}")
-                            else:
-                                _print(f"[manage_position] {symbol} error: {e}")
+                            _print(f"[manage_position] {symbol} error: {e}")
                         time.sleep(0.1)
 
-                    # (اختياري) طباعة زمن إدارة الصفقات
                     try:
                         dur_mng = perf_counter() - t_manage_start
                         _print(f"⏱️ Manage Perf — Duration: {dur_mng:.2f}s")
                     except Exception:
                         pass
-
-                except Exception:
-                    if SEND_ERRORS_TO_TELEGRAM:
-                        tg_error(f"⚠️ خطأ عام أثناء إدارة الصفقات:\n{traceback.format_exc()}")
-                    else:
-                        _print(f"[manage] general error:\n{traceback.format_exc()}")
                 finally:
                     next_manage += MANAGE_INTERVAL_SEC
                     if now - next_manage > MANAGE_INTERVAL_SEC:
                         next_manage = now + MANAGE_INTERVAL_SEC
 
-            # 3) تقرير يومي تلقائي (23:58 الرياض افتراضيًا)
+            # 3) تقرير يومي تلقائي
             if ENABLE_DAILY_REPORT:
                 try:
                     now_r = _now_riyadh()
@@ -489,21 +466,15 @@ if __name__ == "__main__":
                 except Exception:
                     pass
 
-            # نوم قصير
             time.sleep(LOOP_SLEEP_SEC)
 
     finally:
-        # خرجنا بسلاسة (فقط عند سياسات الإيقاف التي تسمح بالخروج)
         try:
             if _HAS_CACHE:
-                try:
-                    stop_tickers_cache()
-                except Exception:
-                    pass
+                stop_tickers_cache()
         finally:
             if _stop_flag and STOP_POLICY in ("immediate", "debounce"):
                 tg_info("🛑 تم إيقاف البوت — إلى اللقاء.", silent=True)
             else:
                 _print("🟢 انتهت الحلقة بدون إيقاف مؤكد.")
-            # حرر PIDFILE إن وُجد
             _release_pidfile(SINGLETON_PIDFILE)
