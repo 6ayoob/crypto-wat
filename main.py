@@ -329,10 +329,23 @@ if __name__ == "__main__":
 
                         if is_buy:
                             try:
-                                order, msg = execute_buy(symbol)
-                                # الاستراتيجية تتكفّل برسائل النجاح؛ هنا نرسل الأخطاء فقط
-                                if msg and _is_error_text(msg):
-                                    tg_error(msg)
+                               order, msg = execute_buy(symbol)
+                          # إذا كانت رسالة خطأ → أرسل كخطأ، غير ذلك اعتبرها نجاح
+                           if msg:
+                              if _is_error_text(msg):
+                                   tg_error(msg)
+                       else:
+                             tg_info(msg, parse_mode="HTML", silent=False)  # ← إرسال نجاح الدخول
+
+                            # في حال ما رجعت الاستراتيجية نصًا، كوّن نصًا بسيطًا
+                               elif order:
+                        try:
+                              price = getattr(order, "price", None) or getattr(order, "avg_price", None) or ""
+                             qty   = getattr(order, "amount", None) or getattr(order, "qty", None) or ""
+                                  tg_info(f"✅ دخول صفقة\nرمز: <b>{symbol}</b>\nسعر: <b>{price}</b>\nكمية: <b>{qty}</b>", parse_mode="HTML", silent=False)
+                       except Exception:
+                             tg_info(f"✅ دخول صفقة: {symbol}", silent=False)
+
                                 # تحديث العدّ من المصدر بعد كل محاولة شراء
                                 open_positions_count = _get_open_positions_count_safe()
                             except Exception as e:
@@ -411,9 +424,22 @@ if __name__ == "__main__":
                         if _stop_flag and STOP_POLICY in ("immediate", "debounce"):
                             break
                         try:
-                            closed = manage_position(symbol)
-                            if closed:
-                                _print(f"[manage] {symbol} closed by TP/SL/TIME")
+                           closed = manage_position(symbol)
+               # لو الدالة تُرجع تفاصيل (dict/tuple) أرسل النصّ إن وُجد، وإلا أرسل إشعارًا عامًا
+           if closed:
+                    text = None
+            if isinstance(closed, dict):
+                 text = closed.get("text") or closed.get("msg")
+            elif isinstance(closed, (list, tuple)) and closed:
+                 text = closed[0]
+
+                if text:
+                     tg_info(text, parse_mode="HTML", silent=False)
+             else:
+                     tg_info(f"✅ إغلاق صفقة: <b>{symbol}</b> (TP/SL/Timeout)", parse_mode="HTML", silent=False)
+
+                   _print(f"[manage] {symbol} closed by TP/SL/TIME")
+
                         except Exception as e:
                             if not MUTE_NOISEY_ALERTS and SEND_ERRORS_TO_TELEGRAM:
                                 tg_error(f"⚠️ خطأ إدارة {symbol}:\n{e}")
