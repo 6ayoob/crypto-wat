@@ -1865,7 +1865,7 @@ def execute_buy(symbol: str, sig: dict | None = None):
     except Exception:
         pass
 
-    # خطة الدخول (تضمّن بناء SL/TPs/partials…)
+    # بناء خطة الدخول (قد تتضمن استدعاء check_signal)
     sig = _build_entry_plan(symbol, sig)
 
     # Quick Win: منع ازدواجية التنفيذ الموقّت
@@ -1891,18 +1891,18 @@ def execute_buy(symbol: str, sig: dict | None = None):
         scale, note = _soft_scale_by_time_and_market(br, eff_min)
         trade_usdt *= scale
         if SOFT_MSG_ENABLE:
-            sig["messages"]["breadth_soft"] = (
-                f"⚠️ Soft breadth: ratio={br:.2f} < min={eff_min:.2f} → size×{scale:.2f}"
-            )
+            sig.setdefault("messages", {})
+            sig["messages"]["breadth_soft"] = f"⚠️ Soft breadth: ratio={br:.2f} < min={eff_min:.2f} → size×{scale:.2f}"
 
     if is_leader:
         trade_usdt *= 0.50  # استثناء القائد: حجم مخفّض
         if SOFT_MSG_ENABLE:
+            sig.setdefault("messages", {})
             sig["messages"]["leader_note"] = "🏁 Leader mode: حجم مخفّض (نصف الحجم)."
 
     # التحقق من الرصيد والحد الأدنى
     price = float(fetch_price(base))
-    usdt  = float(fetch_balance("USDT") or 0.0)
+    usdt = float(fetch_balance("USDT") or 0.0)
     if usdt < max(MIN_TRADE_USDT, trade_usdt):
         return None, "🚫 رصيد USDT غير كافٍ."
     amount = trade_usdt / max(price, 1e-9)
@@ -1938,17 +1938,16 @@ def execute_buy(symbol: str, sig: dict | None = None):
         "reason": sig.get("reasons"),  # استخدام reasons من الإشارة
         "max_hold_hours": _mgmt(variant).get("TIME_HRS"),
     }
+    save_position(symbol, pos)
+    register_trade_opened()
 
-    # Quick Win: رسالة ودّية عن حالة السوق
+    # Quick Win: رسالة ودّية عن حالة السوق (غير حرجة)
     try:
         bs = breadth_status()
-        if STRAT_TG_SEND and bs and (bs.get("ratio") is not None) and not bs.get("ok", True):
+        if STRAT_TG_SEND and bs and bs.get("ratio") is not None and not bs.get("ok", True):
             _tg(f"⚠️ Market breadth ضعيف حالياً: ratio={bs['ratio']:.2f} < min={bs['min']:.2f}")
     except Exception:
         pass
-
-    save_position(symbol, pos)
-    register_trade_opened()
 
     try:
         if STRAT_TG_SEND:
