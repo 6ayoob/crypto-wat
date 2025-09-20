@@ -1020,13 +1020,17 @@ def _entry_breakout_logic(df, closed, prev, atr_ltf, htf_ctx, cfg):
         hi_slice = df["high"].iloc[-NR_WINDOW-2:-2]
         if len(hi_slice) < 3:
             return False
+
         hi_range = float(hi_slice.max())
-        if not np.isfinite(hi_range):
+        if not math.isfinite(hi_range):
             return False
 
         is_nr_recent = bool(df["is_nr"].iloc[-3:-1].all())
 
-        vwap_ref = _finite_or(float(closed["close"]), closed.get("vwap"), closed.get("ema21"), closed.get("ema50"))
+        vwap_ref = _finite_or(float(closed["close"]),
+                              closed.get("vwap"),
+                              closed.get("ema21"),
+                              closed.get("ema50"))
         vwap_ok = float(closed["close"]) > vwap_ref
 
         buf = float(cfg.get("BREAKOUT_BUFFER_LTF", 0.0015))
