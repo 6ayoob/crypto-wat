@@ -1505,15 +1505,35 @@ def check_signal(symbol: str):
         base, variant = _split_symbol_variant(symbol)
         bucket = "maj" if base.split("/")[0] in ("BTC", "ETH", "BNB", "SOL") else "alt"
 
-        # مقاييس السيولة والسلوك
+        # === سياق الرمز على LTF (يجب تعريفه قبل تحسين 1h) ===
         sym_ctx = {
             "bucket": bucket,
             "atrp_q35_lookback": float(df["close"].pct_change().rolling(35).std().iloc[-1] or 0),
             "price": float(price),
             "notional_avg_30": float(df["volume"].iloc[-30:].mean() * float(price)),
             "notional_min_30": float(df["volume"].iloc[-30:].min()  * float(price)),
-            "is_meme": False,  # يمكن ربطه بقائمة خارجية لاحقًا
+            "is_meme": False,  # اربط لاحقاً بقائمة إن وُجدت
         }
+
+        # === تحسين قياس السيولة عبر إطار 1h (نأخذ الأكثر تحفظاً بين LTF و 1h) ===
+        try:
+            base_only = base  # مثال: "ALT/USDT"
+            d1h = get_ohlcv_cached(base_only, "1h", 80)
+            if d1h and len(d1h) >= 35:
+                df1h = _df(d1h)
+                px1h = float(df1h["close"].iloc[-2])
+                vol30 = float(df1h["volume"].iloc[-30:].mean())
+                minbar30 = float(df1h["volume"].iloc[-30:].min())
+
+                avg_notional_30_h1 = vol30 * px1h
+                min_notional_30_h1 = minbar30 * px1h
+
+                # نأخذ الأكثر تحفظًا
+                sym_ctx["notional_avg_30"] = float(min(sym_ctx["notional_avg_30"], avg_notional_30_h1))
+                sym_ctx["notional_min_30"] = float(min(sym_ctx["notional_min_30"], min_notional_30_h1))
+        except Exception:
+            # صامت: أي فشل هنا لا يوقف الإشارة، فقط يُبقي قيم LTF كما هي
+            pass
 
         # معطيات LTF سياقية (rvol + تقدير اختراق + اتجاه ema200 + صلاحية pullback)
         rvol = float(_finite_or(1.0, closed.get("rvol"), 1.0))
@@ -1599,8 +1619,8 @@ def check_signal(symbol: str):
         if not n_ok:
             return _rej("notional_low", avg=avg_not, minbar=minbar)
 
-        # --- entry mode logic (حسب نسخة "new" كمبدئ) ---
-        cfg = get_cfg("new")
+        # --- entry mode logic (احترم النسخة الفعلية) ---
+        cfg = get_cfg(variant)
         mode_pref = cfg.get("ENTRY_MODE", "hybrid")
         chosen_mode = None
         order = cfg.get("HYBRID_ORDER", ["pullback", "breakout"]) if mode_pref == "hybrid" else [mode_pref]
@@ -1640,6 +1660,7 @@ def check_signal(symbol: str):
         return _rej("error", err=str(e))
     finally:
         _CURRENT_SYMKEY = None
+
 
 # ================== HTF Gate مرن (نسخة مُحسّنة مع سماحيات آمنة) ==================
 def _htf_gate(htf_trend, ltf_ctx, thr):
