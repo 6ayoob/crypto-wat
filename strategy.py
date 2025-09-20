@@ -477,6 +477,27 @@ def _get_htf_context(symbol):
 
 # ================== Breadth Guard ==================
 _BREADTH_CACHE = {"t": 0.0, "ratio": None}
+def breadth_status():
+    """
+    واجهة مبسّطة يستخدمها main.py لعرض حالة السِعة (Breadth).
+    يعيد:
+      ok   : True إذا السِعة تفي بالحد الأدنى الفعّال، أو إذا تعذّر حسابها.
+      ratio: قيمة السِعة الحالية (0..1) أو None إذا تعذّر حسابها.
+      min  : الحد الأدنى الفعّال المطلوب حاليًا.
+    """
+    try:
+        r = _get_breadth_ratio_cached()
+        eff_min = _breadth_min_auto()
+        if r is None:
+            # عدم توفّر القياس لا يوقف — نسمح بالعمل لكن نظهر min للمعلومات
+            return {"ok": True, "ratio": None, "min": eff_min}
+        return {"ok": (r >= eff_min), "ratio": r, "min": eff_min}
+    except Exception:
+        # في حالات الخطأ، لا نعطّل التشغيل
+        try:
+            return {"ok": True, "ratio": None, "min": _breadth_min_auto()}
+        except Exception:
+            return {"ok": True, "ratio": None, "min": BREADTH_MIN_RATIO}
 
 def _breadth_refs() -> List[str]:
     if BREADTH_SYMBOLS_ENV.strip():
