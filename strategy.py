@@ -1518,11 +1518,14 @@ def check_signal(symbol: str):
         # معطيات LTF سياقية (rvol + تقدير اختراق + اتجاه ema200 + صلاحية pullback)
         rvol = float(_finite_or(1.0, closed.get("rvol"), 1.0))
         nr_recent = bool(df["is_nr"].iloc[-3:-1].all())
-        hi_range  = float(df["high"].iloc[-NR_WINDOW-2:-2].max())
-        hi_range_series = df["high"].iloc[-NR_WINDOW-2:-2]
-        hi_range = float(hi_range_series.max())
-          if not math.isfinite(hi_range):
-          return _rej("no_ltf")  # حماية إضافية نادرة
+
+        # أعلى نطاق حديث (مع حمايات)
+        hi_slice = df["high"].iloc[-NR_WINDOW-2:-2]
+        if len(hi_slice) < 3:
+            return _rej("no_ltf")  # حماية نادرة
+        hi_range = float(hi_slice.max())
+        if not math.isfinite(hi_range):
+            return _rej("no_ltf")  # حماية إضافية
 
         is_breakout = bool(
             (float(closed["close"]) > hi_range) and
@@ -1549,7 +1552,7 @@ def check_signal(symbol: str):
             low_v     = float(closed["low"])
             pb_ok = False
             for ref in [vwap_val, ema21_val]:
-                if ref is None: 
+                if ref is None:
                     continue
                 if (close_v >= ref) and (low_v <= ref):
                     pb_ok = True
@@ -1571,8 +1574,10 @@ def check_signal(symbol: str):
         # --- HTF trend gate ---
         trend = "neutral"
         try:
-            if float(htf_ctx["close"]) > float(htf_ctx["ema50_now"]): trend = "up"
-            elif float(htf_ctx["close"]) < float(htf_ctx["ema50_now"]): trend = "down"
+            if float(htf_ctx["close"]) > float(htf_ctx["ema50_now"]):
+                trend = "up"
+            elif float(htf_ctx["close"]) < float(htf_ctx["ema50_now"]):
+                trend = "down"
         except Exception:
             trend = "neutral"
 
@@ -1635,6 +1640,7 @@ def check_signal(symbol: str):
         return _rej("error", err=str(e))
     finally:
         _CURRENT_SYMKEY = None
+
 # ================== HTF Gate مرن (نسخة مُحسّنة مع سماحيات آمنة) ==================
 def _htf_gate(htf_trend, ltf_ctx, thr):
     """
