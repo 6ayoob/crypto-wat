@@ -182,6 +182,20 @@ def _tg(text, parse_mode="HTML"):
         requests.post(url, data=data, timeout=10)
     except Exception:
         pass
+# --- Telegram de-dup guard (منع تكرار نفس الرسالة) ---
+_MSG_DEDUP: Dict[str, float] = {}
+
+def _tg_once(key: str, text: str, ttl_sec: int = 900, parse_mode: str = "HTML"):
+    """
+    أرسل الرسالة مرة واحدة كل ttl_sec ثانية لنفس المفتاح key.
+    مثال key: 'warn_usdt_insufficient' أو f'warn_min_notional:{symbol}'
+    """
+    now = time.time()
+    last = _MSG_DEDUP.get(key, 0.0)
+    if now - last < ttl_sec:
+        return  # تجاهل التكرار
+    _MSG_DEDUP[key] = now
+    _tg(text, parse_mode=parse_mode)
 
 def now_riyadh(): return datetime.now(RIYADH_TZ)
 def _today_str(): return now_riyadh().strftime("%Y-%m-%d")
