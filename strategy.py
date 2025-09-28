@@ -1234,19 +1234,44 @@ def execute_buy(symbol: str, sig: dict | None = None):
         scale, note = _soft_scale_by_time_and_market(br, eff_min)
         trade_usdt *= scale
         if SOFT_MSG_ENABLE:
-            sig["messages"]["breadth_soft"] = f"⚠️ Soft breadth: ratio={br:.2f} < min={eff_min:.2f} → size×{scale:.2f}"
+            sig["messages"]["breadth_soft"] = (
+                f"⚠️ Soft breadth: ratio={br:.2f} < min={eff_min:.2f} → size×{scale:.2f}"
+            )
 
     if is_leader:
         trade_usdt *= 0.50  # استثناء القائد بحجم مخفّض
 
+    # --- فحوصات الرصيد والحد الأدنى مع مانع سبام ---
     price = float(fetch_price(base))
     usdt  = float(fetch_balance("USDT") or 0.0)
-    if usdt < max(MIN_TRADE_USDT, trade_usdt):
+    need_usdt = max(MIN_TRADE_USDT, trade_usdt)
+
+    if usdt < need_usdt:
+        # تُرسل مرة كل 15 دقيقة كحد أقصى
+        _tg_once(
+            "warn_usdt_insufficient",
+            (
+                "🚫 <b>رصيد USDT غير كافٍ</b>\n"
+                f"المتوفر: <code>{usdt:.2f}$</code> • المطلوب تقريبًا: <code>{need_usdt:.2f}$</code>\n"
+                "سأتجاهل محاولات الشراء المماثلة مؤقتًا."
+            ),
+            ttl_sec=900,
+        )
         return None, "🚫 رصيد USDT غير كافٍ."
+
     amount = trade_usdt / max(price, 1e-9)
     if amount * price < MIN_NOTIONAL_USDT:
+        _tg_once(
+            f"warn_min_notional:{base}",
+            (
+                "⚠️ <b>قيمة الصفقة أقل من الحد الأدنى</b>\n"
+                f"القيمة: <code>{amount*price:.2f}$</code> • الحد الأدنى: <code>{MIN_NOTIONAL_USDT:.2f}$</code>."
+            ),
+            ttl_sec=900,
+        )
         return None, "🚫 قيمة الصفقة أقل من الحد الأدنى."
 
+    # --- تنفيذ الشراء ---
     if DRY_RUN:
         order = {"id": f"dry_{int(time.time())}", "average": price}
     else:
@@ -1274,16 +1299,19 @@ def execute_buy(symbol: str, sig: dict | None = None):
         "reason": sig.get("reasons"),
         "max_hold_hours": _mgmt(variant).get("TIME_HRS"),
     }
-    save_position(symbol, pos); register_trade_opened()
+    save_position(symbol, pos)
+    register_trade_opened()
 
     try:
         if STRAT_TG_SEND:
             msg = (
                 f"{pos.get('messages',{}).get('entry','✅ دخول')} {symbol}\n"
-                f"دخول: <code>{fill_px:.6f}</code>\n"
-                f"SL: <code>{pos['stop_loss']:.6f}</code>\n"
-                f"🎯 الأهداف: {', '.join(str(round(t,6)) for t in pos['targets'])}\n"
-                f"💰 حجم الصفقة: <b>{trade_usdt:.2f}$</b>"
+                f"🎯 <b>Mode</b>: {sig.get('mode','-')} • <b>Score</b>: {sig.get('score','-')} • "
+                f"<b>Pattern</b>: {sig.get('pattern','-')}\n"
+                f"🟢 <b>Entry</b>: <code>{fill_px:.6f}</code>\n"
+                f"🛡️ <b>SL</b>: <code>{pos['stop_loss']:.6f}</code>\n"
+                f"🎯 <b>TPs</b>: {', '.join(str(round(t,6)) for t in pos['targets'])}\n"
+                f"💰 <b>الحجم</b>: {trade_usdt:.2f}$"
             )
             if pos.get("messages", {}).get("breadth_soft"):
                 msg += f"\n{pos['messages']['breadth_soft']}"
@@ -1292,6 +1320,7 @@ def execute_buy(symbol: str, sig: dict | None = None):
         pass
 
     return order, f"✅ شراء {symbol} | SL: {pos['stop_loss']:.6f} | 💰 {trade_usdt:.2f}$"
+
 
 # ================== إدارة الصفقة ==================
 def manage_position(symbol):
