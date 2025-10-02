@@ -829,18 +829,24 @@ def _entry_breakout_logic(df, closed, prev, atr_ltf, htf_ctx, cfg):
 
 # ================== HTF Gate مرن ==================
 def _htf_gate(htf_trend, ltf_ctx, thr):
+    # تمرير كامل لو HTF صاعد/قوي
     if htf_trend in ("up","strong_up"):
         return True
+
+    # منع صارم لو هابط جدًا والسوق ضعيف — مع استثناء محدود عندما السوق قوي وLTF جيد
     if htf_trend in ("down","strong_down"):
-        return False
-    # محايد
+        return bool(thr.get("NEUTRAL_HTF_PASS") and
+                    ltf_ctx.get("ema200_trend") in ("up","flat_up") and
+                    float(ltf_ctx.get("rvol",0)) >= float(thr.get("RVOL_NEED_BASE",1.0))*0.98 and
+                    ltf_ctx.get("pullback_ok", False))
+
+    # حالة محايدة
     if thr["NEUTRAL_HTF_PASS"]:
-        return (
-            ltf_ctx.get("ema200_trend") in ("up","flat_up") and
-            ltf_ctx.get("rvol",0) >= thr["RVOL_NEED_BASE"]*0.98 and
-            ltf_ctx.get("pullback_ok",False)
-        )
+        return (ltf_ctx.get("ema200_trend") in ("up","flat_up") and
+                float(ltf_ctx.get("rvol",0)) >= float(thr.get("RVOL_NEED_BASE",1.0))*0.98 and
+                ltf_ctx.get("pullback_ok",False))
     return False
+
 # ================== المخاطر اليومية/الساعة + Auto-Relax ==================
 def _default_risk_state():
     return {"date": _today_str(), "daily_pnl": 0.0, "consecutive_losses": 0, "trades_today": 0,
