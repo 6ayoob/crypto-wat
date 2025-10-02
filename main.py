@@ -67,6 +67,10 @@ SEND_METRICS_TO_TELEGRAM  = os.getenv("SEND_METRICS_TO_TELEGRAM", "0").lower() i
 
 STOP_POLICY = os.getenv("STOP_POLICY", "debounce").lower()  # ignore | debounce | immediate
 STOP_DEBOUNCE_WINDOW_SEC = int(os.getenv("STOP_DEBOUNCE_WINDOW_SEC", "5"))
+# ---- سيولة ----
+USDT_MIN_RESERVE   = float(os.getenv("USDT_MIN_RESERVE", "5"))     # احتياطي لا يُمس (USD)
+USDT_BUY_THRESHOLD = float(os.getenv("USDT_BUY_THRESHOLD", "15"))  # أقل سيولة تسمح بمحاولة شراء
+LIQUIDITY_POLICY   = os.getenv("LIQUIDITY_POLICY", "manage_first") # manage_first | neutral
 
 # قفل عملية مفردة (اختياري) عبر ملف PID
 SINGLETON_PIDFILE = os.getenv("PIDFILE", "").strip()
