@@ -1326,7 +1326,7 @@ def execute_buy(symbol: str, sig: dict | None = None):
         pass
 
     return order, f"✅ شراء {symbol} | SL: {pos['stop_loss']:.6f} | 💰 {trade_usdt:.2f}$"
-    def _safe_sell(base_symbol: str, want_qty: float):
+def _safe_sell(base_symbol: str, want_qty: float):
     """
     يبيع الكمية المتاحة فقط لتجنّب أخطاء OKX 51008.
     يرجع (order, exit_px, sold_qty) أو (None, None, 0) عند الفشل/عدم وجود رصيد.
@@ -1353,8 +1353,6 @@ def execute_buy(symbol: str, sig: dict | None = None):
 
     exit_px = float(order.get("average") or order.get("price") or fetch_price(base_symbol) or 0.0)
     return order, exit_px, sell_qty
-
-
 
 # ================== إدارة الصفقة ==================
 def manage_position(symbol):
