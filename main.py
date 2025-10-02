@@ -67,6 +67,7 @@ SEND_METRICS_TO_TELEGRAM  = os.getenv("SEND_METRICS_TO_TELEGRAM", "0").lower() i
 
 STOP_POLICY = os.getenv("STOP_POLICY", "debounce").lower()  # ignore | debounce | immediate
 STOP_DEBOUNCE_WINDOW_SEC = int(os.getenv("STOP_DEBOUNCE_WINDOW_SEC", "5"))
+
 # ---- سيولة ----
 USDT_MIN_RESERVE   = float(os.getenv("USDT_MIN_RESERVE", "5"))     # احتياطي لا يُمس (USD)
 USDT_BUY_THRESHOLD = float(os.getenv("USDT_BUY_THRESHOLD", "15"))  # أقل سيولة تسمح بمحاولة شراء
@@ -160,6 +161,21 @@ def tg_error(text, parse_mode=None, silent=True):
             send_telegram_message(text, parse_mode=parse_mode, disable_notification=silent)
         except Exception:
             pass
+
+# ================== سيولة: أدوات مساعدة ==================
+def _usdt_free() -> float:
+    """رصيد USDT المتاح (Spot) مع حماية الاستثناءات."""
+    try:
+        return float(fetch_balance("USDT") or 0.0)
+    except Exception:
+        return 0.0
+
+def _has_liquidity_for_new_trade() -> bool:
+    """
+    بوابة فتح صفقات جديدة:
+    نحتاج (USDT_BUY_THRESHOLD + USDT_MIN_RESERVE) على الأقل.
+    """
+    return _usdt_free() >= (USDT_BUY_THRESHOLD + USDT_MIN_RESERVE)
 
 # ================== قفل مفرد (PID file) اختياري ==================
 
@@ -287,6 +303,7 @@ def _discover_spot_positions(min_usd: float = 5.0):
             _print(f"[import] created position for {symbol}: qty={qty}, px={px}, ~${usd_val:.2f}")
     except Exception as e:
         _print(f"[import] discovery error: {e}")
+
 # ================== الحلقة الرئيسية ==================
 if __name__ == "__main__":
     # قفل مفرد (اختياري)
@@ -336,92 +353,17 @@ if __name__ == "__main__":
 
             now = time.time()
 
-            # 1) فحص إشارات الدخول
-            if now >= next_scan:
-                t_round_start = perf_counter()
-                try:
-                    try:
-                        reset_cycle_cache()
-                    except Exception:
-                        pass
+            # NEW/LIQ: قياس السيولة الحرة كل لفة
+            free_now = _usdt_free()
 
-                    open_positions_count = _get_open_positions_count_safe()
-                    for symbol in SYMBOLS:
-                        if _stop_flag and STOP_POLICY in ("immediate", "debounce"):
-                            break
-                        if not _can_open_new_position(open_positions_count):
-                            break
-                        if load_position(symbol) is not None:
-                            continue
+            # NEW/LIQ: لو السياسة manage_first — قدّم الإدارة عندما لا توجد سيولة كافية للشراء
+            should_manage_now = (now >= next_manage)
+            if LIQUIDITY_POLICY == "manage_first":
+                if (now >= next_scan) and (not _has_liquidity_for_new_trade()):
+                    should_manage_now = True
 
-                        try:
-                            sig = check_signal(symbol)
-                        except Exception as e:
-                            _print(f"[check_signal] {symbol} error: {e}")
-                            continue
-
-                        is_buy = (sig == "buy") or (isinstance(sig, dict) and str(sig.get("decision", "")).lower() == "buy")
-                        if is_buy:
-                            try:
-                                order, msg = execute_buy(symbol)
-                                if msg:
-                                    if _is_error_text(msg):
-                                        tg_error(msg)
-                                    else:
-                                        tg_info(msg, parse_mode="HTML", silent=False)
-                                elif order:
-                                    price = getattr(order, "price", None) or getattr(order, "avg_price", None) or ""
-                                    qty   = getattr(order, "amount", None) or getattr(order, "qty", None) or ""
-                                    tg_info(f"✅ دخول صفقة\nرمز: <b>{symbol}</b>\nسعر: <b>{price}</b>\nكمية: <b>{qty}</b>", parse_mode="HTML", silent=False)
-                                open_positions_count = _get_open_positions_count_safe()
-                            except Exception as e:
-                                _print(f"[execute_buy] {symbol} error: {e}")
-                                continue
-                        else:
-                            try:
-                                _, reasons = check_signal_debug(symbol)
-                                if reasons:
-                                    _print(f"[debug] {symbol} reject reasons: {reasons[:5]}")
-                            except Exception:
-                                pass
-                        time.sleep(0.15)
-
-                    try:
-                        maybe_emit_reject_summary()
-                    except Exception:
-                        pass
-
-                    # أداء الجولة
-                    try:
-                        t_round_end = perf_counter()
-                        dur_sec = t_round_end - t_round_start
-                        avg_per_symbol = (dur_sec / max(1, len(SYMBOLS)))
-                        bs = breadth_status() or {}
-                        b_ratio_txt = "—" if bs.get("ratio") is None else f"{bs.get('ratio'):.2f}"
-                        b_line  = f"breadth: <b>{b_ratio_txt}</b> | min: <b>{bs.get('min',0.0):.2f}</b> | {('✅ OK' if bs.get('ok') else '❌ LOW')}"
-                        perf_text = (
-                            "⏱️ <b>Round Perf</b>\n"
-                            f"- Duration: <b>{dur_sec:.2f}s</b>\n"
-                            f"- Avg / symbol: <b>{avg_per_symbol:.3f}s</b>\n"
-                            f"- {b_line}\n"
-                        )
-                        metrics_text = metrics_format()
-                        full_report = perf_text + "\n" + metrics_text
-                        _print(full_report)
-                        if SEND_METRICS_TO_TELEGRAM:
-                            tg_info(full_report, parse_mode="HTML", silent=True)
-                    except Exception:
-                        pass
-
-                except Exception:
-                    _print(f"[scan] general error:\n{traceback.format_exc()}")
-                finally:
-                    next_scan += SCAN_INTERVAL_SEC
-                    if now - next_scan > SCAN_INTERVAL_SEC:
-                        next_scan = now + SCAN_INTERVAL_SEC + random.uniform(-2, 2)
-
-            # 2) إدارة الصفقات المفتوحة
-            if now >= next_manage:
+            # 2) إدارة الصفقات المفتوحة — قد تُنفّذ أولًا عند نقص السيولة  (CHANGED)
+            if should_manage_now:
                 t_manage_start = perf_counter()
                 try:
                     for symbol in SYMBOLS:
@@ -453,6 +395,101 @@ if __name__ == "__main__":
                     next_manage += MANAGE_INTERVAL_SEC
                     if now - next_manage > MANAGE_INTERVAL_SEC:
                         next_manage = now + MANAGE_INTERVAL_SEC
+
+            # 1) فحص إشارات الدخول — مع بوابة سيولة قبل أي شراء  (CHANGED + NEW/LIQ)
+            if now >= next_scan:
+                if not _has_liquidity_for_new_trade():
+                    _print(f"[scan] skipped — free USDT {free_now:.2f} < threshold+reserve")
+                    # حافظ على الإيقاع حتى لو تخطّينا
+                    next_scan += SCAN_INTERVAL_SEC
+                    if now - next_scan > SCAN_INTERVAL_SEC:
+                        next_scan = now + SCAN_INTERVAL_SEC + random.uniform(-2, 2)
+                else:
+                    t_round_start = perf_counter()
+                    try:
+                        try:
+                            reset_cycle_cache()
+                        except Exception:
+                            pass
+
+                        open_positions_count = _get_open_positions_count_safe()
+                        for symbol in SYMBOLS:
+                            if _stop_flag and STOP_POLICY in ("immediate", "debounce"):
+                                break
+                            if not _can_open_new_position(open_positions_count):
+                                break
+                            if load_position(symbol) is not None:
+                                continue
+
+                            # NEW/LIQ: فحص سريع للسيولة داخل الحلقة قبل كل محاولة شراء
+                            if not _has_liquidity_for_new_trade():
+                                break  # أوقف محاولات الدخول في هذه الجولة
+
+                            try:
+                                sig = check_signal(symbol)
+                            except Exception as e:
+                                _print(f"[check_signal] {symbol} error: {e}")
+                                continue
+
+                            is_buy = (sig == "buy") or (isinstance(sig, dict) and str(sig.get("decision", "")).lower() == "buy")
+                            if is_buy:
+                                try:
+                                    order, msg = execute_buy(symbol)
+                                    if msg:
+                                        if _is_error_text(msg):
+                                            tg_error(msg)
+                                        else:
+                                            tg_info(msg, parse_mode="HTML", silent=False)
+                                    elif order:
+                                        price = getattr(order, "price", None) or getattr(order, "avg_price", None) or ""
+                                        qty   = getattr(order, "amount", None) or getattr(order, "qty", None) or ""
+                                        tg_info(f"✅ دخول صفقة\nرمز: <b>{symbol}</b>\nسعر: <b>{price}</b>\nكمية: <b>{qty}</b>", parse_mode="HTML", silent=False)
+                                    open_positions_count = _get_open_positions_count_safe()
+                                except Exception as e:
+                                    _print(f"[execute_buy] {symbol} error: {e}")
+                                    continue
+                            else:
+                                try:
+                                    _, reasons = check_signal_debug(symbol)
+                                    if reasons:
+                                        _print(f"[debug] {symbol} reject reasons: {reasons[:5]}")
+                                except Exception:
+                                    pass
+                            time.sleep(0.15)
+
+                        try:
+                            maybe_emit_reject_summary()
+                        except Exception:
+                            pass
+
+                        # أداء الجولة
+                        try:
+                            t_round_end = perf_counter()
+                            dur_sec = t_round_end - t_round_start
+                            avg_per_symbol = (dur_sec / max(1, len(SYMBOLS)))
+                            bs = breadth_status() or {}
+                            b_ratio_txt = "—" if bs.get("ratio") is None else f"{bs.get('ratio'):.2f}"
+                            b_line  = f"breadth: <b>{b_ratio_txt}</b> | min: <b>{bs.get('min',0.0):.2f}</b> | {('✅ OK' if bs.get('ok') else '❌ LOW')}"
+                            perf_text = (
+                                "⏱️ <b>Round Perf</b>\n"
+                                f"- Duration: <b>{dur_sec:.2f}s</b>\n"
+                                f"- Avg / symbol: <b>{avg_per_symbol:.3f}s</b>\n"
+                                f"- {b_line}\n"
+                            )
+                            metrics_text = metrics_format()
+                            full_report = perf_text + "\n" + metrics_text
+                            _print(full_report)
+                            if SEND_METRICS_TO_TELEGRAM:
+                                tg_info(full_report, parse_mode="HTML", silent=True)
+                        except Exception:
+                            pass
+
+                    except Exception:
+                        _print(f"[scan] general error:\n{traceback.format_exc()}")
+                    finally:
+                        next_scan += SCAN_INTERVAL_SEC
+                        if now - next_scan > SCAN_INTERVAL_SEC:
+                            next_scan = now + SCAN_INTERVAL_SEC + random.uniform(-2, 2)
 
             # 3) تقرير يومي تلقائي
             if ENABLE_DAILY_REPORT:
