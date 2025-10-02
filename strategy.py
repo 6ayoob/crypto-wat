@@ -1247,24 +1247,10 @@ def execute_buy(symbol: str, sig: dict | None = None):
     if is_leader:
         trade_usdt *= 0.50  # استثناء القائد بحجم مخفّض
 
-    # --- فحوصات الرصيد والحد الأدنى مع مانع سبام ---
+    # --- سعر/حجم + تحقق الحد الأدنى للنوتشن فقط (بدون فحص رصيد USDT هنا) ---
     price = float(fetch_price(base))
-    usdt  = float(fetch_balance("USDT") or 0.0)
-    need_usdt = max(MIN_TRADE_USDT, trade_usdt)
-
-    if usdt < need_usdt:
-        _tg_once(
-            "warn_usdt_insufficient",
-            (
-                "🚫 <b>رصيد USDT غير كافٍ</b>\n"
-                f"المتوفر: <code>{usdt:.2f}$</code> • المطلوب تقريبًا: <code>{need_usdt:.2f}$</code>\n"
-                "سأتجاهل محاولات الشراء المماثلة مؤقتًا."
-            ),
-            ttl_sec=900,
-        )
-        return None, "🚫 رصيد USDT غير كافٍ."
-
     amount = trade_usdt / max(price, 1e-9)
+
     if amount * price < MIN_NOTIONAL_USDT:
         _tg_once(
             f"warn_min_notional:{base}",
@@ -1297,7 +1283,7 @@ def execute_buy(symbol: str, sig: dict | None = None):
         "variant": variant,
         "htf_stop": sig.get("stop_rule"),
         "max_bars_to_tp1": sig.get("max_bars_to_tp1"),
-        "messages": sig.get("messages", {}),
+        "messages": sig.get("messages"),
         "tp_hits": [False] * len(sig["targets"]),
         "score": sig.get("score"),
         "pattern": sig.get("pattern"),
