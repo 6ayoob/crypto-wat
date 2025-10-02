@@ -1457,11 +1457,17 @@ def manage_position(symbol):
                 if part_qty * current < MIN_NOTIONAL_USDT:
                     part_qty = amount  # صغير جدًا → خروج كامل
 
-                order, exit_px, sold_qty = _safe_sell(base, part_qty)
-                if order and sold_qty > 0:
-                    pnl_gross = (exit_px - entry) * sold_qty
-                    fees = (entry + exit_px) * sold_qty * (FEE_BPS_ROUNDTRIP / 10000.0)
-                    pnl_net = pnl_gross - fees
+                order, exit_px, sold_qty = _safe_sell(symbol, close_qty)
+if sold_qty > 0:
+    pos = load_position(symbol) or {}
+    # تأمين الحقول:
+    pos["amount"] = float(pos.get("amount", 0.0))
+    sold_qty = float(sold_qty)
+
+    # خصم الكمية المباعة
+    pos["amount"] = max(0.0, pos["amount"] - sold_qty)
+    save_position(symbol, pos)
+
                     
                     pos["amount"] = float(max(0.0, pos["amount"] - sold_qty))
                     pos["tp_hits"][i] = True
