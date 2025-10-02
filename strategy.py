@@ -1320,6 +1320,34 @@ def execute_buy(symbol: str, sig: dict | None = None):
         pass
 
     return order, f"✅ شراء {symbol} | SL: {pos['stop_loss']:.6f} | 💰 {trade_usdt:.2f}$"
+    def _safe_sell(base_symbol: str, want_qty: float):
+    """
+    يبيع الكمية المتاحة فقط لتجنّب أخطاء OKX 51008.
+    يرجع (order, exit_px, sold_qty) أو (None, None, 0) عند الفشل/عدم وجود رصيد.
+    """
+    try:
+        avail = float(fetch_balance(base_symbol.split("/")[0]) or 0.0)
+    except Exception:
+        avail = 0.0
+    sell_qty = max(0.0, min(float(want_qty or 0.0), avail))
+    if sell_qty <= 0.0:
+        _tg_once(f"warn_insuff_{base_symbol}",
+                 f"⚠️ لا توجد كمية متاحة للبيع لـ {base_symbol}.", ttl_sec=600)
+        return None, None, 0.0
+
+    if DRY_RUN:
+        px = float(fetch_price(base_symbol) or 0.0)
+        return {"id": f"dry_sell_{int(time.time())}", "average": px}, px, sell_qty
+
+    order = place_market_order(base_symbol, "sell", sell_qty)
+    if not order:
+        _tg_once(f"sell_fail_{base_symbol}",
+                 f"❌ فشل بيع {base_symbol} (أمر السوق).", ttl_sec=600)
+        return None, None, 0.0
+
+    exit_px = float(order.get("average") or order.get("price") or fetch_price(base_symbol) or 0.0)
+    return order, exit_px, sell_qty
+
 
 
 # ================== إدارة الصفقة ==================
