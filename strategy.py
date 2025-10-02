@@ -128,6 +128,18 @@ BREADTH_MIN_RATIO = _env_float("BREADTH_MIN_RATIO", 0.60)  # حد أساسي (ي
 BREADTH_TF = os.getenv("BREADTH_TF", "1h")
 BREADTH_TTL_SEC = _env_int("BREADTH_TTL_SEC", 180)
 BREADTH_SYMBOLS_ENV = os.getenv("BREADTH_SYMBOLS", "")
+# ======= Soft schedule & messages (defaults) =======
+def _env_str(name, default=""):
+    v = os.getenv(name)
+    return default if v is None else str(v)
+
+SOFT_SCHEDULE_ENABLE      = _env_bool("SOFT_SCHEDULE_ENABLE", False)
+SOFT_SCHEDULE_HRS         = _env_str("SOFT_SCHEDULE_HRS", "09:30-16:00")   # أمثلة: "00:00-23:59", "09:30-12:00,14:00-18:00"
+SOFT_SCHEDULE_WEEKDAYS    = _env_str("SOFT_SCHEDULE_WEEKDAYS", "")         # فارغ = كل الأيام، أو "0,1,2,3,4"
+SOFT_SCALE_TIME_ONLY      = _env_float("SOFT_SCALE_TIME_ONLY", 0.80)
+SOFT_SCALE_MARKET_WEAK    = _env_float("SOFT_SCALE_MARKET_WEAK", 0.85)
+SOFT_SEVERITY_STEP        = _env_float("SOFT_SEVERITY_STEP", 0.10)
+SOFT_MSG_ENABLE           = _env_bool("SOFT_MSG_ENABLE", True)
 
 # Soft breadth sizing (يُستخدم لاحقًا داخل execute_buy)
 SOFT_BREADTH_ENABLE = _env_bool("SOFT_BREADTH_ENABLE", True)
