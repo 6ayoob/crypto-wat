@@ -58,6 +58,16 @@ if not logging.getLogger().hasHandlers():
     logging.basicConfig(level=logging.INFO, format="%(asctime)s [%(levelname)s] %(name)s: %(message)s")
 
 DEBUG_LOG_SIGNALS = _env_bool("DEBUG_LOG_SIGNALS", False)
+def _print(s: str):
+    try:
+        print(s, flush=True)
+    except Exception:
+        try:
+            import sys
+            sys.stdout.write(str(s) + "\n")
+            sys.stdout.flush()
+        except Exception:
+            pass
 
 # ================== إعدادات عامة/ثوابت ==================
 RIYADH_TZ = timezone(timedelta(hours=3))
