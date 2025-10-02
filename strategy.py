@@ -1384,7 +1384,7 @@ def manage_position(symbol):
                 order, exit_px, sold_qty = _safe_sell(base, amount)
                 if order and sold_qty > 0:
                     pnl_net = (exit_px - entry) * sold_qty - (entry + exit_px) * sold_qty * (FEE_BPS_ROUNDTRIP/10000.0)
-                   pos["amount"] = float(max(0.0, pos["amount"] - sold_qty)); save_position(symbol, pos)
+                    pos["amount"] = float(max(0.0, pos["amount"] - sold_qty)); save_position(symbol, pos)
                     if pos["amount"] <= 0:
                     close_trade(symbol, exit_px, pnl_net, reason="HTF_STOP")
                         try:
