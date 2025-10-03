@@ -45,6 +45,30 @@ def _env_int(name, default):
         return int(os.getenv(name, str(default)))
     except Exception:
         return int(default)
+def get_usdt_free() -> float:
+    try:
+        return float(fetch_balance("USDT") or 0.0)
+    except Exception:
+        return 0.0
+
+def fetch_symbol_filters(base: str) -> dict:
+    """
+    ترجع stepSize/minQty/minNotional/tickSize لزوج BASE/USDT.
+    لو okx_api ما يوفرها، استخدم قيم افتراضية آمنة.
+    """
+    try:
+        info = {}  # لو عندك okx_api.market(...) رجّع منها
+        step = float(info.get("stepSize", 0.000001)) or 0.000001
+        min_qty = float(info.get("minQty", 0.0)) or 0.0
+        min_notional = float(info.get("minNotional", MIN_NOTIONAL_USDT)) or MIN_NOTIONAL_USDT
+        tick = float(info.get("tickSize", 0.00000001)) or 0.00000001
+    except Exception:
+        step, min_qty, min_notional, tick = 0.000001, 0.0, MIN_NOTIONAL_USDT, 0.00000001
+    return {"stepSize": step, "minQty": min_qty, "minNotional": min_notional, "tickSize": tick}
+
+def _round_to_tick(px: float, tick: float) -> float:
+    if tick <= 0: return float(px)
+    return math.floor(float(px) / tick) * tick
 
 # ===== MTF strict flag (ساعة/4س/يومي) =====
 try:
@@ -1244,12 +1268,21 @@ def _build_entry_plan(symbol: str, sig: dict | None) -> dict:
 
 # ================== execute_buy ==================
 def execute_buy(symbol: str, sig: dict | None = None):
+    """
+    Spot-only (tdMode='cash') + لا اقتراض + فحوص رصيد/قيود المنصّة + سقف انزلاق + رسائل TG.
+    """
     base, variant = _split_symbol_variant(symbol)
     sig = _build_entry_plan(symbol, sig)
 
-    trade_usdt = float(TRADE_BASE_USDT)
+    # سياسات تنفيذ (قابلة للضبط عبر ENV)
+    EXEC_USDT_RESERVE       = _env_float("EXEC_USDT_RESERVE", 10.0)
+    EXEC_MIN_FREE_USDT      = _env_float("EXEC_MIN_FREE_USDT", 15.0)
+    EXEC_COOLDOWN_ERR_SEC   = _env_int("EXEC_COOLDOWN_AFTER_ERR_SEC", 900)
+    SLIPPAGE_MAX_PCT        = _env_float("SLIPPAGE_MAX_PCT", 0.012)  # 1.2%
+    # DRY_RUN موجود أصلًا
 
-    # Breadth + Soft + قائد
+    # حجم أساسي + تعديلات السوق/السِعة
+    trade_usdt = float(TRADE_BASE_USDT)
     br = _get_breadth_ratio_cached()
     eff_min = _breadth_min_auto()
     is_leader = _is_relative_leader_vs_btc(base)
@@ -1262,42 +1295,74 @@ def execute_buy(symbol: str, sig: dict | None = None):
         scale, note = _soft_scale_by_time_and_market(br, eff_min)
         trade_usdt *= scale
         if SOFT_MSG_ENABLE:
-            sig["messages"]["breadth_soft"] = (
-                f"⚠️ Soft breadth: ratio={br:.2f} < min={eff_min:.2f} → size×{scale:.2f}"
-            )
+            sig.setdefault("messages", {})
+            sig["messages"]["breadth_soft"] = f"⚠️ Soft breadth: ratio={br:.2f} < min={eff_min:.2f} → size×{scale:.2f}"
 
     if is_leader:
-        trade_usdt *= 0.50  # استثناء القائد بحجم مخفّض
+        trade_usdt *= 0.50
 
-    # --- سعر/حجم + تحقق الحد الأدنى للنوتشن فقط (بدون فحص رصيد USDT هنا) ---
+    # فحوص الرصيد قبل أي أمر
+    usdt_free = get_usdt_free()
+    if usdt_free < EXEC_MIN_FREE_USDT:
+        return None, f"🚫 رصيد USDT غير كافٍ ({usdt_free:.2f}$ < {EXEC_MIN_FREE_USDT:.2f}$)."
+
+    max_affordable = max(0.0, usdt_free - EXEC_USDT_RESERVE)
+    if max_affordable <= 0:
+        return None, f"🚫 الاحتياطي محجوز ({EXEC_USDT_RESERVE:.2f}$)."
+
+    trade_usdt = min(trade_usdt, max_affordable)
+
+    # قيود المنصّة
+    f = fetch_symbol_filters(base)
+    step = f["stepSize"]; min_qty = f["minQty"]; min_notional = f["minNotional"]; tick = f["tickSize"]
+
+    # سعر/كمية مع تقليم
     price = float(fetch_price(base))
-    amount = trade_usdt / max(price, 1e-9)
+    if not (price > 0):
+        return None, "⚠️ لا يمكن جلب سعر صالح."
 
-    if amount * price < MIN_NOTIONAL_USDT:
-        _tg_once(
-            f"warn_min_notional:{base}",
-            (
-                "⚠️ <b>قيمة الصفقة أقل من الحد الأدنى</b>\n"
-                f"القيمة: <code>{amount*price:.2f}$</code> • الحد الأدنى: <code>{MIN_NOTIONAL_USDT:.2f}$</code>."
-            ),
-            ttl_sec=900,
-        )
-        return None, "🚫 قيمة الصفقة أقل من الحد الأدنى."
+    raw_amount = trade_usdt / price
+    amount = math.floor(raw_amount / step) * step
 
-    # --- تنفيذ الشراء ---
+    if min_qty and amount < min_qty:
+        amount = min_qty
+        trade_usdt = amount * price
+        if trade_usdt > max_affordable:
+            return None, "🚫 لا يمكن بلوغ الحد الأدنى للكمية ضمن الرصيد."
+
+    if amount * price < min_notional:
+        need_amt = math.ceil((min_notional / price) / step) * step
+        trade_usdt = need_amt * price
+        if trade_usdt > max_affordable:
+            _tg_once(f"warn_min_notional:{base}",
+                     f"⚠️ <b>قيمة الصفقة أقل من الحد الأدنى</b>\nالقيمة: <code>{amount*price:.2f}$</code> • الحد الأدنى: <code>{min_notional:.2f}$</code>.",
+                     ttl_sec=900)
+            return None, "🚫 قيمة الصفقة أقل من الحد الأدنى ضمن رصيدك المتاح."
+        amount = need_amt
+
+    # تنفيذ (spot cash فقط)
     if DRY_RUN:
-        order = {"id": f"dry_{int(time.time())}", "average": price}
+        order = {"id": f"dry_{int(time.time())}", "average": price, "filled": float(amount)}
     else:
-        order = place_market_order(base, "buy", amount)
+        try:
+            order = place_market_order(base, "buy", amount)  # يفترض okx_api يبني BASE/USDT + tdMode=cash
+        except Exception as e:
+            _tg_once(f"buy_fail_{base}", f"❌ فشل شراء {base}: {e}", ttl_sec=600)
+            return None, "⚠️ فشل تنفيذ الصفقة (استثناء)."
         if not order:
             return None, "⚠️ فشل تنفيذ الصفقة."
 
     fill_px = float(order.get("average") or order.get("price") or price)
 
+    # سقف الانزلاق
+    if abs(fill_px - price) / price > SLIPPAGE_MAX_PCT:
+        return None, f"🚫 انزلاق مرتفع ({abs(fill_px-price)/price:.2%} > {SLIPPAGE_MAX_PCT:.2%})."
+
+    # حفظ المركز
     pos = {
         "symbol": symbol,
         "amount": float(amount),
-        "entry_price": float(fill_px),
+        "entry_price": _round_to_tick(fill_px, tick),
         "stop_loss": float(sig["sl"]),
         "targets": [float(x) for x in sig["targets"]],
         "partials": list(sig.get("partials") or []),
@@ -1305,7 +1370,7 @@ def execute_buy(symbol: str, sig: dict | None = None):
         "variant": variant,
         "htf_stop": sig.get("stop_rule"),
         "max_bars_to_tp1": sig.get("max_bars_to_tp1"),
-        "messages": sig.get("messages"),
+        "messages": sig.get("messages", {}),
         "tp_hits": [False] * len(sig["targets"]),
         "score": sig.get("score"),
         "pattern": sig.get("pattern"),
@@ -1321,18 +1386,19 @@ def execute_buy(symbol: str, sig: dict | None = None):
                 f"{pos.get('messages',{}).get('entry','✅ دخول')} {symbol}\n"
                 f"🎯 <b>Mode</b>: {sig.get('mode','-')} • <b>Score</b>: {sig.get('score','-')} • "
                 f"<b>Pattern</b>: {sig.get('pattern','-')}\n"
-                f"🟢 <b>Entry</b>: <code>{fill_px:.6f}</code>\n"
+                f"🟢 <b>Entry</b>: <code>{pos['entry_price']:.6f}</code>\n"
                 f"🛡️ <b>SL</b>: <code>{pos['stop_loss']:.6f}</code>\n"
                 f"🎯 <b>TPs</b>: {', '.join(str(round(t,6)) for t in pos['targets'])}\n"
                 f"💰 <b>الحجم</b>: {trade_usdt:.2f}$"
             )
-            if pos.get("messages", {}).get("breadth_soft"):
+            if pos["messages"].get("breadth_soft"):
                 msg += f"\n{pos['messages']['breadth_soft']}"
             _tg(msg)
     except Exception:
         pass
 
     return order, f"✅ شراء {symbol} | SL: {pos['stop_loss']:.6f} | 💰 {trade_usdt:.2f}$"
+
 
 
 def _safe_sell(base_symbol: str, want_qty: float):
