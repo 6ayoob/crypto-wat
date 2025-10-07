@@ -9,6 +9,7 @@
 # - نقاط تكامل محسّنة مع الاستراتيجية (ستستفيد لاحقًا من regime controller في strategy.py)
 # - حماية شاملة حول الاستدعاءات + تنظيف (finally) آمن
 # - NEW: اكتشاف أرصدة السبوت (Discovery) وإنشاء ملفات مراكز مستوردة لإدارتها تلقائيًا
+# - NEW/LIQ: بوابة سيولة محدثة مع هامش رسوم اختياري + سجل تشخيصي واضح
 
 import os
 import sys
@@ -72,6 +73,7 @@ STOP_DEBOUNCE_WINDOW_SEC = int(os.getenv("STOP_DEBOUNCE_WINDOW_SEC", "5"))
 USDT_MIN_RESERVE   = float(os.getenv("USDT_MIN_RESERVE", "5"))     # احتياطي لا يُمس (USD)
 USDT_BUY_THRESHOLD = float(os.getenv("USDT_BUY_THRESHOLD", "15"))  # أقل سيولة تسمح بمحاولة شراء
 LIQUIDITY_POLICY   = os.getenv("LIQUIDITY_POLICY", "manage_first") # manage_first | neutral
+FEE_BUFFER_PCT     = float(os.getenv("FEE_BUFFER_PCT", "0.0"))     # هامش رسوم اختياري % (مثال: 0.2)
 
 # قفل عملية مفردة (اختياري) عبر ملف PID
 SINGLETON_PIDFILE = os.getenv("PIDFILE", "").strip()
@@ -163,6 +165,7 @@ def tg_error(text, parse_mode=None, silent=True):
             pass
 
 # ================== سيولة: أدوات مساعدة ==================
+
 def _usdt_free() -> float:
     """رصيد USDT المتاح (Spot) مع حماية الاستثناءات."""
     try:
@@ -170,12 +173,29 @@ def _usdt_free() -> float:
     except Exception:
         return 0.0
 
+# NEW/LIQ: بوابة محدثة مع هامش رسوم اختياري
+
 def _has_liquidity_for_new_trade() -> bool:
     """
     بوابة فتح صفقات جديدة:
-    نحتاج (USDT_BUY_THRESHOLD + USDT_MIN_RESERVE) على الأقل.
+    نحتاج (USDT_BUY_THRESHOLD * (1 + FEE_BUFFER_PCT%) + USDT_MIN_RESERVE) على الأقل.
     """
-    return _usdt_free() >= (USDT_BUY_THRESHOLD + USDT_MIN_RESERVE)
+    fee_buf = max(0.0, float(FEE_BUFFER_PCT)) / 100.0
+    min_req = (USDT_BUY_THRESHOLD * (1.0 + fee_buf)) + USDT_MIN_RESERVE
+    return _usdt_free() >= min_req
+
+# NEW/LIQ: سجل تشخيصي واضح لقيم البوابة (لطباعة القيم الفعلية في اللوج)
+
+def _balance_gate_debug():
+    free_now = _usdt_free()
+    fee_buf = max(0.0, float(FEE_BUFFER_PCT)) / 100.0
+    min_req = (USDT_BUY_THRESHOLD * (1.0 + fee_buf)) + USDT_MIN_RESERVE
+    ok = free_now >= min_req
+    _print(
+        f"[balance_gate] free={free_now:.2f} min_req={min_req:.2f} "
+        f"(thr={USDT_BUY_THRESHOLD}, res={USDT_MIN_RESERVE}, fee_buf={fee_buf*100:.2f}%) => {'OK' if ok else 'BLOCK'}"
+    )
+    return ok
 
 # ================== قفل مفرد (PID file) اختياري ==================
 
@@ -247,6 +267,7 @@ try:
 except Exception:
     pass
 
+
 def _get_open_positions_count_safe():
     """يرجع عدد الصفقات المفتوحة من الاستراتيجية (مع fallback بسيط)."""
     try:
@@ -257,6 +278,7 @@ def _get_open_positions_count_safe():
         except Exception:
             return 0
 
+
 def _can_open_new_position(current_open: int) -> bool:
     """يقرّر محليًا إن كنا نسمح بإشارات شراء جديدة بناءً على override فقط."""
     if MAX_OPEN_POSITIONS_OVERRIDE is None:
@@ -264,6 +286,7 @@ def _can_open_new_position(current_open: int) -> bool:
     return current_open < int(MAX_OPEN_POSITIONS_OVERRIDE)
 
 # ================ NEW: اكتشاف أرصدة السبوت (Discovery) ================
+
 def _discover_spot_positions(min_usd: float = 5.0):
     """
     ينشئ ملفات مراكز مستوردة لأي رصيد Spot موجود بدون ملف.
@@ -398,7 +421,9 @@ if __name__ == "__main__":
 
             # 1) فحص إشارات الدخول — مع بوابة سيولة قبل أي شراء  (CHANGED + NEW/LIQ)
             if now >= next_scan:
-                if not _has_liquidity_for_new_trade():
+                # اطبع تفاصيل البوابة دائمًا لسهولة التشخيص
+                gate_ok = _balance_gate_debug()
+                if not gate_ok:
                     _print(f"[scan] skipped — free USDT {free_now:.2f} < threshold+reserve")
                     # حافظ على الإيقاع حتى لو تخطّينا
                     next_scan += SCAN_INTERVAL_SEC
