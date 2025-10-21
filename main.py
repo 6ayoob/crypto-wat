@@ -51,7 +51,12 @@ except Exception:
     _HAS_CACHE = False
 
 # ================== إعدادات الحلقة ==================
-MAX_OPEN_POSITIONS_OVERRIDE = None  # حد محلي لعدد الصفقات (اختياري)
+# حد محلي لعدد الصفقات (اختياري) — يُقرأ من البيئة إن وُجد
+_MAX_OVERRIDE_ENV = os.getenv("MAX_OPEN_POSITIONS_OVERRIDE") or os.getenv("MAX_OPEN_POSITIONS")
+try:
+    MAX_OPEN_POSITIONS_OVERRIDE = int(_MAX_OVERRIDE_ENV) if _MAX_OVERRIDE_ENV is not None else None
+except ValueError:
+    MAX_OPEN_POSITIONS_OVERRIDE = None
 
 SCAN_INTERVAL_SEC    = int(os.getenv("SCAN_INTERVAL_SEC", "25"))   # فحص إشارات الدخول
 MANAGE_INTERVAL_SEC  = int(os.getenv("MANAGE_INTERVAL_SEC", "10")) # إدارة المراكز
@@ -361,6 +366,10 @@ if __name__ == "__main__":
         )
     except Exception:
         _print("🚀 تشغيل البوت")
+
+    # اطبع حد الصفقات المفعل (إن وُجد) للتشخيص
+    if MAX_OPEN_POSITIONS_OVERRIDE is not None:
+        _print(f"[limits] MAX_OPEN_POSITIONS_OVERRIDE = {MAX_OPEN_POSITIONS_OVERRIDE}")
 
     # جداول زمنية مع تعويض الانجراف
     start_wall = time.time()
