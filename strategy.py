@@ -1447,7 +1447,7 @@ def manage_position(symbol):
     base = pos["symbol"].split("#")[0]
     current = float(fetch_price(base))
     entry   = float(pos["entry_price"])
-    amount  = float(pos["amount"])
+    amount  = float(pos.get("amount", pos.get("qty", 0.0)))
     targets = pos.get("targets") or []
     partials = pos.get("partials") or []
     variant = pos.get("variant", "new")
