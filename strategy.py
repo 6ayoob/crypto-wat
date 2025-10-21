@@ -1353,7 +1353,6 @@ def execute_buy(symbol: str, sig: dict | None = None):
     # سقف الانزلاق — Rollback عند تجاوزه
     slippage = abs(fill_px - price) / price
     if slippage > SLIPPAGE_MAX_PCT:
-        # بيع نفس الكمية فورًا لتصفير الوضع (فقط في الوضع الحقيقي)
         try:
             if not DRY_RUN:
                 place_market_order(base, "sell", amount)
@@ -1380,6 +1379,16 @@ def execute_buy(symbol: str, sig: dict | None = None):
         "reason": sig.get("reasons"),
         "max_hold_hours": _mgmt(variant).get("TIME_HRS"),
     }
+
+    # 🔹 حفظ ATR لحظة الدخول لدعم الخروج الذكي
+    try:
+        df_ltf = _df(get_ohlcv_cached(base, LTF_TIMEFRAME, 120))
+        if len(df_ltf) >= 40:
+            atr_entry = _atr_from_df(df_ltf)
+            pos["atr_entry"] = float(atr_entry)
+    except Exception as e:
+        _print(f"[execute_buy] atr_entry save error {symbol}: {e}")
+
     save_position(symbol, pos)
     register_trade_opened()
 
@@ -1445,19 +1454,16 @@ def manage_position(symbol):
         return False
 
     # --- تمهيد المراكز المستوردة/القديمة ---
-    # توحيد qty -> amount
     if "amount" not in pos and "qty" in pos:
         try:
             pos["amount"] = float(pos["qty"])
         except Exception:
             pos["amount"] = float(pos.get("amount", 0.0))
 
-    # ضمان قائمة tp_hits إن كانت الأهداف موجودة
     targets = pos.get("targets") or []
     if targets and not pos.get("tp_hits"):
         pos["tp_hits"] = [False] * len(targets)
 
-    # ضمان وجود وقف خسارة
     if "stop_loss" not in pos:
         try:
             base = pos["symbol"].split("#")[0]
@@ -1475,10 +1481,9 @@ def manage_position(symbol):
         except Exception:
             pos["stop_loss"] = float(pos.get("entry_price", 0.0) * 0.97)
 
-        # احفظ أي تعديلات تمهيدية فورًا
         save_position(symbol, pos)
 
-    # =============== المنطق الأصلي بعد التمهيد ===============
+    # =============== المنطق الأساسي ===============
     base = pos["symbol"].split("#")[0]
     current = float(fetch_price(base))
     entry   = float(pos["entry_price"])
@@ -1492,11 +1497,11 @@ def manage_position(symbol):
         clear_position(symbol)
         return False
 
-    # (1) وقف HTF اختياري
+    # (1) وقف HTF
     stop_rule = pos.get("htf_stop")
     if stop_rule:
         tf = (stop_rule.get("tf") or "4h").lower()
-        tf_map = {"h1":"1h","1h":"1h","h4":"4h","4h":"4h","d1":"1d","1d":"1d"}
+        tf_map = {"h1": "1h", "1h": "1h", "h4": "4h", "4h": "4h", "d1": "1d", "1d": "1d"}
         tf_fetch = tf_map.get(tf, "4h")
         data_htf = get_ohlcv_cached(base, tf_fetch, 200)
         if data_htf is not None and len(data_htf) >= 2:
@@ -1506,11 +1511,10 @@ def manage_position(symbol):
             if float(row["close"]) < level:
                 order, exit_px, sold_qty = _safe_sell(base, amount)
                 if order and sold_qty > 0:
-                    pnl_net = (exit_px - entry) * sold_qty - (entry + exit_px) * sold_qty * (FEE_BPS_ROUNDTRIP/10000.0)
+                    pnl_net = (exit_px - entry) * sold_qty - (entry + exit_px) * sold_qty * (FEE_BPS_ROUNDTRIP / 10000.0)
                     try:
                         p = load_position(symbol) or {}
-                        p["amount"] = float(p.get("amount", 0.0))
-                        p["amount"] = max(0.0, p["amount"] - float(sold_qty))
+                        p["amount"] = max(0.0, float(p.get("amount", 0.0)) - float(sold_qty))
                         save_position(symbol, p)
                         pos = p
                     except Exception as e:
@@ -1518,19 +1522,13 @@ def manage_position(symbol):
 
                     if pos["amount"] <= 0:
                         close_trade(symbol, exit_px, pnl_net, reason="HTF_STOP")
-                        try:
-                            if STRAT_TG_SEND:
-                                _tg(f"🛑 وقف HTF {symbol} عند <code>{exit_px:.6f}</code>")
-                        except Exception:
-                            pass
+                        if STRAT_TG_SEND:
+                            _tg(f"🛑 وقف HTF {symbol} عند <code>{exit_px:.6f}</code>")
                         return True
                     else:
                         register_trade_result(pnl_net)
-                        try:
-                            if STRAT_TG_SEND:
-                                _tg(f"🔻 بيع جزئي HTF {symbol} @ <code>{exit_px:.6f}</code> • المتبقي: <b>{pos['amount']:.6f}</b>")
-                        except Exception:
-                            pass
+                        if STRAT_TG_SEND:
+                            _tg(f"🔻 بيع جزئي HTF {symbol} @ <code>{exit_px:.6f}</code> • المتبقي: <b>{pos['amount']:.6f}</b>")
                         return True
 
     # (2) خروج زمني لـ TP1
@@ -1546,122 +1544,134 @@ def manage_position(symbol):
         if bars_passed >= max_bars and pos.get("tp_hits") and not pos["tp_hits"][0]:
             order, exit_px, sold_qty = _safe_sell(base, amount)
             if order and sold_qty > 0:
-                pnl_net = (exit_px - entry) * sold_qty - (entry + exit_px) * sold_qty * (FEE_BPS_ROUNDTRIP/10000.0)
-                try:
-                    p = load_position(symbol) or {}
-                    p["amount"] = float(p.get("amount", 0.0))
-                    p["amount"] = max(0.0, p["amount"] - float(sold_qty))
-                    save_position(symbol, p)
-                    pos = p
-                except Exception as e:
-                    _print(f"[manage_position] failed to update amount after time-exit sell for {symbol}: {e}")
-
+                pnl_net = (exit_px - entry) * sold_qty - (entry + exit_px) * sold_qty * (FEE_BPS_ROUNDTRIP / 10000.0)
+                p = load_position(symbol) or {}
+                p["amount"] = max(0.0, p.get("amount", 0.0) - float(sold_qty))
+                save_position(symbol, p)
+                pos = p
                 if pos["amount"] <= 0:
                     close_trade(symbol, exit_px, pnl_net, reason="TIME_EXIT")
-                    try:
-                        if STRAT_TG_SEND:
-                            _tg(pos.get("messages",{}).get("time","⌛ خروج زمني"))
-                    except Exception:
-                        pass
+                    if STRAT_TG_SEND:
+                        _tg(pos.get("messages", {}).get("time", "⌛ خروج زمني"))
                     return True
                 else:
                     register_trade_result(pnl_net)
-                    try:
-                        if STRAT_TG_SEND:
-                            _tg(pos.get("messages",{}).get("time","⌛ خروج زمني (جزئي)"))
-                    except Exception:
-                        pass
+                    if STRAT_TG_SEND:
+                        _tg(pos.get("messages", {}).get("time", "⌛ خروج زمني (جزئي)"))
                     return True
+
+    # (2c) خروج مؤقت ذكي Smart Hybrid Exit
+    try:
+        max_bars = pos.get("max_bars_to_tp1")
+        if max_bars and isinstance(max_bars, int) and max_bars > 0:
+            opened_at = datetime.fromisoformat(pos["opened_at"])
+            bar_min = _tf_minutes(LTF_TIMEFRAME)
+            bars_passed = int((now_riyadh() - opened_at) // timedelta(minutes=bar_min))
+
+            if bars_passed >= max_bars:
+                df_ltf = _df(get_ohlcv_cached(base, LTF_TIMEFRAME, 120))
+                if len(df_ltf) >= 40:
+                    atr_now = _atr_from_df(df_ltf)
+                    ema21_now = float(df_ltf["ema21"].iloc[-2])
+                    vol_ma20 = float(df_ltf["volume"].rolling(20).mean().iloc[-1] or 1e-9)
+                    rvol_now = float(df_ltf["volume"].iloc[-1] / vol_ma20)
+                    atr_entry = float(pos.get("atr_entry", atr_now))
+                    atr_drop = (atr_now < 0.6 * atr_entry)
+                    weak = (rvol_now < 0.8) or (float(current) < ema21_now)
+
+                    if atr_drop or weak or bars_passed >= max_bars * 1.5:
+                        part = pos["amount"] * 0.5 if pos["amount"] > 0 else 0
+
+                        # فحص الحد الأدنى المسموح من المنصة
+                        if part * current < MIN_NOTIONAL_USDT:
+                            if STRAT_TG_SEND:
+                                _tg(f"⚠️ <b>قيمة الصفقة صغيرة جدًا</b> {symbol}\n"
+                                    f"💰 {part * current:.2f} USDT < الحد الأدنى {MIN_NOTIONAL_USDT} USDT\n"
+                                    f"🔄 سيتم تنفيذ <b>خروج كامل</b> بدل جزئي.")
+                            part = pos["amount"]
+
+                        order, exit_px, sold_qty = _safe_sell(base, part)
+                        if order and sold_qty > 0:
+                            pnl_net = (exit_px - entry) * sold_qty - (entry + exit_px) * sold_qty * (FEE_BPS_ROUNDTRIP / 10000.0)
+                            p = load_position(symbol) or {}
+                            p["amount"] = max(0.0, float(p.get("amount", 0.0)) - float(sold_qty))
+                            save_position(symbol, p)
+                            pos = p
+                            register_trade_result(pnl_net)
+                            if STRAT_TG_SEND:
+                                reason = "ضعف الزخم" if (atr_drop or weak) else "مرور الوقت"
+                                _tg(f"⌛ <b>خروج مؤقت ذكي</b> {symbol}\n"
+                                    f"🧭 السبب: {reason}\n"
+                                    f"⏱️ البارات: {bars_passed}/{max_bars}\n"
+                                    f"📉 ATR↓: {atr_now/atr_entry:.2f} • RVOL: {rvol_now:.2f}")
+                            if pos["amount"] <= 0:
+                                close_trade(symbol, exit_px, pnl_net, reason="SMART_EXIT")
+                            return True
+    except Exception as e:
+        _print(f"[manage_position] SmartExit error {symbol}: {e}")
 
     # (2b) أقصى مدة احتفاظ
     try:
         max_hold_hours = float(pos.get("max_hold_hours") or mgmt.get("TIME_HRS") or 0)
     except Exception:
         max_hold_hours = 0.0
-
     if max_hold_hours > 0:
         try:
             opened_at = datetime.fromisoformat(pos["opened_at"])
             hold_expired = (now_riyadh() - opened_at) >= timedelta(hours=max_hold_hours)
         except Exception:
             hold_expired = False
-
         if hold_expired:
             order, exit_px, sold_qty = _safe_sell(base, amount)
             if order and sold_qty > 0:
-                pnl_net = (exit_px - entry) * sold_qty - (entry + exit_px) * sold_qty * (FEE_BPS_ROUNDTRIP/10000.0)
-                try:
-                    p = load_position(symbol) or {}
-                    p["amount"] = float(p.get("amount", 0.0))
-                    p["amount"] = max(0.0, p["amount"] - float(sold_qty))
-                    save_position(symbol, p)
-                    pos = p
-                except Exception as e:
-                    _print(f"[manage_position] failed to update amount after max-hold sell for {symbol}: {e}")
-
+                pnl_net = (exit_px - entry) * sold_qty - (entry + exit_px) * sold_qty * (FEE_BPS_ROUNDTRIP / 10000.0)
+                p = load_position(symbol) or {}
+                p["amount"] = max(0.0, p.get("amount", 0.0) - float(sold_qty))
+                save_position(symbol, p)
+                pos = p
                 if pos["amount"] <= 0:
                     close_trade(symbol, exit_px, pnl_net, reason="TIME_HOLD_MAX")
-                    try:
-                        if STRAT_TG_SEND:
-                            _tg("⌛ خروج لانتهاء مدة الاحتفاظ")
-                    except Exception:
-                        pass
+                    if STRAT_TG_SEND:
+                        _tg("⌛ خروج لانتهاء مدة الاحتفاظ")
                     return True
                 else:
                     register_trade_result(pnl_net)
-                    try:
-                        if STRAT_TG_SEND:
-                            _tg("⌛ خروج جزئي لانتهاء مدة الاحتفاظ")
-                    except Exception:
-                        pass
+                    if STRAT_TG_SEND:
+                        _tg("⌛ خروج جزئي لانتهاء مدة الاحتفاظ")
                     return True
 
     # (3) أهداف + Partials + تريلينغ
     targets = pos.get("targets") or []
     partials = pos.get("partials") or []
     if targets and partials and len(targets) == len(partials):
-        current = float(fetch_price(base))  # تحديث سعر لحظي قبل الفحص
+        current = float(fetch_price(base))
         for i, tp in enumerate(targets):
             if not pos["tp_hits"][i] and current >= tp and pos["amount"] > 0:
                 part_qty = pos["amount"] * float(partials[i])
                 if part_qty * current < MIN_NOTIONAL_USDT:
-                    part_qty = pos["amount"]  # صغير جدًا → خروج كامل
+                    part_qty = pos["amount"]
 
                 order, exit_px, sold_qty = _safe_sell(base, part_qty)
                 if order and sold_qty > 0:
-                    pnl_net = (exit_px - entry) * sold_qty - (entry + exit_px) * sold_qty * (FEE_BPS_ROUNDTRIP/10000.0)
-                    try:
-                        p = load_position(symbol) or {}
-                        p["amount"] = float(p.get("amount", 0.0))
-                        p["amount"] = max(0.0, p["amount"] - float(sold_qty))
-                        if p.get("tp_hits") and i < len(p["tp_hits"]):
-                            p["tp_hits"][i] = True
-                        save_position(symbol, p)
-                        pos = p
-                    except Exception as e:
-                        _print(f"[manage_position] failed to update amount/tp after TP sell for {symbol}: {e}")
-
+                    pnl_net = (exit_px - entry) * sold_qty - (entry + exit_px) * sold_qty * (FEE_BPS_ROUNDTRIP / 10000.0)
+                    p = load_position(symbol) or {}
+                    p["amount"] = max(0.0, float(p.get("amount", 0.0)) - float(sold_qty))
+                    if p.get("tp_hits") and i < len(p["tp_hits"]):
+                        p["tp_hits"][i] = True
+                    save_position(symbol, p)
+                    pos = p
                     register_trade_result(pnl_net)
-                    try:
-                        if STRAT_TG_SEND:
-                            _tg(pos.get("messages",{}).get(f"tp{i+1}", f"🎯 TP{i+1} تحقق"))
-                    except Exception:
-                        pass
+                    if STRAT_TG_SEND:
+                        _tg(pos.get("messages", {}).get(f"tp{i+1}", f"🎯 TP{i+1} تحقق"))
 
                     # قفل بعد TP1
-                    try:
-                        if i == 0 and pos["amount"] > 0:
-                            lock_sl = entry * (1.0 + float(get_cfg(variant).get("LOCK_MIN_PROFIT_PCT", 0.0)))
-                            if lock_sl > pos["stop_loss"]:
-                                pos["stop_loss"] = float(lock_sl)
-                                save_position(symbol, pos)
-                                try:
-                                    if STRAT_TG_SEND:
-                                        _tg(f"🔒 وقف لحماية الربح: <code>{lock_sl:.6f}</code>")
-                                except Exception:
-                                    pass
-                    except Exception:
-                        pass
+                    if i == 0 and pos["amount"] > 0:
+                        lock_sl = entry * (1.0 + float(get_cfg(variant).get("LOCK_MIN_PROFIT_PCT", 0.0)))
+                        if lock_sl > pos["stop_loss"]:
+                            pos["stop_loss"] = float(lock_sl)
+                            save_position(symbol, pos)
+                            if STRAT_TG_SEND:
+                                _tg(f"🔒 وقف لحماية الربح: <code>{lock_sl:.6f}</code>")
 
                     # تريلينغ بعد TP2
                     if i >= 1 and pos["amount"] > 0:
@@ -1674,11 +1684,8 @@ def manage_position(symbol):
                                 if new_sl > pos["stop_loss"] * (1 + TRAIL_MIN_STEP_RATIO):
                                     pos["stop_loss"] = float(new_sl)
                                     save_position(symbol, pos)
-                                    try:
-                                        if STRAT_TG_SEND:
-                                            _tg(f"🧭 Trailing SL {symbol} → <code>{new_sl:.6f}</code>")
-                                    except Exception:
-                                        pass
+                                    if STRAT_TG_SEND:
+                                        _tg(f"🧭 Trailing SL {symbol} → <code>{new_sl:.6f}</code>")
 
     # (3b) تريلينغ عام بعد أي TP
     if _mgmt(variant).get("TRAIL_AFTER_TP1") and pos["amount"] > 0 and any(pos.get("tp_hits", [])):
@@ -1692,11 +1699,8 @@ def manage_position(symbol):
                 if new_sl > pos["stop_loss"] * (1 + TRAIL_MIN_STEP_RATIO):
                     pos["stop_loss"] = float(new_sl)
                     save_position(symbol, pos)
-                    try:
-                        if STRAT_TG_SEND:
-                            _tg(f"🧭 Trailing SL {symbol} → <code>{new_sl:.6f}</code>")
-                    except Exception:
-                        pass
+                    if STRAT_TG_SEND:
+                        _tg(f"🧭 Trailing SL {symbol} → <code>{new_sl:.6f}</code>")
 
     # (4) وقف نهائي
     current = float(fetch_price(base))
@@ -1708,33 +1712,23 @@ def manage_position(symbol):
             fees = (entry + exit_px) * sold_qty * (FEE_BPS_ROUNDTRIP / 10000.0)
             pnl_net = pnl_gross - fees
 
-            try:
-                p = load_position(symbol) or {}
-                p["amount"] = float(p.get("amount", 0.0))
-                p["amount"] = max(0.0, p["amount"] - float(sold_qty))
-                save_position(symbol, p)
-                pos = p
-            except Exception as e:
-                _print(f"[manage_position] failed to update amount after SL sell for {symbol}: {e}")
-
+            p = load_position(symbol) or {}
+            p["amount"] = max(0.0, p.get("amount", 0.0) - float(sold_qty))
+            save_position(symbol, p)
+            pos = p
             if pos["amount"] <= 0:
                 close_trade(symbol, exit_px, pnl_net, reason="SL")
-                try:
-                    if STRAT_TG_SEND:
-                        _tg(pos.get("messages",{}).get("sl","🛑 SL"))
-                except Exception:
-                    pass
+                if STRAT_TG_SEND:
+                    _tg(pos.get("messages", {}).get("sl", "🛑 SL"))
                 return True
             else:
                 register_trade_result(pnl_net)
-                try:
-                    if STRAT_TG_SEND:
-                        _tg(f"🛑 SL جزئي {symbol} @ <code>{exit_px:.6f}</code> • المتبقي: <b>{pos['amount']:.6f}</b>")
-                except Exception:
-                    pass
+                if STRAT_TG_SEND:
+                    _tg(f"🛑 SL جزئي {symbol} @ <code>{exit_px:.6f}</code> • المتبقي: <b>{pos['amount']:.6f}</b>")
                 return True
 
     return False
+
 
 # ================== إغلاق وتسجيل ==================
 def register_trade_result(pnl_usdt):
