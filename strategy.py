@@ -1439,6 +1439,33 @@ def _safe_sell(base_symbol: str, want_qty: float):
     return order, exit_px, sell_qty
 
 # ================== إدارة الصفقة ==================
+pos = load_position(symbol)
+if not pos:
+    return False
+
+# توحيد مراكز مستوردة: qty -> amount
+if "amount" not in pos and "qty" in pos:
+    pos["amount"] = float(pos["qty"])
+
+# ضمان وجود وقف خسارة للمراكز التي دخلت بدون SL (مستوردة/قديمة)
+if "stop_loss" not in pos:
+    try:
+        base = pos["symbol"].split("#")[0]
+        price_now = float(fetch_price(base) or pos.get("entry_price", 0.0))
+        data = get_ohlcv_cached(base, LTF_TIMEFRAME, 140)
+        if data:
+            df = _df(data)
+            atr_abs = _atr_from_df(df)
+            if atr_abs and price_now > 0:
+                pos["stop_loss"] = float(max(0.0, price_now - 1.0 * atr_abs))
+            else:
+                pos["stop_loss"] = float(pos.get("entry_price", price_now) * 0.97)
+        else:
+            pos["stop_loss"] = float(pos.get("entry_price", price_now) * 0.97)
+        save_position(symbol, pos)
+    except Exception:
+        pos["stop_loss"] = float(pos.get("entry_price", 0.0) * 0.97)
+
 def manage_position(symbol):
     pos = load_position(symbol)
     if not pos:
