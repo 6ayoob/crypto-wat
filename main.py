@@ -317,7 +317,7 @@ def _discover_spot_positions(min_usd: float = 5.0):
                 "symbol": symbol,
                 "variant": "imported",
                 "entry_price": px,     # تقدير: آخر سعر
-                "qty": qty,
+                "amount": qty,
                 "imported": True,
                 "created_at": datetime.now(timezone.utc).isoformat(timespec="seconds"),
                 "notes": "auto-imported from spot balance"
