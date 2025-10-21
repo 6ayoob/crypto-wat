@@ -1439,38 +1439,46 @@ def _safe_sell(base_symbol: str, want_qty: float):
     return order, exit_px, sell_qty
 
 # ================== إدارة الصفقة ==================
-pos = load_position(symbol)
-if not pos:
-    return False
-
-# توحيد مراكز مستوردة: qty -> amount
-if "amount" not in pos and "qty" in pos:
-    pos["amount"] = float(pos["qty"])
-
-# ضمان وجود وقف خسارة للمراكز التي دخلت بدون SL (مستوردة/قديمة)
-if "stop_loss" not in pos:
-    try:
-        base = pos["symbol"].split("#")[0]
-        price_now = float(fetch_price(base) or pos.get("entry_price", 0.0))
-        data = get_ohlcv_cached(base, LTF_TIMEFRAME, 140)
-        if data:
-            df = _df(data)
-            atr_abs = _atr_from_df(df)
-            if atr_abs and price_now > 0:
-                pos["stop_loss"] = float(max(0.0, price_now - 1.0 * atr_abs))
-            else:
-                pos["stop_loss"] = float(pos.get("entry_price", price_now) * 0.97)
-        else:
-            pos["stop_loss"] = float(pos.get("entry_price", price_now) * 0.97)
-        save_position(symbol, pos)
-    except Exception:
-        pos["stop_loss"] = float(pos.get("entry_price", 0.0) * 0.97)
-
 def manage_position(symbol):
     pos = load_position(symbol)
     if not pos:
         return False
 
+    # --- تمهيد المراكز المستوردة/القديمة ---
+    # توحيد qty -> amount
+    if "amount" not in pos and "qty" in pos:
+        try:
+            pos["amount"] = float(pos["qty"])
+        except Exception:
+            pos["amount"] = float(pos.get("amount", 0.0))
+
+    # ضمان قائمة tp_hits إن كانت الأهداف موجودة
+    targets = pos.get("targets") or []
+    if targets and not pos.get("tp_hits"):
+        pos["tp_hits"] = [False] * len(targets)
+
+    # ضمان وجود وقف خسارة
+    if "stop_loss" not in pos:
+        try:
+            base = pos["symbol"].split("#")[0]
+            price_now = float(fetch_price(base) or pos.get("entry_price", 0.0))
+            data = get_ohlcv_cached(base, LTF_TIMEFRAME, 140)
+            if data and price_now > 0:
+                df = _df(data)
+                atr_abs = _atr_from_df(df)
+                if atr_abs and atr_abs > 0:
+                    pos["stop_loss"] = float(max(0.0, price_now - 1.0 * atr_abs))
+                else:
+                    pos["stop_loss"] = float(pos.get("entry_price", price_now) * 0.97)
+            else:
+                pos["stop_loss"] = float(pos.get("entry_price", price_now) * 0.97)
+        except Exception:
+            pos["stop_loss"] = float(pos.get("entry_price", 0.0) * 0.97)
+
+        # احفظ أي تعديلات تمهيدية فورًا
+        save_position(symbol, pos)
+
+    # =============== المنطق الأصلي بعد التمهيد ===============
     base = pos["symbol"].split("#")[0]
     current = float(fetch_price(base))
     entry   = float(pos["entry_price"])
@@ -1609,12 +1617,15 @@ def manage_position(symbol):
                     return True
 
     # (3) أهداف + Partials + تريلينغ
+    targets = pos.get("targets") or []
+    partials = pos.get("partials") or []
     if targets and partials and len(targets) == len(partials):
+        current = float(fetch_price(base))  # تحديث سعر لحظي قبل الفحص
         for i, tp in enumerate(targets):
-            if not pos["tp_hits"][i] and current >= tp and amount > 0:
-                part_qty = amount * float(partials[i])
+            if not pos["tp_hits"][i] and current >= tp and pos["amount"] > 0:
+                part_qty = pos["amount"] * float(partials[i])
                 if part_qty * current < MIN_NOTIONAL_USDT:
-                    part_qty = amount  # صغير جدًا → خروج كامل
+                    part_qty = pos["amount"]  # صغير جدًا → خروج كامل
 
                 order, exit_px, sold_qty = _safe_sell(base, part_qty)
                 if order and sold_qty > 0:
@@ -1651,8 +1662,6 @@ def manage_position(symbol):
                                     pass
                     except Exception:
                         pass
-                    except Exception:
-                        pass
 
                     # تريلينغ بعد TP2
                     if i >= 1 and pos["amount"] > 0:
@@ -1671,9 +1680,6 @@ def manage_position(symbol):
                                     except Exception:
                                         pass
 
-                    # بعد تنفيذ TP نحدّث amount المحلي قبل متابعة الحلقة
-                    amount = float(pos["amount"])
-
     # (3b) تريلينغ عام بعد أي TP
     if _mgmt(variant).get("TRAIL_AFTER_TP1") and pos["amount"] > 0 and any(pos.get("tp_hits", [])):
         data_for_atr = get_ohlcv_cached(base, LTF_TIMEFRAME, 140)
@@ -1681,6 +1687,7 @@ def manage_position(symbol):
             df_atr = _df(data_for_atr)
             atr_val3 = _atr_from_df(df_atr)
             if atr_val3 and atr_val3 > 0:
+                current = float(fetch_price(base))
                 new_sl = current - _mgmt(variant).get("TRAIL_ATR", 1.0) * atr_val3
                 if new_sl > pos["stop_loss"] * (1 + TRAIL_MIN_STEP_RATIO):
                     pos["stop_loss"] = float(new_sl)
@@ -1692,6 +1699,7 @@ def manage_position(symbol):
                         pass
 
     # (4) وقف نهائي
+    current = float(fetch_price(base))
     if current <= pos["stop_loss"] and pos["amount"] > 0:
         sellable = float(pos["amount"])
         order, exit_px, sold_qty = _safe_sell(base, sellable)
@@ -1700,7 +1708,6 @@ def manage_position(symbol):
             fees = (entry + exit_px) * sold_qty * (FEE_BPS_ROUNDTRIP / 10000.0)
             pnl_net = pnl_gross - fees
 
-            # تحديث آمن للكمية
             try:
                 p = load_position(symbol) or {}
                 p["amount"] = float(p.get("amount", 0.0))
@@ -1728,7 +1735,6 @@ def manage_position(symbol):
                 return True
 
     return False
-
 
 # ================== إغلاق وتسجيل ==================
 def register_trade_result(pnl_usdt):
