@@ -1414,38 +1414,87 @@ def execute_buy(symbol: str, sig: dict | None = None):
 # ================== بيع آمن ==================
 def _safe_sell(base_symbol: str, want_qty: float):
     """
-    يبيع الكمية المتاحة فقط لتجنّب أخطاء OKX 51008.
-    يرجع (order, exit_px, sold_qty) أو (None, None, 0) عند الفشل/عدم وجود رصيد.
+    يبيع الكمية المتاحة فقط مع احترام step/minQty/minNotional لمنع أخطاء OKX 51008.
+    يرجع (order, exit_px, sold_qty) أو (None, None, 0) عند عدم إمكانية البيع.
     """
     try:
         avail = float(fetch_balance(base_symbol.split("/")[0]) or 0.0)
     except Exception:
         avail = 0.0
 
-    sell_qty = max(0.0, min(float(want_qty or 0.0), avail))
-    if sell_qty <= 0.0:
-        _tg_once(
-            f"warn_insuff_{base_symbol}",
-            f"⚠️ لا توجد كمية متاحة للبيع لـ {base_symbol}.",
-            ttl_sec=600
-        )
+    # لا تتابع إن لم يوجد رصيد
+    if avail <= 0.0:
+        _tg_once(f"warn_insuff_{base_symbol}", f"⚠️ لا توجد كمية متاحة للبيع لـ {base_symbol}.", ttl_sec=600)
         return None, None, 0.0
+
+    # فلاتر الرمز + السعر الحالي
+    f = fetch_symbol_filters(base_symbol)
+    step = float(f.get("stepSize", 0.000001)) or 0.000001
+    min_qty = float(f.get("minQty", 0.0)) or 0.0
+    min_notional = float(f.get("minNotional", MIN_NOTIONAL_USDT)) or MIN_NOTIONAL_USDT
+
+    try:
+        price_now = float(fetch_price(base_symbol) or 0.0)
+    except Exception:
+        price_now = 0.0
+
+    # تحديد الكمية القابلة للبيع (المطلوبة ∩ المتاحة) + التقريب للـ step
+    raw = max(0.0, min(float(want_qty or 0.0), avail))
+    qty = math.floor(raw / step) * step
+
+    # احترام minQty
+    if min_qty and qty < min_qty:
+        qty = math.floor(min(avail, min_qty) / step) * step
+
+    # احترام minNotional
+    if price_now <= 0 or (qty * price_now) < min_notional:
+        # حاول استخدام كامل المتاح بشكل مقرب
+        qty = math.floor(avail / step) * step
+        if price_now <= 0 or (qty * price_now) < min_notional or qty <= 0:
+            _tg_once(
+                f"sell_skip_small_{base_symbol}",
+                (f"⚠️ تخطّي البيع {base_symbol}: القيمة {qty*price_now:.2f}$ أقل من الحد الأدنى "
+                 f"{min_notional:.2f}$ أو السعر غير متاح."),
+                ttl_sec=600
+            )
+            return None, None, 0.0
 
     if DRY_RUN:
         px = float(fetch_price(base_symbol) or 0.0)
-        return {"id": f"dry_sell_{int(time.time())}", "average": px}, px, sell_qty
+        return {"id": f"dry_sell_{int(time.time())}", "average": px}, px, qty
 
-    order = place_market_order(base_symbol, "sell", sell_qty)
+    # محاولة أولى
+    try:
+        order = place_market_order(base_symbol, "sell", qty)
+    except Exception as e:
+        # معالجة خطأ 51008: أعد الحساب بكمية أدنى ثم أعد المحاولة مرة واحدة
+        msg = str(e)
+        if "51008" in msg or "insufficient" in msg.lower():
+            # أعد جلب الرصيد، وقلّل الكمية قليلاً
+            try:
+                avail2 = float(fetch_balance(base_symbol.split("/")[0]) or 0.0)
+            except Exception:
+                avail2 = qty * 0.95
+            qty2 = math.floor(max(0.0, min(qty*0.98, avail2)) / step) * step
+            if qty2 <= 0 or (price_now > 0 and qty2 * price_now < min_notional):
+                _tg_once(f"sell_fail_{base_symbol}", f"❌ بيع متعذّر بعد 51008 — كمية غير كافية/أقل من الحد.", ttl_sec=600)
+                return None, None, 0.0
+            try:
+                order = place_market_order(base_symbol, "sell", qty2)
+                qty = qty2
+            except Exception:
+                _tg_once(f"sell_fail_{base_symbol}", f"❌ فشل بيع {base_symbol} بعد إعادة المحاولة (51008).", ttl_sec=600)
+                return None, None, 0.0
+        else:
+            _tg_once(f"sell_fail_{base_symbol}", f"❌ فشل بيع {base_symbol} (استثناء): {e}", ttl_sec=600)
+            return None, None, 0.0
+
     if not order:
-        _tg_once(
-            f"sell_fail_{base_symbol}",
-            f"❌ فشل بيع {base_symbol} (أمر السوق).",
-            ttl_sec=600
-        )
+        _tg_once(f"sell_fail_{base_symbol}", f"❌ فشل بيع {base_symbol} (أمر السوق).", ttl_sec=600)
         return None, None, 0.0
 
     exit_px = float(order.get("average") or order.get("price") or fetch_price(base_symbol) or 0.0)
-    return order, exit_px, sell_qty
+    return order, exit_px, qty
 
 # ================== إدارة الصفقة ==================
 def manage_position(symbol):
