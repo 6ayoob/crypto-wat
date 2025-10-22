@@ -1609,7 +1609,7 @@ def manage_position(symbol):
                         _tg(pos.get("messages", {}).get("time", "⌛ خروج زمني (جزئي)"))
                     return True
 
-    # (2c) خروج مؤقت ذكي Smart Hybrid Exit
+    # (2c) خروج مؤقت ذكي Smart Hybrid Exit — تجهيز المؤشرات قبل استخدام ema21/rvol
     try:
         max_bars = pos.get("max_bars_to_tp1")
         if max_bars and isinstance(max_bars, int) and max_bars > 0:
@@ -1620,6 +1620,9 @@ def manage_position(symbol):
             if bars_passed >= max_bars:
                 df_ltf = _df(get_ohlcv_cached(base, LTF_TIMEFRAME, 120))
                 if len(df_ltf) >= 40:
+                    # ⬅️ تجهيز المؤشرات لتفادي KeyError: 'ema21'
+                    df_ltf = _ensure_ltf_indicators(df_ltf)
+
                     atr_now = _atr_from_df(df_ltf)
                     ema21_now = float(df_ltf["ema21"].iloc[-2])
                     vol_ma20 = float(df_ltf["volume"].rolling(20).mean().iloc[-1] or 1e-9)
@@ -1777,7 +1780,6 @@ def manage_position(symbol):
                 return True
 
     return False
-
 
 # ================== إغلاق وتسجيل ==================
 def register_trade_result(pnl_usdt):
