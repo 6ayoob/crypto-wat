@@ -787,8 +787,12 @@ PER_STRAT_MGMT = {
             "TRAIL_AFTER_TP1":True, "TRAIL_ATR":1.0, "TIME_HRS":6},
     "old": {"SL":"pct", "SL_PCT":0.02, "TP1_PCT":0.03, "TP2_PCT":0.06,
             "TRAIL_AFTER_TP1":False, "TIME_HRS":12},
-    "srr": {"SL":"atr_below_sweep", "SL_MULT":0.8, "TP1":"sr_or_atr", "TP1_ATR":1.0, "TP2_ATR":2.2,
-            "TRAIL_AFTER_TP1":True, "TRAIL_ATR":1.0, "TIME_HRS":4},
+    "srr_plus": {
+    "SL":"atr_below_sweep", "SL_MULT":0.8,
+    "TP1":"sr_or_atr", "TP1_ATR":1.2, "TP2_ATR":2.3,
+    "TRAIL_AFTER_TP1":True, "TRAIL_ATR":1.0,
+    "TIME_HRS":6
+},
     "brt": {"SL":"atr_below_retest", "SL_MULT":1.0, "TP1":"range_or_atr", "TP1_ATR":1.5, "TP2_ATR":2.5,
             "TRAIL_AFTER_TP1":True, "TRAIL_ATR":0.9, "TIME_HRS":8},
     "vbr": {"SL":"atr", "SL_MULT":1.0, "TP1":"vwap_or_sr", "TP2_ATR":1.8,
