@@ -835,47 +835,35 @@ def _opportunity_score(df, prev, closed):
 # ---------- منطق الدخول ----------
 def _sweep_then_reclaim(df, prev, closed, ref_val, lookback=20, tol=0.0012):
     """
-    منطق SRR+: سويّب ثم استرجاع (Sweep & Reclaim)
-    - يبحث عن كسر بسيط لأدنى قاع محلي حديث ثم إغلاق الشمعة فوق ref_val (ema21 غالبًا).
-    - tol: سماحية بسيطة لتجاوزات طفيفة.
+    SRR+ confirmation: sweep recent low then reclaim the value (e.g., EMA21).
+    Finds a minor break of the recent local low, then the candle closes back above ref_val.
+    tol: tolerance fraction, e.g. 0.0012 = 0.12%.
     """
     try:
         if ref_val is None:
             return False
 
-        # 1) حدّد قاعًا محليًا حديثًا
-        ll = float(df["low"].iloc[-(lookback+2):-2].min())
+        # recent local low over the lookback window (exclude last 2 bars)
+        lows_window = df["low"].iloc[-(lookback + 2):-2]
+        if lows_window.empty:
+            return False
+
+        ll = float(lows_window.min())
         cur_low = float(closed["low"])
         cur_close = float(closed["close"])
 
-        # سويب: لمس/كسر بسيط لِـ ll
+        # Sweep: pierce below the recent low (within tolerance)
         swept = (cur_low <= ll * (1.0 - tol)) or (cur_low <= ll)
 
-        # استرجاع: إغلاق فوق ref_val
+        # Reclaim: close back above the reference value (ema21/vwap)
         reclaimed = cur_close >= float(ref_val)
 
-        # جسم إيجابي أو ابتلاع نسبي
-        bullish_body = cur_close > float(closed["open"]) or _bullish_engulf(prev, closed)
+        # Bullish body or bullish engulfing as extra confirmation
+        bullish_body = (cur_close > float(closed["open"])) or _bullish_engulf(prev, closed)
 
         return bool(swept and reclaimed and bullish_body)
     except Exception:
         return False
-
-        def _sweep_then_reclaim(df, prev, closed, ref_val, lookback=20, tol=0.0012):
-   
-    try:
-        if ref_val is None:
-            return False
-        ll = float(df["low"].iloc[-(lookback+2):-2].min())
-        cur_low = float(closed["low"])
-        cur_close = float(closed["close"])
-        swept = (cur_low <= ll * (1 - tol))
-        reclaimed = cur_close >= float(ref_val)
-        bullish_body = cur_close > float(closed["open"]) or _bullish_engulf(prev, closed)
-        return bool(swept and reclaimed and bullish_body)
-    except Exception:
-        return False
-
 
 def _entry_pullback_logic(df, closed, prev, atr_ltf, htf_ctx, cfg):
     if cfg["PULLBACK_VALUE_REF"] == "ema21":
