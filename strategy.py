@@ -1537,6 +1537,57 @@ def _safe_sell(base_symbol: str, want_qty: float):
     exit_px = float(order.get("average") or order.get("price") or fetch_price(base_symbol) or 0.0)
     return order, exit_px, qty
 
+def _dynamic_trail_after_tp2(pos, base):
+    """
+    تريلينغ ديناميكي يعتمد ATR الحالي بعد تحقق TP2:
+    - يرفع SL إلى max(السعر الحالي - ATR*mult, قفل ربح أدنى حسب LOCK_MIN_PROFIT_PCT).
+    - لا يرفع SL إلا إذا كان الرفع أكبر من TRAIL_MIN_STEP_RATIO لتجنب الضوضاء.
+    - يحفظ hi_water كأعلى سعر مرصود (للاستخدام المستقبلي).
+    """
+    try:
+        data = get_ohlcv_cached(base, LTF_TIMEFRAME, 140)
+        if not data:
+            return False
+        df = _df(data)
+        df = _ensure_ltf_indicators(df)
+        atr_now = _atr_from_df(df)
+        if not atr_now or atr_now <= 0:
+            return False
+
+        current = float(fetch_price(base))
+        entry = float(pos.get("entry_price", 0.0))
+        if entry <= 0 or current <= 0:
+            return False
+
+        variant = pos.get("variant", "new")
+        trail_mult = float(_mgmt(variant).get("TRAIL_ATR", 1.0))
+        lock_min = float(get_cfg(variant).get("LOCK_MIN_PROFIT_PCT", 0.0))
+
+        # حدّث أعلى سعر مرصود (Watermark)
+        hi = float(pos.get("hi_water", entry))
+        if current > hi:
+            hi = current
+            pos["hi_water"] = float(hi)
+
+        # احسب SL المقترح
+        new_sl = max(
+            current - trail_mult * atr_now,     # ATR تريلينغ
+            entry * (1.0 + lock_min)            # قفل ربح أدنى
+        )
+
+        prev_sl = float(pos.get("stop_loss", entry * 0.97))
+        # لا ترفع SL إلا بتحسن ملحوظ
+        if new_sl > prev_sl * (1.0 + TRAIL_MIN_STEP_RATIO):
+            pos["stop_loss"] = float(new_sl)
+            save_position(pos["symbol"], pos)
+            if STRAT_TG_SEND:
+                _tg(f"🧭 Dynamic Trail SL {pos['symbol']} → <code>{new_sl:.6f}</code>")
+            return True
+    except Exception as e:
+        _print(f"[trail] error {pos.get('symbol')}: {e}")
+    return False
+
+
 # ================== إدارة الصفقة ==================
 def manage_position(symbol):
     pos = load_position(symbol)
@@ -1775,20 +1826,14 @@ def manage_position(symbol):
                                     if STRAT_TG_SEND:
                                         _tg(f"🧭 Trailing SL {symbol} → <code>{new_sl:.6f}</code>")
 
-    # (3b) تريلينغ عام بعد أي TP
-    if _mgmt(variant).get("TRAIL_AFTER_TP1") and pos["amount"] > 0 and any(pos.get("tp_hits", [])):
-        data_for_atr = get_ohlcv_cached(base, LTF_TIMEFRAME, 140)
-        if data_for_atr:
-            df_atr = _df(data_for_atr)
-            atr_val3 = _atr_from_df(df_atr)
-            if atr_val3 and atr_val3 > 0:
-                current = float(fetch_price(base))
-                new_sl = current - _mgmt(variant).get("TRAIL_ATR", 1.0) * atr_val3
-                if new_sl > pos["stop_loss"] * (1 + TRAIL_MIN_STEP_RATIO):
-                    pos["stop_loss"] = float(new_sl)
-                    save_position(symbol, pos)
-                    if STRAT_TG_SEND:
-                        _tg(f"🧭 Trailing SL {symbol} → <code>{new_sl:.6f}</code>")
+    # (3b) تريلينغ ديناميكي بعد أي TP — تحديث رقم 2
+if pos["amount"] > 0 and any(pos.get("tp_hits", [])):
+    try:
+        _dynamic_trail_after_tp2(symbol, pos)
+        # قد تُحدِّث الدالة stop_loss داخل الملف؛ أعِد تحميل الحالة إن لزم:
+        pos = load_position(symbol) or pos
+    except Exception as e:
+        _print(f"[manage_position] dynamic trail error {symbol}: {e}")
 
     # (4) وقف نهائي
     current = float(fetch_price(base))
