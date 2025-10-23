@@ -869,10 +869,10 @@ def _sweep_then_reclaim(df, prev, closed, ref_val, lookback=20, tol=0.0012):
     except Exception:
         return False
         def _sweep_then_reclaim(df, prev, closed, ref_val, lookback=20, tol=0.0012):
-    """
+    
     منطق SRR+: سويّب ثم استرجاع (Sweep & Reclaim)
     - كسر قاع محلي بسيط ثم إغلاق فوق EMA21 أو VWAP.
-    """
+    
     try:
         if ref_val is None:
             return False
