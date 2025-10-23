@@ -1556,13 +1556,20 @@ def _dynamic_trail_after_tp2(symbol, pos):
 
 
 
-# (3b) تريلينغ ديناميكي بعد أي TP — تحديث رقم 2
-if pos["amount"] > 0 and any(pos.get("tp_hits", [])):
-    try:
-        _dynamic_trail_after_tp2(symbol, pos)
-        pos = load_position(symbol) or pos
-    except Exception as e:
-        _print(f"[manage_position] dynamic trail error {symbol}: {e}")
+    # (3b) تريلينغ عام بعد أي TP
+    if _mgmt(variant).get("TRAIL_AFTER_TP1") and pos["amount"] > 0 and any(pos.get("tp_hits", [])):
+        data_for_atr = get_ohlcv_cached(base, LTF_TIMEFRAME, 140)
+        if data_for_atr:
+            df_atr = _df(data_for_atr)
+            atr_val3 = _atr_from_df(df_atr)
+            if atr_val3 and atr_val3 > 0:
+                current = float(fetch_price(base))
+                new_sl = current - _mgmt(variant).get("TRAIL_ATR", 1.0) * atr_val3
+                if new_sl > pos["stop_loss"] * (1 + TRAIL_MIN_STEP_RATIO):
+                    pos["stop_loss"] = float(new_sl)
+                    save_position(symbol, pos)
+                    if STRAT_TG_SEND:
+                        _tg(f"🧭 Trailing SL {symbol} → <code>{new_sl:.6f}</code>")
 
 # ================== إدارة الصفقة ==================
 def manage_position(symbol):
