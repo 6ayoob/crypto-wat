@@ -868,6 +868,24 @@ def _sweep_then_reclaim(df, prev, closed, ref_val, lookback=20, tol=0.0012):
         return bool(swept and reclaimed and bullish_body)
     except Exception:
         return False
+        def _sweep_then_reclaim(df, prev, closed, ref_val, lookback=20, tol=0.0012):
+    """
+    منطق SRR+: سويّب ثم استرجاع (Sweep & Reclaim)
+    - كسر قاع محلي بسيط ثم إغلاق فوق EMA21 أو VWAP.
+    """
+    try:
+        if ref_val is None:
+            return False
+        ll = float(df["low"].iloc[-(lookback+2):-2].min())
+        cur_low = float(closed["low"])
+        cur_close = float(closed["close"])
+        swept = (cur_low <= ll * (1 - tol))
+        reclaimed = cur_close >= float(ref_val)
+        bullish_body = cur_close > float(closed["open"]) or _bullish_engulf(prev, closed)
+        return bool(swept and reclaimed and bullish_body)
+    except Exception:
+        return False
+
 
 def _entry_pullback_logic(df, closed, prev, atr_ltf, htf_ctx, cfg):
     if cfg["PULLBACK_VALUE_REF"] == "ema21":
