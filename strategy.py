@@ -835,31 +835,34 @@ def _opportunity_score(df, prev, closed):
 # ---------- منطق الدخول ----------
 def _sweep_then_reclaim(df, prev, closed, ref_val, lookback=20, tol=0.0012):
     """
-    منطق تأكيد: سويّب قاع/دعم قريب ثم استرجاع (إغلاق فوق القيمة المرجعية).
+    منطق SRR+: سويّب ثم استرجاع (Sweep & Reclaim)
     - يبحث عن كسر بسيط لأدنى قاع محلي حديث ثم إغلاق الشمعة فوق ref_val (ema21 غالبًا).
     - tol: سماحية بسيطة لتجاوزات طفيفة.
     """
     try:
         if ref_val is None:
             return False
+
         # 1) حدّد قاعًا محليًا حديثًا
         ll = float(df["low"].iloc[-(lookback+2):-2].min())
         cur_low = float(closed["low"])
         cur_close = float(closed["close"])
+
         # سويب: لمس/كسر بسيط لِـ ll
         swept = (cur_low <= ll * (1.0 + tol*(-1))) or (cur_low <= ll)
+
         # استرجاع: إغلاق فوق ref_val
         reclaimed = cur_close >= float(ref_val)
+
         # جسم إيجابي أو ابتلاع نسبي
         bullish_body = cur_close > float(closed["open"]) or _bullish_engulf(prev, closed)
+
         return bool(swept and reclaimed and bullish_body)
     except Exception:
         return False
+
         def _sweep_then_reclaim(df, prev, closed, ref_val, lookback=20, tol=0.0012):
-    
-    منطق SRR+: سويّب ثم استرجاع (Sweep & Reclaim)
-    - كسر قاع محلي بسيط ثم إغلاق فوق EMA21 أو VWAP.
-    
+   
     try:
         if ref_val is None:
             return False
