@@ -1618,7 +1618,7 @@ def manage_position(symbol):
     stop_rule = pos.get("htf_stop")
     if stop_rule:
         tf = (stop_rule.get("tf") or "4h").lower()
-        tf_map = {"h1": "1h", "h4": "4h", "d1": "1d"}
+        tf_map = {"h1": "1h", "1h": "1h", "h4": "4h", "4h": "4h", "d1": "1d", "1d": "1d"}
         tf_fetch = tf_map.get(tf, "4h")
         data_htf = get_ohlcv_cached(base, tf_fetch, 200)
         if data_htf is not None and len(data_htf) >= 2:
@@ -1677,7 +1677,7 @@ def manage_position(symbol):
                         _tg(pos.get("messages", {}).get("time", "⌛ خروج زمني (جزئي)"))
                     return True
 
-    # (2c) خروج مؤقت ذكي Smart Hybrid Exit — SRR+ Calm Exit
+    # (2c) خروج مؤقت ذكي Smart Hybrid Exit
     try:
         max_bars = pos.get("max_bars_to_tp1")
         if max_bars and isinstance(max_bars, int) and max_bars > 0:
@@ -1699,11 +1699,15 @@ def manage_position(symbol):
 
                     if atr_drop or weak or bars_passed >= max_bars * 1.5:
                         part = pos["amount"] * 0.5 if pos["amount"] > 0 else 0
+
+                        # حد أدنى القيمة
                         if part * current < MIN_NOTIONAL_USDT:
                             if STRAT_TG_SEND:
-                                _tg(f"⚠️ <b>قيمة الصفقة صغيرة جدًا</b> {symbol}\n"
+                                _tg(
+                                    f"⚠️ <b>قيمة الصفقة صغيرة جدًا</b> {symbol}\n"
                                     f"💰 {part * current:.2f} USDT < الحد الأدنى {MIN_NOTIONAL_USDT} USDT\n"
-                                    f"🔄 سيتم تنفيذ <b>خروج كامل</b> بدل جزئي.")
+                                    f"🔄 سيتم تنفيذ <b>خروج كامل</b> بدل جزئي."
+                                )
                             part = pos["amount"]
 
                         order, exit_px, sold_qty = _safe_sell(base, part)
@@ -1716,9 +1720,12 @@ def manage_position(symbol):
                             register_trade_result(pnl_net)
                             if STRAT_TG_SEND:
                                 reason = "ضعف الزخم" if (atr_drop or weak) else "مرور الوقت"
-                                _tg(f"⌛ <b>خروج مؤقت ذكي</b> {symbol}\n"
+                                _tg(
+                                    f"⌛ <b>خروج مؤقت ذكي</b> {symbol}\n"
                                     f"🧭 السبب: {reason}\n"
-                                    f"📉 ATR↓ {atr_now/atr_entry:.2f} • RVOL {rvol_now:.2f}")
+                                    f"⏱️ البارات: {bars_passed}/{max_bars}\n"
+                                    f"📉 ATR↓: {atr_now/atr_entry:.2f} • RVOL: {rvol_now:.2f}"
+                                )
                             if pos["amount"] <= 0:
                                 close_trade(symbol, exit_px, pnl_net, reason="SMART_EXIT")
                             return True
@@ -1802,14 +1809,20 @@ def manage_position(symbol):
                                     if STRAT_TG_SEND:
                                         _tg(f"🧭 Trailing SL {symbol} → <code>{new_sl:.6f}</code>")
 
-    # (3b) تريلينغ ديناميكي بعد أي TP — تحديث رقم 2
-if pos["amount"] > 0 and any(pos.get("tp_hits", [])):
-    try:
-        _dynamic_trail_after_tp2(symbol, pos)
-        # قد تُحدِّث الدالة stop_loss داخل الملف؛ أعِد تحميل الحالة إن لزم:
-        pos = load_position(symbol) or pos
-    except Exception as e:
-        _print(f"[manage_position] dynamic trail error {symbol}: {e}")
+    # (3b) تريلينغ عام بعد أي TP
+    if _mgmt(variant).get("TRAIL_AFTER_TP1") and pos["amount"] > 0 and any(pos.get("tp_hits", [])):
+        data_for_atr = get_ohlcv_cached(base, LTF_TIMEFRAME, 140)
+        if data_for_atr:
+            df_atr = _df(data_for_atr)
+            atr_val3 = _atr_from_df(df_atr)
+            if atr_val3 and atr_val3 > 0:
+                current = float(fetch_price(base))
+                new_sl = current - _mgmt(variant).get("TRAIL_ATR", 1.0) * atr_val3
+                if new_sl > pos["stop_loss"] * (1 + TRAIL_MIN_STEP_RATIO):
+                    pos["stop_loss"] = float(new_sl)
+                    save_position(symbol, pos)
+                    if STRAT_TG_SEND:
+                        _tg(f"🧭 Trailing SL {symbol} → <code>{new_sl:.6f}</code>")
 
     # (4) وقف نهائي
     current = float(fetch_price(base))
