@@ -870,7 +870,6 @@ def _sweep_then_reclaim(df, prev, closed, ref_val, lookback=20, tol=0.0012):
         return False
 
 def _entry_pullback_logic(df, closed, prev, atr_ltf, htf_ctx, cfg):
-    # مصدر القيمة المرجعية
     if cfg["PULLBACK_VALUE_REF"] == "ema21":
         ref_val = _finite_or(None, closed.get("ema21"))
     else:
@@ -884,29 +883,22 @@ def _entry_pullback_logic(df, closed, prev, atr_ltf, htf_ctx, cfg):
     if close_v is None or low_v is None:
         return False
 
-    # الشرط الأساسي: تلامس القيمة المرجعية (near value)
     near_val = (close_v >= ref_val) and (low_v <= ref_val)
     if not near_val:
         return False
 
-    # بوابة RSI/MACD
     if not macd_rsi_gate(prev, closed, cfg.get("RSI_GATE_POLICY")):
         return False
 
-    # نوع التأكيد
     confirm = (cfg.get("PULLBACK_CONFIRM") or "").lower()
     if confirm == "bullish_engulf":
         return _bullish_engulf(prev, closed)
-
     if confirm == "bos":
         swing_high, _ = _swing_points(df)
         sh = _finite_or(None, swing_high)
         return bool(sh is not None and close_v > sh)
-
-    if confirm == "sweep_reclaim":
+    if confirm == "sweep_reclaim":  # ✅ منطق SRR+ الذكي
         return _sweep_then_reclaim(df, prev, closed, ref_val, lookback=20, tol=0.0012)
-
-    # الافتراضي
     return True
 
 
