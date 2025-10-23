@@ -285,11 +285,15 @@ def _finite_or(default, *vals):
 def _split_symbol_variant(symbol: str):
     if "#" in symbol:
         base, variant = symbol.split("#", 1)
-        variant = (variant or "new").lower()
-        if variant not in ("old","new","srr","brt","vbr"):
+        variant = (variant or "new").lower().strip()
+        # خرائط مختصرة → أسماء معتمدة
+        if variant in ("srr+", "srrplus", "srr_plus"):
+            variant = "srr_plus"
+        elif variant not in ("old","new","srr","brt","vbr","srr_plus"):
             variant = "new"
         return base, variant
     return symbol, "new"
+
 
 # ================== تخزين الصفقات ==================
 def _pos_path(symbol):
