@@ -1537,55 +1537,56 @@ def _safe_sell(base_symbol: str, want_qty: float):
     exit_px = float(order.get("average") or order.get("price") or fetch_price(base_symbol) or 0.0)
     return order, exit_px, qty
 
-def _dynamic_trail_after_tp2(pos, base):
+def _dynamic_trail_after_tp2(symbol, pos):
     """
-    تريلينغ ديناميكي يعتمد ATR الحالي بعد تحقق TP2:
-    - يرفع SL إلى max(السعر الحالي - ATR*mult, قفل ربح أدنى حسب LOCK_MIN_PROFIT_PCT).
-    - لا يرفع SL إلا إذا كان الرفع أكبر من TRAIL_MIN_STEP_RATIO لتجنب الضوضاء.
-    - يحفظ hi_water كأعلى سعر مرصود (للاستخدام المستقبلي).
+    تريلينغ ديناميكي بعد تحقق أي TP:
+    - يجلب ATR الحالي على LTF.
+    - يحسب وقفًا متحركًا new_sl = السعر الحالي - (ATR * TRAIL_ATR).
+    - لا يحدّث الوقف إلا إذا تجاوز بنسبة طفيفة (TRAIL_MIN_STEP_RATIO) لتجنب كثرة الكتابة.
+    - يراعي tickSize عند التقريب.
     """
     try:
+        base = pos["symbol"].split("#")[0]
+        variant = pos.get("variant", "new")
+        mgmt = _mgmt(variant)
+
         data = get_ohlcv_cached(base, LTF_TIMEFRAME, 140)
         if not data:
-            return False
+            return
+
         df = _df(data)
+        if len(df) < 40:
+            return
+
+        # تأكد من الأعمدة (ema، إلخ)
         df = _ensure_ltf_indicators(df)
-        atr_now = _atr_from_df(df)
-        if not atr_now or atr_now <= 0:
-            return False
 
-        current = float(fetch_price(base))
-        entry = float(pos.get("entry_price", 0.0))
-        if entry <= 0 or current <= 0:
-            return False
+        atr_val = _atr_from_df(df)
+        if not atr_val or atr_val <= 0:
+            return
 
-        variant = pos.get("variant", "new")
-        trail_mult = float(_mgmt(variant).get("TRAIL_ATR", 1.0))
-        lock_min = float(get_cfg(variant).get("LOCK_MIN_PROFIT_PCT", 0.0))
+        current = float(fetch_price(base) or 0.0)
+        if current <= 0:
+            return
 
-        # حدّث أعلى سعر مرصود (Watermark)
-        hi = float(pos.get("hi_water", entry))
-        if current > hi:
-            hi = current
-            pos["hi_water"] = float(hi)
+        trail_mult = float(mgmt.get("TRAIL_ATR", 1.0))
+        new_sl = current - trail_mult * atr_val
 
-        # احسب SL المقترح
-        new_sl = max(
-            current - trail_mult * atr_now,     # ATR تريلينغ
-            entry * (1.0 + lock_min)            # قفل ربح أدنى
-        )
+        # احترام tickSize
+        f = fetch_symbol_filters(base)
+        tick = float(f.get("tickSize", 0.00000001)) or 0.00000001
+        new_sl = _round_to_tick(new_sl, tick)
 
-        prev_sl = float(pos.get("stop_loss", entry * 0.97))
-        # لا ترفع SL إلا بتحسن ملحوظ
-        if new_sl > prev_sl * (1.0 + TRAIL_MIN_STEP_RATIO):
+        old_sl = float(pos.get("stop_loss", 0.0) or 0.0)
+
+        # لا نحدّث إلا لو تقدّم الوقف بشكل ملحوظ
+        if new_sl > old_sl * (1.0 + TRAIL_MIN_STEP_RATIO):
             pos["stop_loss"] = float(new_sl)
-            save_position(pos["symbol"], pos)
+            save_position(symbol, pos)
             if STRAT_TG_SEND:
-                _tg(f"🧭 Dynamic Trail SL {pos['symbol']} → <code>{new_sl:.6f}</code>")
-            return True
+                _tg(f"🧭 Trailing SL {symbol} → <code>{new_sl:.6f}</code>")
     except Exception as e:
-        _print(f"[trail] error {pos.get('symbol')}: {e}")
-    return False
+        _print(f"[_dynamic_trail_after_tp2] error {symbol}: {e}")
 
 
 # ================== إدارة الصفقة ==================
