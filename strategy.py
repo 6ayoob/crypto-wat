@@ -870,6 +870,7 @@ def _sweep_then_reclaim(df, prev, closed, ref_val, lookback=20, tol=0.0012):
         return False
 
 def _entry_pullback_logic(df, closed, prev, atr_ltf, htf_ctx, cfg):
+    # مصدر القيمة المرجعية
     if cfg["PULLBACK_VALUE_REF"] == "ema21":
         ref_val = _finite_or(None, closed.get("ema21"))
     else:
@@ -880,46 +881,34 @@ def _entry_pullback_logic(df, closed, prev, atr_ltf, htf_ctx, cfg):
 
     close_v = _finite_or(None, closed.get("close"))
     low_v   = _finite_or(None, closed.get("low"))
-    if close_v is None or low_v is None: return False
+    if close_v is None or low_v is None:
+        return False
 
+    # الشرط الأساسي: تلامس القيمة المرجعية (near value)
     near_val = (close_v >= ref_val) and (low_v <= ref_val)
-    if not near_val: return False
+    if not near_val:
+        return False
 
+    # بوابة RSI/MACD
     if not macd_rsi_gate(prev, closed, cfg.get("RSI_GATE_POLICY")):
         return False
 
-    if cfg["PULLBACK_CONFIRM"] == "bullish_engulf":
+    # نوع التأكيد
+    confirm = (cfg.get("PULLBACK_CONFIRM") or "").lower()
+    if confirm == "bullish_engulf":
         return _bullish_engulf(prev, closed)
-    elif cfg["PULLBACK_CONFIRM"] == "bos":
+
+    if confirm == "bos":
         swing_high, _ = _swing_points(df)
         sh = _finite_or(None, swing_high)
         return bool(sh is not None and close_v > sh)
+
+    if confirm == "sweep_reclaim":
+        return _sweep_then_reclaim(df, prev, closed, ref_val, lookback=20, tol=0.0012)
+
+    # الافتراضي
     return True
 
-def _entry_breakout_logic(df, closed, prev, atr_ltf, htf_ctx, cfg):
-    hi_range = float(df["high"].iloc[-NR_WINDOW-2:-2].max())
-    is_nr_recent = bool(df["is_nr"].iloc[-3:-1].all())
-    vref = _finite_or(float(closed["close"]), closed.get("vwap"), closed.get("ema21"), closed.get("ema50"))
-    v_ok = float(closed["close"]) > vref
-    buf = float(cfg.get("BREAKOUT_BUFFER_LTF", 0.0015))
-    if not macd_rsi_gate(prev, closed, cfg.get("RSI_GATE_POLICY")):
-        return False
-    return (float(closed["close"]) > hi_range * (1.0 + buf)) and (is_nr_recent or v_ok)
-
-# ================== HTF Gate مرن ==================
-def _htf_gate(htf_trend, ltf_ctx, thr):
-    if htf_trend in ("up","strong_up"):
-        return True
-    if htf_trend in ("down","strong_down"):
-        return bool(thr.get("NEUTRAL_HTF_PASS") and
-                    ltf_ctx.get("ema200_trend") in ("up","flat_up") and
-                    float(ltf_ctx.get("rvol",0)) >= float(thr.get("RVOL_NEED_BASE",1.0))*0.98 and
-                    ltf_ctx.get("pullback_ok", False))
-    if thr["NEUTRAL_HTF_PASS"]:
-        return (ltf_ctx.get("ema200_trend") in ("up","flat_up") and
-                float(ltf_ctx.get("rvol",0)) >= float(thr.get("RVOL_NEED_BASE",1.0))*0.98 and
-                ltf_ctx.get("pullback_ok",False))
-    return False
 
 # ================== المخاطر اليومية/الساعة + Auto-Relax ==================
 def _default_risk_state():
