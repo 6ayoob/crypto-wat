@@ -1,18 +1,5 @@
 # -*- coding: utf-8 -*-
-
-strategy.py — Spot-only (v3.4 PRO, unified, stable)
-- نسخة موحّدة، بلا ازدواج دوال HTF/Breadth.
-- صرامة متوازنة لا تفوّت الفرص + Soft modes مرنة.
-- تحقق مؤشرات LTF داخل check_signal + Score/Pattern.
-- دمج سيولة 1h التحفّظيّة (avg/min notional).
-- كاش OHLCV للجولة + Retry/Backoff.
-- Position sizing ديناميكي + Soft breadth/time + Auto-Relax.
-- Circuit breaker يومي/بالساعة + Reset بعد نجاحين متتاليين.
-- Multi-targets + Partials متكيّفة + Dynamic Max Bars to TP1.
-- تقارير يومية + تشخيص.
-- تحسينات تنفيذ: فحص رصيد/قيود المنصّة/انزلاق + Rollback، تعبئة جزئية، منع تجاوز الحد، احترام الحظر.
-
-
+# strategy.py - Spot-only (v3.4 PRO, unified, stable)
 from __future__ import annotations
 
 import os, json, requests, logging, time, math, traceback
