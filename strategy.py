@@ -1591,7 +1591,7 @@ def manage_position(symbol):
     stop_rule = pos.get("htf_stop")
     if stop_rule:
         tf = (stop_rule.get("tf") or "4h").lower()
-        tf_map = {"h1": "1h", "1h": "1h", "h4": "4h", "4h": "4h", "d1": "1d", "1d": "1d"}
+        tf_map = {"h1": "1h", "h4": "4h", "d1": "1d"}
         tf_fetch = tf_map.get(tf, "4h")
         data_htf = get_ohlcv_cached(base, tf_fetch, 200)
         if data_htf is not None and len(data_htf) >= 2:
@@ -1650,7 +1650,7 @@ def manage_position(symbol):
                         _tg(pos.get("messages", {}).get("time", "⌛ خروج زمني (جزئي)"))
                     return True
 
-    # (2c) خروج مؤقت ذكي Smart Hybrid Exit — تجهيز المؤشرات قبل استخدام ema21/rvol
+    # (2c) خروج مؤقت ذكي Smart Hybrid Exit — SRR+ Calm Exit
     try:
         max_bars = pos.get("max_bars_to_tp1")
         if max_bars and isinstance(max_bars, int) and max_bars > 0:
@@ -1661,9 +1661,7 @@ def manage_position(symbol):
             if bars_passed >= max_bars:
                 df_ltf = _df(get_ohlcv_cached(base, LTF_TIMEFRAME, 120))
                 if len(df_ltf) >= 40:
-                    # ⬅️ تجهيز المؤشرات لتفادي KeyError: 'ema21'
                     df_ltf = _ensure_ltf_indicators(df_ltf)
-
                     atr_now = _atr_from_df(df_ltf)
                     ema21_now = float(df_ltf["ema21"].iloc[-2])
                     vol_ma20 = float(df_ltf["volume"].rolling(20).mean().iloc[-1] or 1e-9)
@@ -1674,8 +1672,6 @@ def manage_position(symbol):
 
                     if atr_drop or weak or bars_passed >= max_bars * 1.5:
                         part = pos["amount"] * 0.5 if pos["amount"] > 0 else 0
-
-                        # فحص الحد الأدنى المسموح من المنصة
                         if part * current < MIN_NOTIONAL_USDT:
                             if STRAT_TG_SEND:
                                 _tg(f"⚠️ <b>قيمة الصفقة صغيرة جدًا</b> {symbol}\n"
@@ -1695,8 +1691,7 @@ def manage_position(symbol):
                                 reason = "ضعف الزخم" if (atr_drop or weak) else "مرور الوقت"
                                 _tg(f"⌛ <b>خروج مؤقت ذكي</b> {symbol}\n"
                                     f"🧭 السبب: {reason}\n"
-                                    f"⏱️ البارات: {bars_passed}/{max_bars}\n"
-                                    f"📉 ATR↓: {atr_now/atr_entry:.2f} • RVOL: {rvol_now:.2f}")
+                                    f"📉 ATR↓ {atr_now/atr_entry:.2f} • RVOL {rvol_now:.2f}")
                             if pos["amount"] <= 0:
                                 close_trade(symbol, exit_px, pnl_net, reason="SMART_EXIT")
                             return True
