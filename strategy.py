@@ -742,22 +742,25 @@ NEW_SCALP_OVERRIDES = {
     "MAX_HOLD_HOURS": 6,
     "SYMBOL_COOLDOWN_MIN": 8,
 }
-
-SRR_OVERRIDES = {
+SRR_PLUS_OVERRIDES = {
+    # نفس فلسفة SRR ولكن أدقّ انتقائية وتأكيد أقوى
     "ENTRY_MODE": "pullback",
-    "RVOL_MIN": 1.2,
-    "ATR_MIN_FOR_TREND": 0.0016,
-    "RSI_GATE_POLICY": "balanced",
+    "PULLBACK_VALUE_REF": "ema21",          # نستخدم ema21 كقيمة مرجعية
+    "PULLBACK_CONFIRM": "sweep_reclaim",    # تأكيد جديد: سويب + استرجاع
+    "RVOL_MIN": 1.25,                       # سيولة نسبية أعلى قليلًا
+    "ATR_MIN_FOR_TREND": 0.0018,            # متطلب حركة أدنى أعلى قليلًا
+    "RSI_GATE_POLICY": "strict",            # RSI>50 + MACD_hist>0 &↑
     "USE_ATR_SL_TP": True,
-    "SL_ATR_MULT": 0.8,
+    "SL_ATR_MULT": 0.8,                     # SL أقرب قليلًا (مضبوط مع التريل)
     "TP1_ATR_MULT": 1.2,
-    "TP2_ATR_MULT": 2.2,
+    "TP2_ATR_MULT": 2.3,
     "TRAIL_AFTER_TP1": True,
-    "TRAIL_ATR_MULT": 1.1,
-    "LOCK_MIN_PROFIT_PCT": 0.004,
+    "TRAIL_ATR_MULT": 1.0,
+    "LOCK_MIN_PROFIT_PCT": 0.005,           # قفل ربح أعلى نسبيًا
     "MAX_HOLD_HOURS": 6,
-    "SYMBOL_COOLDOWN_MIN": 8,
+    "SYMBOL_COOLDOWN_MIN": 10,
 }
+
 
 BRT_OVERRIDES = {
     "ENTRY_MODE": "breakout",
