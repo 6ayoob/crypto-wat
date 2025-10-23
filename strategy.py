@@ -1538,13 +1538,7 @@ def _safe_sell(base_symbol: str, want_qty: float):
     return order, exit_px, qty
 
 def _dynamic_trail_after_tp2(symbol, pos):
-    """
-    تريلينغ ديناميكي بعد تحقق أي TP:
-    - يجلب ATR الحالي على LTF.
-    - يحسب وقفًا متحركًا new_sl = السعر الحالي - (ATR * TRAIL_ATR).
-    - لا يحدّث الوقف إلا إذا تجاوز بنسبة طفيفة (TRAIL_MIN_STEP_RATIO) لتجنب كثرة الكتابة.
-    - يراعي tickSize عند التقريب.
-    """
+    # Trailing after TP using ATR; safe version with no docstring to avoid indentation errors.
     try:
         base = pos["symbol"].split("#")[0]
         variant = pos.get("variant", "new")
@@ -1553,12 +1547,9 @@ def _dynamic_trail_after_tp2(symbol, pos):
         data = get_ohlcv_cached(base, LTF_TIMEFRAME, 140)
         if not data:
             return
-
         df = _df(data)
         if len(df) < 40:
             return
-
-        # تأكد من الأعمدة (ema، إلخ)
         df = _ensure_ltf_indicators(df)
 
         atr_val = _atr_from_df(df)
@@ -1572,14 +1563,11 @@ def _dynamic_trail_after_tp2(symbol, pos):
         trail_mult = float(mgmt.get("TRAIL_ATR", 1.0))
         new_sl = current - trail_mult * atr_val
 
-        # احترام tickSize
         f = fetch_symbol_filters(base)
         tick = float(f.get("tickSize", 0.00000001)) or 0.00000001
         new_sl = _round_to_tick(new_sl, tick)
 
         old_sl = float(pos.get("stop_loss", 0.0) or 0.0)
-
-        # لا نحدّث إلا لو تقدّم الوقف بشكل ملحوظ
         if new_sl > old_sl * (1.0 + TRAIL_MIN_STEP_RATIO):
             pos["stop_loss"] = float(new_sl)
             save_position(symbol, pos)
@@ -1587,6 +1575,7 @@ def _dynamic_trail_after_tp2(symbol, pos):
                 _tg(f"🧭 Trailing SL {symbol} → <code>{new_sl:.6f}</code>")
     except Exception as e:
         _print(f"[_dynamic_trail_after_tp2] error {symbol}: {e}")
+
 
 
 # (3b) تريلينغ ديناميكي بعد أي TP — تحديث رقم 2
