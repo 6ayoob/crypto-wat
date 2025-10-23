@@ -8,9 +8,9 @@
 # - تلخيص أداء الجولة وإدارة المراكز كما في نسختك + تحسين طباعة الأخطاء
 # - نقاط تكامل محسّنة مع الاستراتيجية (ستستفيد لاحقًا من regime controller في strategy.py)
 # - حماية شاملة حول الاستدعاءات + تنظيف (finally) آمن
-# - NEW: اكتشاف أرصدة السبوت (Discovery) وإنشاء ملفات مراكز مستوردة لإدارتها تلقائيًا
+# - NEW: اكتشاف أرصدة السبوت (Discovery) وإنشاء ملفات مراكز مستوردة لإدارتها تلقائيًا (بمكافحة التكرار للـ variants)
 # - NEW/LIQ: بوابة سيولة محدثة مع هامش رسوم اختياري + سجل تشخيصي واضح
-# - NEW/RISK: تكامل اختياري مع RiskBlocker (risk_and_notify.py) لحظر الدخول/كتم التنبيهات تحت ظروف سوق سيئة
+# - NEW/RISK: تكامل اختياري مع RiskBlocker بدون وسيط breadth_min
 
 import os
 import sys
@@ -33,9 +33,9 @@ from strategy import (
     check_signal, execute_buy, manage_position, load_position, save_position,
     count_open_positions, build_daily_report_text,
     reset_cycle_cache, metrics_format,
-    maybe_emit_reject_summary,     # لو غير موجودة سيتخطّاها try/except
-    check_signal_debug,            # لو غير موجودة سيتخطّاها try/except
-    breadth_status                 # يُتوقع أن تُرجع dict: {ratio,min,ok}
+    maybe_emit_reject_summary,
+    check_signal_debug,
+    breadth_status
 )
 
 # كاش أسعار جماعي من okx_api لتقليل الضغط (اختياري)
@@ -50,23 +50,32 @@ except Exception:
         fetch_price = lambda symbol: 0.0
     _HAS_CACHE = False
 
-# ================== تكامل RiskBlocker (اختياري) ==================
-_HAS_RISK = False
+# ===== تكامل اختياري مع RiskBlocker (دون breadth_min) =====
+_risk = None
 try:
-    # ملفك: risk_and_notify.py
-    from risk_and_notify import RiskBlocker, RiskBlockConfig, ensure_ema21, tg_send
-    _HAS_RISK = True
+    from risk_and_notify import RiskBlocker, RiskBlockConfig, tg_send as _risk_tg_send
+    try:
+        # وسائط مدعومة فقط — لا تضف breadth_min هنا
+        _risk_cfg = RiskBlockConfig(
+            hourly_dd_pct=0.05,            # هبوط ساعة 5%
+            daily_loss_limit_usdt=200.0,   # حد خسارة يومية
+            max_consec_losses=3,           # خسائر متتالية
+            block_minutes_on_violation=90  # مدة الحظر عند المخالفة
+        )
+        _risk = RiskBlocker(_risk_cfg, send=_risk_tg_send)
+    except Exception as e:
+        # لو فشل التهيئة، نطبع خطأ ونكمل بدون RiskBlocker
+        print(f"[risk] init error: {e}", flush=True)
+        _risk = None
 except Exception:
-    # بدائل آمنة لا تغيّر السلوك لو الملف غير موجود
-    class RiskBlocker:
-        def __init__(self, *a, **k): pass
-        def on_round_start(self, breadth=None): pass
-        def record_reject(self, symbol, reasons): pass
-        def should_block_entry(self, symbol=None, breadth=None): return False
-        def should_suppress_alert(self, reasons=None, breadth=None): return False
-        def round_summary_text(self): return ""
-    def ensure_ema21(*a, **k): return None
-    def tg_send(*a, **k): pass
+    _risk = None
+
+def _risk_is_blocked() -> bool:
+    """فحص سريع لحالة الحظر من RiskBlocker إن توفّر."""
+    try:
+        return bool(_risk and _risk.is_blocked())
+    except Exception:
+        return False
 
 # ================== إعدادات الحلقة ==================
 _MAX_OVERRIDE_ENV = os.getenv("MAX_OPEN_POSITIONS_OVERRIDE") or os.getenv("MAX_OPEN_POSITIONS")
@@ -92,19 +101,10 @@ STOP_POLICY = os.getenv("STOP_POLICY", "debounce").lower()  # ignore | debounce 
 STOP_DEBOUNCE_WINDOW_SEC = int(os.getenv("STOP_DEBOUNCE_WINDOW_SEC", "5"))
 
 # ---- سيولة ----
-USDT_MIN_RESERVE   = float(os.getenv("USDT_MIN_RESERVE", "5"))
-USDT_BUY_THRESHOLD = float(os.getenv("USDT_BUY_THRESHOLD", "15"))
+USDT_MIN_RESERVE   = float(os.getenv("USDT_MIN_RESERVE", "5"))     # احتياطي لا يُمس (USD)
+USDT_BUY_THRESHOLD = float(os.getenv("USDT_BUY_THRESHOLD", "15"))  # أقل سيولة تسمح بمحاولة شراء
 LIQUIDITY_POLICY   = os.getenv("LIQUIDITY_POLICY", "manage_first") # manage_first | neutral
-FEE_BUFFER_PCT     = float(os.getenv("FEE_BUFFER_PCT", "0.0"))
-
-# ---- RiskBlocker ENV (اختياري) ----
-RB_ENABLED                = os.getenv("RB_ENABLED", "1").lower() in ("1","true","yes")
-RB_BREADTH_MIN            = float(os.getenv("RB_BREADTH_MIN", "0.65"))   # أدنى breadth للسماح بالدخول
-RB_BLOCK_HTF_DOWN         = os.getenv("RB_BLOCK_HTF_DOWN", "1").lower() in ("1","true","yes")
-RB_REJECTS_WINDOW         = int(os.getenv("RB_REJECTS_WINDOW", "120"))    # ثانية
-RB_REJECTS_THRESHOLD      = int(os.getenv("RB_REJECTS_THRESHOLD", "40"))  # كم رفضًا يعتبر موجة سلبية
-RB_SUPPRESS_ALERTS        = os.getenv("RB_SUPPRESS_ALERTS", "1").lower() in ("1","true","yes")
-RB_SUMMARY_EVERY_ROUND    = os.getenv("RB_SUMMARY_EVERY_ROUND", "0").lower() in ("1","true","yes")
+FEE_BUFFER_PCT     = float(os.getenv("FEE_BUFFER_PCT", "0.0"))     # هامش رسوم اختياري % (مثال: 0.2)
 
 # قفل عملية مفردة (اختياري) عبر ملف PID
 SINGLETON_PIDFILE = os.getenv("PIDFILE", "").strip()
@@ -182,21 +182,14 @@ def _is_error_text(text: str) -> bool:
 def tg_info(text, parse_mode=None, silent=True):
     if SEND_INFO_TO_TELEGRAM:
         try:
-            # لو كان لدينا tg_send مخصص في risk_and_notify استخدمه:
-            if _HAS_RISK:
-                tg_send(text, parse_mode=parse_mode, silent=silent, fallback=send_telegram_message)
-            else:
-                send_telegram_message(text, parse_mode=parse_mode, disable_notification=silent)
+            send_telegram_message(text, parse_mode=parse_mode, disable_notification=silent)
         except Exception:
             pass
 
 def tg_error(text, parse_mode=None, silent=True):
     if SEND_ERRORS_TO_TELEGRAM:
         try:
-            if _HAS_RISK:
-                tg_send(text, parse_mode=parse_mode, silent=silent, fallback=send_telegram_message)
-            else:
-                send_telegram_message(text, parse_mode=parse_mode, disable_notification=silent)
+            send_telegram_message(text, parse_mode=parse_mode, disable_notification=silent)
         except Exception:
             pass
 
@@ -209,6 +202,10 @@ def _usdt_free() -> float:
         return 0.0
 
 def _has_liquidity_for_new_trade() -> bool:
+    """
+    بوابة فتح صفقات جديدة:
+    نحتاج (USDT_BUY_THRESHOLD * (1 + FEE_BUFFER_PCT%) + USDT_MIN_RESERVE) على الأقل.
+    """
     fee_buf = max(0.0, float(FEE_BUFFER_PCT)) / 100.0
     min_req = (USDT_BUY_THRESHOLD * (1.0 + fee_buf)) + USDT_MIN_RESERVE
     return _usdt_free() >= min_req
@@ -238,7 +235,7 @@ def _acquire_pidfile(path: str) -> bool:
         return True
     except Exception as e:
         _print(f"⚠️ فشل إنشاء PIDFILE {path}: {e}")
-        return True
+        return True  # لا نمنع التشغيل إذا فشلنا بالكتابة
 
 def _release_pidfile(path: str):
     if not path:
@@ -254,6 +251,12 @@ _stop_flag = False
 _last_stop_signal_ts = 0.0
 
 def _handle_stop(signum, frame):
+    """
+    سياسة الإيقاف:
+      - ignore   : نتجاهل الإشارة (نطبع فقط).
+      - debounce : لا نتوقف إلا إذا وصلت إشارتان خلال نافذة قصيرة.
+      - immediate: نتوقف فورًا.
+    """
     global _stop_flag, _last_stop_signal_ts
     now = time.time()
 
@@ -274,6 +277,7 @@ def _handle_stop(signum, frame):
             tg_info(msg, silent=True)
         return
 
+    # immediate
     _stop_flag = True
     try:
         tg_info("⏹️ تم استلام إشارة إيقاف — جاري الإنهاء بهدوء…", silent=True)
@@ -296,79 +300,91 @@ def _get_open_positions_count_safe():
         except Exception:
             return 0
 
+
 def _can_open_new_position(current_open: int) -> bool:
     if MAX_OPEN_POSITIONS_OVERRIDE is None:
         return True
     return current_open < int(MAX_OPEN_POSITIONS_OVERRIDE)
 
-# ================ NEW: اكتشاف أرصدة السبوت (Discovery) ================
+# ================ NEW: اكتشاف أرصدة السبوت (Discovery) بدون تكرار للـ variants ================
 
 def _discover_spot_positions(min_usd: float = 5.0):
+    """
+    ينشئ ملفات مراكز مستوردة لأي رصيد Spot موجود بدون تكرار للـ variants.
+    مثال: لو يوجد DOGE سبوت، ينشئ ملفًا واحدًا لـ 'DOGE/USDT' فقط.
+    كما يتخطّى الإنشاء إذا وجد أي ملف مركز موجود للـ base أو لأي variant.
+    """
     try:
+        seen_bases = set()
         for symbol in SYMBOLS:
-            base = symbol.split("/")[0]
-            if load_position(symbol) is not None:
+            base = symbol.split("#")[0]  # احذف الـ variant
+            if base in seen_bases:
                 continue
-            qty = float(fetch_balance(base) or 0.0)
+            seen_bases.add(base)
+
+            # لا تنشئ إذا كان هناك أي ملف مركز موجود لهذا الـ base أو لأي variant
+            if load_position(base) is not None:
+                continue
+            has_variant_file = any(
+                load_position(f"{base}#{v}") is not None for v in ("old", "srr", "brt", "vbr")
+            )
+            if has_variant_file:
+                continue
+
+            coin = base.split("/")[0]
+            qty = float(fetch_balance(coin) or 0.0)
             if qty <= 0.0:
                 continue
-            px = float(fetch_price(symbol) or 0.0)
+
+            px = float(fetch_price(base) or 0.0)
             if px <= 0.0:
                 continue
+
             usd_val = qty * px
             if usd_val < float(min_usd):
-                continue
+                continue  # رصيد صغير جدًا — تجاهله
+
             pos = {
-                "symbol": symbol,
+                "symbol": base,           # خزّن على base فقط
                 "variant": "imported",
-                "entry_price": px,
+                "entry_price": px,        # تقدير: آخر سعر
                 "amount": qty,
                 "imported": True,
                 "created_at": datetime.now(timezone.utc).isoformat(timespec="seconds"),
                 "notes": "auto-imported from spot balance"
             }
-            save_position(symbol, pos)
-            _print(f"[import] created position for {symbol}: qty={qty}, px={px}, ~${usd_val:.2f}")
+            save_position(base, pos)
+            _print(f"[import] created position for {base}: qty={qty}, px={px}, ~${usd_val:.2f}")
     except Exception as e:
         _print(f"[import] discovery error: {e}")
 
-# ================== RiskBlocker: تهيئة ==================
-RB = None
-if RB_ENABLED:
-    try:
-        RB = RiskBlocker(RiskBlockConfig(
-            breadth_min=RB_BREADTH_MIN,
-            block_htf_down=RB_BLOCK_HTF_DOWN,
-            rejects_window_sec=RB_REJECTS_WINDOW,
-            rejects_threshold=RB_REJECTS_THRESHOLD,
-            suppress_alerts=RB_SUPPRESS_ALERTS
-        ))
-    except Exception as e:
-        _print(f"[risk] init error: {e}")
-        RB = None
-
 # ================== الحلقة الرئيسية ==================
 if __name__ == "__main__":
+    # قفل مفرد (اختياري)
     if not _acquire_pidfile(SINGLETON_PIDFILE):
         sys.exit(0)
 
+    # بدء كاش الأسعار الجماعي (طلب واحد كل عدة ثوانٍ) إن توفر
     if _HAS_CACHE:
         try:
             start_tickers_cache(period=int(os.getenv("OKX_CACHE_PERIOD", "3")), usdt_only=True)
         except Exception:
             pass
 
+    # ✅ اكتشاف أي مراكز Spot موجودة بالفعل (Discovery) — بعد إصلاح التكرار
     try:
         _discover_spot_positions()
     except Exception as e:
         _print(f"[discovery] error: {e}")
 
+    # معلومات بدء مع عرض الإطارات الزمنية الفعلية + حالة السعة
     try:
         bs0 = breadth_status() or {}
         ratio_txt = "—" if bs0.get("ratio") is None else f"{bs0.get('ratio', 0.0):.2f}"
         min_txt   = f"{bs0.get('min', 0.0):.2f}"
         ok_txt    = "✅" if bs0.get("ok") else "❌"
         bs_line   = f"breadth: {ratio_txt}, min={min_txt}, ok={ok_txt}"
+
         tg_info(
             f"🚀 تشغيل البوت — {len(SYMBOLS)} رمز | HTF={STRAT_HTF_TIMEFRAME} / LTF={STRAT_LTF_TIMEFRAME}\n"
             f"📡 {bs_line}",
@@ -384,7 +400,7 @@ if __name__ == "__main__":
     next_scan  = start_wall + random.uniform(0.5, 1.5) + SCAN_INTERVAL_SEC
     next_manage= start_wall + random.uniform(0.2, 0.8) + MANAGE_INTERVAL_SEC
     last_report_day = None
-    time.sleep(random.uniform(0.5, 1.5))
+    time.sleep(random.uniform(0.5, 1.5))  # Jitter أولي
 
     try:
         while True:
@@ -392,27 +408,22 @@ if __name__ == "__main__":
                 break
 
             now = time.time()
+
+            # NEW/LIQ: قياس السيولة الحرة كل لفة
             free_now = _usdt_free()
 
-            # breadth الحالي للجولة (مفيد لـ RiskBlocker)
-            try:
-                bs_now = breadth_status() or {}
-            except Exception:
-                bs_now = {}
+            # NEW/RISK: إن كان RiskBlocker متاحًا ومحظورًا — قدم الإدارة وتخطّ الشراء
+            risk_blocked = _risk_is_blocked()
+            if risk_blocked:
+                _print("[risk] blocked — skipping new entries this cycle.")
 
-            # أخبر RiskBlocker ببداية الجولة
-            if RB:
-                try:
-                    RB.on_round_start(breadth=bs_now)
-                except Exception as e:
-                    _print(f"[risk] on_round_start error: {e}")
-
+            # NEW/LIQ: لو السياسة manage_first — قدّم الإدارة عندما لا توجد سيولة كافية للشراء
             should_manage_now = (now >= next_manage)
             if LIQUIDITY_POLICY == "manage_first":
                 if (now >= next_scan) and (not _has_liquidity_for_new_trade()):
                     should_manage_now = True
 
-            # 2) إدارة الصفقات
+            # 2) إدارة الصفقات المفتوحة — قد تُنفّذ أولًا عند نقص السيولة
             if should_manage_now:
                 t_manage_start = perf_counter()
                 try:
@@ -428,16 +439,9 @@ if __name__ == "__main__":
                                 elif isinstance(closed, (list, tuple)) and closed:
                                     text = closed[0]
                                 if text:
-                                    # كتم تنبيهات مزعجة لو RiskBlocker قرر ذلك (اختياري)
-                                    if RB and RB.should_suppress_alert(reasons=None, breadth=bs_now):
-                                        pass
-                                    else:
-                                        tg_info(text, parse_mode="HTML", silent=False)
+                                    tg_info(text, parse_mode="HTML", silent=False)
                                 else:
-                                    if RB and RB.should_suppress_alert(reasons=None, breadth=bs_now):
-                                        pass
-                                    else:
-                                        tg_info(f"✅ إغلاق صفقة: <b>{symbol}</b>", parse_mode="HTML", silent=False)
+                                    tg_info(f"✅ إغلاق صفقة: <b>{symbol}</b>", parse_mode="HTML", silent=False)
                                 _print(f"[manage] {symbol} closed by TP/SL/TIME")
                         except Exception as e:
                             _print(f"[manage_position] {symbol} error: {e}")
@@ -453,11 +457,14 @@ if __name__ == "__main__":
                     if now - next_manage > MANAGE_INTERVAL_SEC:
                         next_manage = now + MANAGE_INTERVAL_SEC
 
-            # 1) فحص إشارات الدخول
+            # 1) فحص إشارات الدخول — مع بوابة سيولة قبل أي شراء + احترام RiskBlocker
             if now >= next_scan:
                 gate_ok = _balance_gate_debug()
-                if not gate_ok:
-                    _print(f"[scan] skipped — free USDT {free_now:.2f} < threshold+reserve")
+                if (not gate_ok) or risk_blocked:
+                    if not gate_ok:
+                        _print(f"[scan] skipped — free USDT {free_now:.2f} < threshold+reserve")
+                    if risk_blocked:
+                        _print("[scan] skipped — risk blocker active.")
                     next_scan += SCAN_INTERVAL_SEC
                     if now - next_scan > SCAN_INTERVAL_SEC:
                         next_scan = now + SCAN_INTERVAL_SEC + random.uniform(-2, 2)
@@ -478,17 +485,10 @@ if __name__ == "__main__":
                             if load_position(symbol) is not None:
                                 continue
 
-                            # حظر سوقي عام قبل أي محاولة دخول
-                            if RB and RB.should_block_entry(symbol=symbol, breadth=bs_now):
-                                # سجل الرفض داخلياً فقط
-                                _print(f"[risk] entry blocked by regime for {symbol}")
-                                continue
-
-                            # فحص سيولة
+                            # NEW/LIQ: فحص سريع للسيولة داخل الحلقة قبل كل محاولة شراء
                             if not _has_liquidity_for_new_trade():
-                                break
+                                break  # أوقف محاولات الدخول في هذه الجولة
 
-                            # فحص الإشارة
                             try:
                                 sig = check_signal(symbol)
                             except Exception as e:
@@ -497,39 +497,25 @@ if __name__ == "__main__":
 
                             is_buy = (sig == "buy") or (isinstance(sig, dict) and str(sig.get("decision", "")).lower() == "buy")
                             if is_buy:
-                                # فحص نهائي من RiskBlocker قبل تنفيذ الشراء
-                                if RB and RB.should_block_entry(symbol=symbol, breadth=bs_now):
-                                    _print(f"[risk] blocked immediate-entry {symbol}")
-                                    continue
                                 try:
                                     order, msg = execute_buy(symbol)
                                     if msg:
                                         if _is_error_text(msg):
-                                            if not (RB and RB.should_suppress_alert(reasons=None, breadth=bs_now)):
-                                                tg_error(msg)
+                                            tg_error(msg)
                                         else:
-                                            if not (RB and RB.should_suppress_alert(reasons=None, breadth=bs_now)):
-                                                tg_info(msg, parse_mode="HTML", silent=False)
+                                            tg_info(msg, parse_mode="HTML", silent=False)
                                     elif order:
                                         price = getattr(order, "price", None) or getattr(order, "avg_price", None) or ""
                                         qty   = getattr(order, "amount", None) or getattr(order, "qty", None) or ""
-                                        if not (RB and RB.should_suppress_alert(reasons=None, breadth=bs_now)):
-                                            tg_info(f"✅ دخول صفقة\nرمز: <b>{symbol}</b>\nسعر: <b>{price}</b>\nكمية: <b>{qty}</b>", parse_mode="HTML", silent=False)
+                                        tg_info(f"✅ دخول صفقة\nرمز: <b>{symbol}</b>\nسعر: <b>{price}</b>\nكمية: <b>{qty}</b>", parse_mode="HTML", silent=False)
                                     open_positions_count = _get_open_positions_count_safe()
                                 except Exception as e:
                                     _print(f"[execute_buy] {symbol} error: {e}")
                                     continue
                             else:
-                                # اجلب أسباب الرفض (إن وُجدت) وسجّلها لدى RiskBlocker
                                 try:
                                     _, reasons = check_signal_debug(symbol)
                                     if reasons:
-                                        # تعليم RiskBlocker بموجات الرفض
-                                        if RB:
-                                            try:
-                                                RB.record_reject(symbol, reasons)
-                                            except Exception:
-                                                pass
                                         _print(f"[debug] {symbol} reject reasons: {reasons[:5]}")
                                 except Exception:
                                     pass
@@ -545,7 +531,7 @@ if __name__ == "__main__":
                             t_round_end = perf_counter()
                             dur_sec = t_round_end - t_round_start
                             avg_per_symbol = (dur_sec / max(1, len(SYMBOLS)))
-                            bs = bs_now or {}
+                            bs = breadth_status() or {}
                             b_ratio_txt = "—" if bs.get("ratio") is None else f"{bs.get('ratio'):.2f}"
                             b_line  = f"breadth: <b>{b_ratio_txt}</b> | min: <b>{bs.get('min',0.0):.2f}</b> | {('✅ OK' if bs.get('ok') else '❌ LOW')}"
                             perf_text = (
@@ -555,16 +541,9 @@ if __name__ == "__main__":
                                 f"- {b_line}\n"
                             )
                             metrics_text = metrics_format()
-                            # ملخّص RiskBlocker (اختياري)
-                            rb_text = ""
-                            if RB and RB_SUMMARY_EVERY_ROUND:
-                                try:
-                                    rb_text = RB.round_summary_text() or ""
-                                except Exception:
-                                    rb_text = ""
-                            full_report = perf_text + "\n" + metrics_text + (("\n" + rb_text) if rb_text else "")
+                            full_report = perf_text + "\n" + metrics_text
                             _print(full_report)
-                            if SEND_METRICS_TO_TELEGRAM and not (RB and RB.should_suppress_alert(reasons=None, breadth=bs_now)):
+                            if SEND_METRICS_TO_TELEGRAM:
                                 tg_info(full_report, parse_mode="HTML", silent=True)
                         except Exception:
                             pass
@@ -584,7 +563,7 @@ if __name__ == "__main__":
                     if (now_r.hour == DAILY_REPORT_HOUR and now_r.minute >= DAILY_REPORT_MINUTE) and (last_report_day != day_key):
                         try:
                             report = build_daily_report_text()
-                            if report and not (RB and RB.should_suppress_alert(reasons=None, breadth=bs_now)):
+                            if report:
                                 tg_info(report, parse_mode="HTML", silent=True)
                         except Exception as e:
                             _print(f"[daily_report] build error: {e}")
