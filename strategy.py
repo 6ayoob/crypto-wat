@@ -849,7 +849,7 @@ def _sweep_then_reclaim(df, prev, closed, ref_val, lookback=20, tol=0.0012):
         cur_close = float(closed["close"])
 
         # سويب: لمس/كسر بسيط لِـ ll
-        swept = (cur_low <= ll * (1.0 + tol*(-1))) or (cur_low <= ll)
+        swept = (cur_low <= ll * (1.0 - tol)) or (cur_low <= ll)
 
         # استرجاع: إغلاق فوق ref_val
         reclaimed = cur_close >= float(ref_val)
