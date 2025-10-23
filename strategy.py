@@ -803,12 +803,20 @@ def _mgmt(variant: str): return PER_STRAT_MGMT.get(variant, PER_STRAT_MGMT["new"
 def get_cfg(variant: str):
     cfg = dict(BASE_CFG)
     v = (variant or "new").lower()
-    if v == "new":   cfg.update(NEW_SCALP_OVERRIDES)
-    elif v == "srr": cfg.update(SRR_OVERRIDES)
-    elif v == "brt": cfg.update(BRT_OVERRIDES)
-    elif v == "vbr": cfg.update(VBR_OVERRIDES)
-    elif v == "old": pass
-    else: cfg.update(NEW_SCALP_OVERRIDES)
+    if v == "new":
+        cfg.update(NEW_SCALP_OVERRIDES)
+    elif v == "srr":
+        cfg.update(SRR_OVERRIDES)
+    elif v == "srr_plus":
+        cfg.update(SRR_PLUS_OVERRIDES)
+    elif v == "brt":
+        cfg.update(BRT_OVERRIDES)
+    elif v == "vbr":
+        cfg.update(VBR_OVERRIDES)
+    elif v == "old":
+        pass
+    else:
+        cfg.update(NEW_SCALP_OVERRIDES)
     return cfg
 
 # ---------- Scoring ----------
