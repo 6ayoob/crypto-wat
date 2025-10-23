@@ -1436,14 +1436,14 @@ def execute_buy(symbol: str, sig: dict | None = None):
     try:
         if STRAT_TG_SEND:
             msg = (
-                f"{pos.get('messages',{}).get('entry','✅ دخول')} {symbol}\n"
-                f"🎯 <b>Mode</b>: {sig.get('mode','-')} • <b>Score</b>: {sig.get('score','-')} • "
-                f"<b>Pattern</b>: {sig.get('pattern','-')}\n"
-                f"🟢 <b>Entry</b>: <code>{pos['entry_price']:.6f}</code>\n"
-                f"🛡️ <b>SL</b>: <code>{pos['stop_loss']:.6f}</code>\n"
-                f"🎯 <b>TPs</b>: {', '.join(str(round(t,6)) for t in pos['targets'])}\n"
-                f"💰 <b>الحجم</b>: {trade_usdt:.2f}$"
-            )
+    f"✅ دخول {symbol}\n"
+    f"🎯 <b>Mode</b>: {sig.get('mode','-')} • <b>Score</b>: {sig.get('score','-')} • <b>Pattern</b>: {sig.get('pattern','-')}\n"
+    f"🟢 <b>Entry</b>: <code>{pos['entry_price']:.6f}</code>\n"
+    f"🛡️ <b>SL</b>: <code>{pos['stop_loss']:.6f}</code>\n"
+    f"🎯 <b>TPs</b>: {', '.join(str(round(t,6)) for t in pos['targets'])}\n"
+    f"💰 <b>الحجم</b>: {trade_usdt:.2f}$"
+)
+
             if pos["messages"].get("breadth_soft"):
                 msg += f"\n{pos['messages']['breadth_soft']}"
             _tg(msg)
