@@ -1588,6 +1588,13 @@ def _dynamic_trail_after_tp2(symbol, pos):
     except Exception as e:
         _print(f"[_dynamic_trail_after_tp2] error {symbol}: {e}")
 
+# (3b) تريلينغ ديناميكي بعد أي TP — تحديث رقم 2
+if pos["amount"] > 0 and any(pos.get("tp_hits", [])):
+    try:
+        _dynamic_trail_after_tp2(symbol, pos)
+        pos = load_position(symbol) or pos
+    except Exception as e:
+        _print(f"[manage_position] dynamic trail error {symbol}: {e}")
 
 # ================== إدارة الصفقة ==================
 def manage_position(symbol):
