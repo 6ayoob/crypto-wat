@@ -1,5 +1,5 @@
 # -*- coding: utf-8 -*-
-"""
+
 strategy.py — Spot-only (v3.4 PRO, unified, stable)
 - نسخة موحّدة، بلا ازدواج دوال HTF/Breadth.
 - صرامة متوازنة لا تفوّت الفرص + Soft modes مرنة.
@@ -11,7 +11,7 @@ strategy.py — Spot-only (v3.4 PRO, unified, stable)
 - Multi-targets + Partials متكيّفة + Dynamic Max Bars to TP1.
 - تقارير يومية + تشخيص.
 - تحسينات تنفيذ: فحص رصيد/قيود المنصّة/انزلاق + Rollback، تعبئة جزئية، منع تجاوز الحد، احترام الحظر.
-"""
+
 
 from __future__ import annotations
 
