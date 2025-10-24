@@ -37,21 +37,21 @@ def _env_str(name, default=""):
     v = os.getenv(name)
     return default if v is None else str(v)
 
-# رصيد USDT المتاح
+# USDT free balance
 def get_usdt_free() -> float:
     try:
         return float(fetch_balance("USDT") or 0.0)
     except Exception:
         return 0.0
 
-# فلاتر الرمز (minQty/minNotional/stepSize/tickSize)
+# Exchange symbol filters (minQty/minNotional/stepSize/tickSize)
 def fetch_symbol_filters(base: str) -> dict:
     """
-    ترجع stepSize/minQty/minNotional/tickSize لزوج BASE/USDT.
-    لو okx_api ما يوفرها، استخدم قيم افتراضية آمنة.
+    Returns stepSize/minQty/minNotional/tickSize for BASE/USDT.
+    If okx_api doesn't provide them, fallback to safe defaults.
     """
     try:
-        info = {}  # لو عندك okx_api.market(...) رجّع منها
+        info = {}  # if you have okx_api.market(...), pull from it
         step = float(info.get("stepSize", 0.000001)) or 0.000001
         min_qty = float(info.get("minQty", 0.0)) or 0.0
         min_notional = float(info.get("minNotional", MIN_NOTIONAL_USDT)) or MIN_NOTIONAL_USDT
@@ -64,13 +64,13 @@ def _round_to_tick(px: float, tick: float) -> float:
     if tick <= 0: return float(px)
     return math.floor(float(px) / tick) * tick
 
-# ===== MTF strict flag (ساعة/4س/يومي) =====
+# ===== MTF strict flag (H1/4H/1D) =====
 try:
     ENABLE_MTF_STRICT
 except NameError:
     ENABLE_MTF_STRICT = _env_bool("ENABLE_MTF_STRICT", False)
 
-# ===== لوج الاستراتيجية =====
+# ===== Strategy logger =====
 logger = logging.getLogger("strategy")
 if not logging.getLogger().hasHandlers():
     logging.basicConfig(level=logging.INFO, format="%(asctime)s [%(levelname)s] %(name)s: %(message)s")
@@ -86,28 +86,21 @@ def _print(s: str):
             sys.stdout.flush()
         except Exception:
             pass
-# ---- HTF Gate (temporary stub) ----
-def _htf_gate(base: str, tf: str = "4h", **kwargs) -> bool:
-    """
-    HTF gate check (TEMP): always passes.
-    Replace with your real higher-timeframe filter later.
-    """
-    return True
 
-# ================== إعدادات عامة/ثوابت ==================
+# ================== Global settings / constants ==================
 RIYADH_TZ = timezone(timedelta(hours=3))
 POSITIONS_DIR = "positions"
 CLOSED_POSITIONS_FILE = "closed_positions.json"
 RISK_STATE_FILE = "risk_state.json"
 
-# إشعارات من داخل الاستراتيجية (لمنع التكرار مع main.py)
+# In-strategy notifications (avoid duplication with main.py)
 STRAT_TG_SEND = _env_bool("STRAT_TG_SEND", False)
 
-# أطر زمنية (من config)
+# Timeframes (from config)
 HTF_TIMEFRAME = STRAT_HTF_TIMEFRAME
 LTF_TIMEFRAME = STRAT_LTF_TIMEFRAME
 
-# مؤشرات/نوافذ
+# Indicator windows
 EMA_FAST, EMA_SLOW, EMA_TREND, EMA_LONG = 9, 21, 50, 200
 VOL_MA, SR_WINDOW = 20, 50
 ATR_PERIOD = 14
@@ -117,7 +110,7 @@ NR_FACTOR = 0.75
 HTF_EMA_TREND_PERIOD = 50
 HTF_SR_WINDOW = 50
 
-# إدارة الصفقة والقيود العامة
+# Trade mgmt & generic limits
 TP1_FRACTION = 0.5
 MIN_NOTIONAL_USDT = 10.0
 TRAIL_MIN_STEP_RATIO = 0.001
@@ -126,18 +119,18 @@ MAX_TRADES_PER_DAY       = _env_int("MAX_TRADES_PER_DAY", 20)
 MAX_CONSEC_LOSSES        = _env_int("MAX_CONSEC_LOSSES", 3)
 DAILY_LOSS_LIMIT_USDT    = _env_float("DAILY_LOSS_LIMIT_USDT", 200.0)
 
-# تحجيم أساسي/حد أدنى للصفقة + DRY RUN
+# Base sizing & DRY RUN
 TRADE_BASE_USDT  = _env_float("TRADE_BASE_USDT", TRADE_AMOUNT_USDT)
 MIN_TRADE_USDT   = _env_float("MIN_TRADE_USDT", 10.0)
 DRY_RUN          = _env_bool("DRY_RUN", False)
 
-# مفاتيح ميزات
+# Feature flags
 USE_EMA200_TREND_FILTER   = _env_bool("USE_EMA200_TREND_FILTER", True)
 ENABLE_GOLDEN_CROSS_ENTRY = _env_bool("ENABLE_GOLDEN_CROSS_ENTRY", True)
 GOLDEN_CROSS_RVOL_BOOST   = _env_float("GOLDEN_CROSS_RVOL_BOOST", 1.10)
 
-# درجات/حدود
-SCORE_THRESHOLD = _env_int("SCORE_THRESHOLD", 35)  # افتراضي: 35
+# Scoring
+SCORE_THRESHOLD = _env_int("SCORE_THRESHOLD", 35)
 
 # ======= Auto-Relax =======
 AUTO_RELAX_AFTER_HRS_1 = _env_float("AUTO_RELAX_AFTER_HRS_1", 6)
@@ -149,21 +142,21 @@ RELAX_ATR_MIN_SCALE_2 = _env_float("RELAX_ATR_MIN_SCALE_2", 0.85)
 RELAX_RESET_SUCCESS_TRADES = _env_int("RELAX_RESET_SUCCESS_TRADES", 2)
 
 # ======= Market Breadth =======
-BREADTH_MIN_RATIO = _env_float("BREADTH_MIN_RATIO", 0.60)  # حد أساسي (يُضبط ديناميكيًا)
+BREADTH_MIN_RATIO = _env_float("BREADTH_MIN_RATIO", 0.60)
 BREADTH_TF = os.getenv("BREADTH_TF", "1h")
 BREADTH_TTL_SEC = _env_int("BREADTH_TTL_SEC", 180)
 BREADTH_SYMBOLS_ENV = os.getenv("BREADTH_SYMBOLS", "")
 
 # ======= Soft schedule & messages (defaults) =======
 SOFT_SCHEDULE_ENABLE      = _env_bool("SOFT_SCHEDULE_ENABLE", False)
-SOFT_SCHEDULE_HRS         = _env_str("SOFT_SCHEDULE_HRS", "09:30-16:00")   # أمثلة: "00:00-23:59", "09:30-12:00,14:00-18:00"
-SOFT_SCHEDULE_WEEKDAYS    = _env_str("SOFT_SCHEDULE_WEEKDAYS", "")         # فارغ = كل الأيام، أو "0,1,2,3,4"
+SOFT_SCHEDULE_HRS         = _env_str("SOFT_SCHEDULE_HRS", "09:30-16:00")   # e.g. "00:00-23:59", "09:30-12:00,14:00-18:00"
+SOFT_SCHEDULE_WEEKDAYS    = _env_str("SOFT_SCHEDULE_WEEKDAYS", "")         # empty = all days, or "0,1,2,3,4"
 SOFT_SCALE_TIME_ONLY      = _env_float("SOFT_SCALE_TIME_ONLY", 0.80)
 SOFT_SCALE_MARKET_WEAK    = _env_float("SOFT_SCALE_MARKET_WEAK", 0.85)
 SOFT_SEVERITY_STEP        = _env_float("SOFT_SEVERITY_STEP", 0.10)
 SOFT_MSG_ENABLE           = _env_bool("SOFT_MSG_ENABLE", True)
 
-# Soft breadth sizing (يُستخدم لاحقًا داخل execute_buy)
+# Soft breadth sizing (used later inside execute_buy)
 SOFT_BREADTH_ENABLE = _env_bool("SOFT_BREADTH_ENABLE", True)
 SOFT_BREADTH_SIZE_SCALE = _env_float("SOFT_BREADTH_SIZE_SCALE", 0.5)
 
@@ -181,7 +174,7 @@ TP_ATR_MULTS_VBR   = tuple(float(x) for x in os.getenv("TP_ATR_MULTS_VBR",   "0.
 USE_DYNAMIC_MAX_BARS = _env_bool("USE_DYNAMIC_MAX_BARS", True)
 MAX_BARS_BASE = _env_int("MAX_BARS_TO_TP1_BASE", 12)
 
-# Tunables عبر ENV (تخفيف رفض ATR/RVOL/Notional)
+# Tunables via ENV (relax ATR/RVOL/Notional rejections)
 MIN_BAR_NOTIONAL_USD = _env_float("MIN_BAR_NOTIONAL_USD", 25000)
 ATR_MIN_BASE = _env_float("ATR_MIN_FOR_TREND_BASE", 0.0020)
 ATR_MIN_NEW  = _env_float("ATR_MIN_FOR_TREND_NEW",  0.0026)
@@ -189,18 +182,18 @@ ATR_MIN_BRT  = _env_float("ATR_MIN_FOR_TREND_BRT",  0.0022)
 RVOL_MIN_NEW = _env_float("RVOL_MIN_NEW", 1.25)
 RVOL_MIN_BRT = _env_float("RVOL_MIN_BRT", 1.30)
 
-# ======= كاش HTF/OHLCV + مِقاييس =======
+# ======= HTF/OHLCV caches + metrics =======
 _HTF_CACHE: Dict[str, Dict[str, Any]] = {}
 _HTF_TTL_SEC = _env_int("HTF_CACHE_TTL_SEC", 150)
 
 _OHLCV_CACHE: Dict[tuple, list] = {}  # key=(symbol, tf, bars)
 _METRICS = {"ohlcv_api_calls": 0, "ohlcv_cache_hits": 0, "ohlcv_cache_misses": 0, "htf_cache_hits": 0, "htf_cache_misses": 0}
 
-# ======= عدّاد رفضات الجولة (لتليين محلي) + ملخص عام =======
+# ======= Rejection counters (per round) + summary =======
 _REJ_COUNTS = {"atr_low": 0, "rvol": 0, "notional_low": 0}
 _REJ_SUMMARY: Dict[str, int] = {}
 
-# ================== Helpers & أساسيات ==================
+# ================== Helpers & basics ==================
 def reset_cycle_cache():
     _OHLCV_CACHE.clear()
     for k in _METRICS: _METRICS[k] = 0
@@ -228,7 +221,7 @@ def _tg(text, parse_mode="HTML"):
     except Exception:
         pass
 
-# --- Telegram de-dup guard (منع تكرار نفس الرسالة) ---
+# --- Telegram de-dup guard ---
 _MSG_DEDUP: Dict[str, float] = {}
 def _tg_once(key: str, text: str, ttl_sec: int = 900, parse_mode: str = "HTML"):
     now = time.time()
@@ -280,7 +273,7 @@ def _split_symbol_variant(symbol: str):
     if "#" in symbol:
         base, variant = symbol.split("#", 1)
         variant = (variant or "new").lower().strip()
-        # خرائط مختصرة → أسماء معتمدة
+        # short aliases → canonical names
         if variant in ("srr+", "srrplus", "srr_plus"):
             variant = "srr_plus"
         elif variant not in ("old","new","srr","brt","vbr","srr_plus"):
@@ -291,7 +284,7 @@ def _split_symbol_variant(symbol: str):
 # ---------- HTF Gate (trend / filter) ----------
 def _ensure_htf_indicators(df):
     """
-    يضمن توفر ema21 و ema50 و rsi14 على فريم HTF بدون الاعتماد على مكتبات خارجية.
+    Make sure ema21/ema50/rsi14 exist on HTF df without external libs.
     """
     try:
         if "ema21" not in df:
@@ -299,7 +292,7 @@ def _ensure_htf_indicators(df):
         if "ema50" not in df:
             df["ema50"] = df["close"].ewm(span=50, adjust=False).mean()
         if "rsi14" not in df:
-            # RSI يدوي بسيط
+            # simple RSI
             delta = df["close"].diff()
             gain = (delta.where(delta > 0, 0.0)).ewm(alpha=1/14, adjust=False).mean()
             loss = (-delta.where(delta < 0, 0.0)).ewm(alpha=1/14, adjust=False).mean()
@@ -309,44 +302,37 @@ def _ensure_htf_indicators(df):
         pass
     return df
 
-
 def _htf_gate(base, *args, **kwargs):
     """
-    فلتر HTF مرن:
-      - rule dict (اختياري): {"tf":"4h", "ind":"ema21", "dir":"above", "bars":1, "fail_open": True}
-      - أو تمُرِّر باراميترات مباشرة: tf="1d", ind="ema50", dir="above"/"below", bars=2
+    Flexible HTF filter:
+      - Pass a rule dict (optional): {"tf":"4h", "ind":"ema21", "dir":"above", "bars":1, "fail_open": True}
+      - Or pass params directly: tf="1d", ind="ema50", dir="above"/"below", bars=2
 
-    المنطق:
-      - يجلب بيانات HTF، يحسب المؤشرات (ema21/ema50/rsi14).
-      - إذا ind=emaXX: يتحقق أن إغلاق الشمعة السابقة (أو آخر N شموع) فوق/تحت المؤشر حسب dir.
-      - إذا ind=rsi14: يتحقق من عتبة 50 (above => >=50 ، below => <50).
-      - fail_open=True (افتراضي): في حال فشل الجلب/الحساب لا يمنع الدخول (يرجع True).
+    Logic:
+      - Fetch HTF OHLCV, compute indicators (ema21/ema50/rsi14).
+      - If ind=emaXX: check last `bars` closed candles vs EMA per `dir`.
+      - If ind=rsi14: check 50-level (above => >=50, below => <50).
+      - fail_open=True (default): if fetch/compute fails, do NOT block entries (returns True).
     """
-    # اجمع الإعداد من dict أو kwargs
     rule = {}
     if args:
-        # إذا أول وسيط dict
         if isinstance(args[0], dict):
             rule.update(args[0])
-        # إذا أول وسيط str اعتبره tf
         elif isinstance(args[0], str):
             rule["tf"] = args[0]
 
-    # ادمج kwargs فوق rule
     rule.update(kwargs or {})
 
     tf   = (rule.get("tf") or "4h").lower()
-    ind  = (rule.get("ind") or "ema21").lower()    # "ema21" | "ema50" | "rsi14"
-    dire = (rule.get("dir") or "above").lower()    # "above" أو "below"
-    bars = int(rule.get("bars") or 1)              # عدد الشموع المراد تحققها
-    fail_open = bool(rule.get("fail_open", True))  # افتح لو فشلنا (True افتراضي)
+    ind  = (rule.get("ind") or "ema21").lower()   # "ema21" | "ema50" | "rsi14"
+    dire = (rule.get("dir") or "above").lower()   # "above" | "below"
+    bars = int(rule.get("bars") or 1)
+    fail_open = bool(rule.get("fail_open", True))
 
-    # تطبيع TF الشائع
     tf_map = {"h1":"1h", "1h":"1h", "h4":"4h", "4h":"4h", "d1":"1d", "1d":"1d"}
     tf_fetch = tf_map.get(tf, tf)
 
     try:
-        # جب بيانات كافية لحساب ema/rsi
         raw = get_ohlcv_cached(base, tf_fetch, 120)
         if not raw or len(raw) < max(30, bars+2):
             return True if fail_open else False
@@ -354,7 +340,6 @@ def _htf_gate(base, *args, **kwargs):
         df = _df(raw)
         df = _ensure_htf_indicators(df)
 
-        # نستخدم الشمعة السابقة (close[-2]) كإغلاق متاح بعد الاكتمال
         closes = df["close"]
         if len(closes) < bars + 2:
             return True if fail_open else False
@@ -362,16 +347,14 @@ def _htf_gate(base, *args, **kwargs):
         if ind in ("ema21", "ema50"):
             ema_col = ind
             ema_vals = df[ema_col]
-            # تحقق لآخر `bars` شموع مكتملة
+            # check last `bars` fully closed candles
             for k in range(2, 2 + bars):
                 c = float(closes.iloc[-k])
                 e = float(ema_vals.iloc[-k])
                 if dire == "above":
-                    if not (c >= e):
-                        return False
-                else:  # "below"
-                    if not (c <= e):
-                        return False
+                    if not (c >= e): return False
+                else:
+                    if not (c <= e): return False
             return True
 
         elif ind == "rsi14":
@@ -379,22 +362,18 @@ def _htf_gate(base, *args, **kwargs):
             for k in range(2, 2 + bars):
                 r = float(rsi_vals.iloc[-k])
                 if dire == "above":
-                    if not (r >= 50.0):
-                        return False
+                    if not (r >= 50.0): return False
                 else:
-                    if not (r < 50.0):
-                        return False
+                    if not (r < 50.0): return False
             return True
 
-        else:
-            # مؤشر غير معروف -> لا تمنع
-            return True
+        # unknown indicator → don't block
+        return True
 
     except Exception:
-        # في حال أي خطأ شبكي/بياني -> لا تمنع إن كان fail_open=True
         return True if fail_open else False
 
-# ================== تخزين الصفقات ==================
+# ================== Positions storage ==================
 def _pos_path(symbol):
     os.makedirs(POSITIONS_DIR, exist_ok=True)
     return f"{POSITIONS_DIR}/{symbol.replace('/', '_')}.json"
@@ -415,7 +394,7 @@ def count_open_positions():
 def load_closed_positions(): return _read_json(CLOSED_POSITIONS_FILE, [])
 def save_closed_positions(lst): _atomic_write(CLOSED_POSITIONS_FILE, lst)
 
-# ================== مؤشرات ==================
+# ================== Indicators ==================
 def ema(s, n): return s.ewm(span=n, adjust=False).mean()
 
 def rsi(series, period=14):
@@ -485,7 +464,7 @@ def _swing_points(df, left=2, right=2):
     for i in range(max(0, idx-10), idx+1):
         if i-left < 0 or i+right >= len(df): continue
         if highs[i] == max(highs[i-left:i+right+1]): swing_high = float(highs[i])
-        if lows[i]  == min(lows[i-left:i+right+1]): swing_low  = float(lows[i])
+        if lows[i]  == min(lows[i-left:i+right+1]):  swing_low  = float(lows[i])
     return swing_high, swing_low
 
 def _bullish_engulf(prev, cur):
@@ -555,7 +534,7 @@ def macd_rsi_gate(prev_row, closed_row, policy):
     if policy == "strict":  return ("RSI>50" in flags and "MACD_hist>0" in flags and "MACD_hist↑" in flags)
     return k >= 2  # balanced
 
-# ================== كاش OHLCV للجولة + Retry ==================
+# ================== OHLCV cache per round + Retry ==================
 def _retry_fetch_ohlcv(symbol, tf, bars, attempts=3, base_wait=1.2, max_wait=6.0):
     last_exc = None
     for i in range(attempts):
@@ -584,8 +563,7 @@ def get_ohlcv_cached(symbol: str, tf: str, bars: int) -> list:
     if data: _OHLCV_CACHE[key] = data
     return data
 
-# ================== HTF سياق ==================
-_HTF_CACHE: Dict[str, Dict[str, Any]] = _HTF_CACHE  # من الجزء 1
+# ================== HTF context ==================
 def _get_htf_context(symbol):
     base = symbol.split("#")[0]
     now = now_riyadh()
@@ -841,6 +819,24 @@ NEW_SCALP_OVERRIDES = {
     "MAX_HOLD_HOURS": 6,
     "SYMBOL_COOLDOWN_MIN": 8,
 }
+SRR_OVERRIDES = {
+    "ENTRY_MODE": "pullback",
+    "PULLBACK_VALUE_REF": "ema21",
+    "PULLBACK_CONFIRM": "bullish_engulf",   # SRR العادي تأكيد أبسط من SRR+
+    "RVOL_MIN": 1.20,
+    "ATR_MIN_FOR_TREND": 0.0018,
+    "RSI_GATE_POLICY": "balanced",
+    "USE_ATR_SL_TP": True,
+    "SL_ATR_MULT": 0.9,
+    "TP1_ATR_MULT": 1.2,
+    "TP2_ATR_MULT": 2.2,
+    "TRAIL_AFTER_TP1": True,
+    "TRAIL_ATR_MULT": 1.0,
+    "LOCK_MIN_PROFIT_PCT": 0.004,
+    "MAX_HOLD_HOURS": 8,
+    "SYMBOL_COOLDOWN_MIN": 10,
+}
+
 SRR_PLUS_OVERRIDES = {
     # نفس فلسفة SRR ولكن أدقّ انتقائية وتأكيد أقوى
     "ENTRY_MODE": "pullback",
