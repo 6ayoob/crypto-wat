@@ -327,3 +327,23 @@ def list_okx_usdt_spot_symbols() -> List[str]:
     except Exception as e:
         print(f"⚠️ فشل جلب قائمة USDT/Spot: {e}")
         return []
+# ================== fetch_symbol_filters ==================
+def fetch_symbol_filters(symbol: str):
+    """
+    إرجاع فلاتر الرمز (minQty, minNotional, stepSize, tickSize)
+    لضمان تنفيذ صحيح في أوامر الشراء/البيع.
+    """
+    try:
+        info = _client.public.get_instruments(instType='SPOT').json()
+        for item in info.get("data", []):
+            if item["instId"] == symbol.replace("/", "-"):
+                return {
+                    "minQty": float(item.get("minSz", 0.0)),
+                    "minNotional": float(item.get("minSz", 0.0)) * float(item.get("tickSz", 0.0)),
+                    "stepSize": float(item.get("lotSz", 0.0)),
+                    "tickSize": float(item.get("tickSz", 0.0)),
+                }
+    except Exception as e:
+        print(f"[fetch_symbol_filters] error {symbol}: {e}")
+    # fallback default values
+    return {"minQty": 0.0, "minNotional": 0.0, "stepSize": 0.0001, "tickSize": 0.0001}
