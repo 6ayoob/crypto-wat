@@ -1019,5 +1019,102 @@ def check_signal_debug(symbol: str):
     if last:
         return None, [f"{last.get('stage','-')}:{last.get('details',{})}"]
     return None, ["no_buy"]
+# ================== وظائف مفقودة تكاملية ==================
+
+# --- استيراد متغيرات إضافية من config ---
+from config import (
+    TRADE_AMOUNT_USDT, MAX_CONSEC_LOSSES, DAILY_LOSS_LIMIT_USDT
+)
+
+# --- إعداد افتراضي للإرسال إلى تيليجرام (لتجنب الخطأ إن لم يُعرّف) ---
+STRAT_TG_SEND = True
+
+# ================== إدارة ملفات المراكز ==================
+
+def _pos_file(symbol: str):
+    """توليد مسار ملف المركز بناءً على اسم الرمز"""
+    safe = symbol.replace("/", "_").replace("#", "_")
+    return os.path.join(STATE_PATH, f"pos_{safe}.json")
+
+def save_position(symbol: str, pos: dict):
+    """حفظ بيانات المركز في ملف JSON"""
+    _atomic_write(_pos_file(symbol), pos)
+
+def load_position(symbol: str):
+    """تحميل بيانات المركز إن وُجد"""
+    return _read_json(_pos_file(symbol), None)
+
+def clear_position(symbol: str):
+    """حذف ملف المركز لإغلاق الصفقة نهائيًا"""
+    f = _pos_file(symbol)
+    if os.path.exists(f):
+        os.remove(f)
+
+def load_closed_positions():
+    """تحميل سجل المراكز المغلقة"""
+    return _read_json(CLOSED_FILE, [])
+
+def save_closed_positions(data):
+    """حفظ سجل المراكز المغلقة"""
+    _atomic_write(CLOSED_FILE, data)
+
+# ================== وظائف التقارير اليومية ==================
+
+def _hour_key(dt: datetime):
+    """تحويل التوقيت إلى مفتاح الساعة (للتجميع في risk state)"""
+    return dt.strftime("%H")
+
+def _fmt_table(rows, headers):
+    """تنسيق الجدول لتقرير اليوم بشكل HTML بسيط"""
+    txt = "<pre>\n" + "\t".join(headers) + "\n" + "-"*80 + "\n"
+    for r in rows:
+        txt += "\t".join(str(x) for x in r) + "\n"
+    return txt + "</pre>"
+
+def _fmt_blocked_until_text():
+    """عرض حالة الحظر الحالية في التقرير"""
+    s = load_risk_state()
+    bu = s.get("blocked_until")
+    if not bu:
+        return "✅ طبيعي"
+    try:
+        t = datetime.fromisoformat(bu)
+        if now_riyadh() < t:
+            return f"⛔️ حتى {t.strftime('%H:%M')}"
+    except Exception:
+        pass
+    return "✅ طبيعي"
+
+def _format_relax_str():
+    """عرض مستوى Auto-Relax الحالي"""
+    lvl = _relax_level_current()
+    return "🧘 وضع عادي" if lvl == 0 else ("💤 Auto-Relax 1" if lvl == 1 else "🕊️ Auto-Relax 2")
+
+# ================== أدوات الكاش والإحصائيات ==================
+
+def reset_cycle_cache():
+    """إعادة ضبط عدادات الرفض في بداية كل دورة"""
+    _REJ_COUNTS["atr_low"] = 0
+    _REJ_COUNTS["rvol"] = 0
+    _REJ_COUNTS["notional_low"] = 0
+
+def metrics_format():
+    """تنسيق عدادات الأداء"""
+    return (
+        "📊 <b>Metrics</b>\n"
+        f"ATR rej: {_REJ_COUNTS['atr_low']} | "
+        f"RVOL rej: {_REJ_COUNTS['rvol']} | "
+        f"Notional rej: {_REJ_COUNTS['notional_low']}\n"
+    )
+
+def breadth_status():
+    """إرجاع حالة Breadth الحالية لاستخدامها في main.py"""
+    br = _get_breadth_ratio_cached()
+    bmin = _breadth_min_auto()
+    return {
+        "ratio": br,
+        "min": bmin,
+        "ok": (br is not None and br >= bmin)
+    }
 
 # ================== نهاية الملف ==================
