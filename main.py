@@ -57,9 +57,9 @@ try:
     try:
         # وسائط مدعومة فقط — لا تضف breadth_min هنا
         _risk_cfg = RiskBlockConfig(
-            daily_loss_limit_usdt=200.0,   # حد خسارة يومية
+            daily_loss_limit=200.0,   # حد خسارة يومية
             max_consec_losses=3,           # خسائر متتالية
-            block_minutes_on_violation=90  # مدة الحظر عند المخالفة
+            block_minutes_on_violation=90 # مدة الحظر عند المخالفة
         )
         _risk = RiskBlocker(_risk_cfg, send=_risk_tg_send)
     except Exception as e:
