@@ -1116,5 +1116,15 @@ def breadth_status():
         "min": bmin,
         "ok": (br is not None and br >= bmin)
     }
+# ================== عدّ المراكز المفتوحة ==================
+def count_open_positions() -> int:
+    """
+    يحسب عدد المراكز المفتوحة حاليًا بناءً على الملفات في مجلد state/
+    """
+    try:
+        files = [f for f in os.listdir(STATE_PATH) if f.startswith("pos_") and f.endswith(".json")]
+        return len(files)
+    except Exception:
+        return 0
 
 # ================== نهاية الملف ==================
