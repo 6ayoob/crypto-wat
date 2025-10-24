@@ -86,6 +86,13 @@ def _print(s: str):
             sys.stdout.flush()
         except Exception:
             pass
+# ---- HTF Gate (temporary stub) ----
+def _htf_gate(base: str, tf: str = "4h", **kwargs) -> bool:
+    """
+    HTF gate check (TEMP): always passes.
+    Replace with your real higher-timeframe filter later.
+    """
+    return True
 
 # ================== إعدادات عامة/ثوابت ==================
 RIYADH_TZ = timezone(timedelta(hours=3))
