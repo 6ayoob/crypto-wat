@@ -954,6 +954,52 @@ def maybe_emit_reject_summary():
         pass
     finally:
         _REJ_SUMMARY.clear()
+# ================== تنفيذ الشراء ==================
+def execute_buy(symbol: str):
+    """
+    دالة تنفيذ أمر شراء فعلي للسهم/العملة.
+    تُستخدم من main.py.
+    ترجع (order, message) أو (None, error_msg)
+    """
+    try:
+        base = symbol.split("#")[0]
+        price = float(fetch_price(base))
+        if price <= 0:
+            return None, f"⚠️ لا يمكن تنفيذ شراء {symbol} — السعر غير صالح."
+
+        # تحديد حجم الصفقة بالدولار من config
+        amount_usdt = float(TRADE_AMOUNT_USDT)
+        qty = amount_usdt / price
+
+        # تنفيذ أمر السوق
+        order = place_market_order(base, "buy", qty)
+
+        # حفظ المركز المفتوح
+        pos = {
+            "symbol": symbol,
+            "entry_price": price,
+            "amount": qty,
+            "opened_at": now_riyadh().isoformat(timespec="seconds"),
+            "variant": symbol.split("#")[1] if "#" in symbol else "new",
+            "score": None,
+            "pattern": None,
+            "reason": "AUTO_SIGNAL"
+        }
+        save_position(symbol, pos)
+
+        msg = (
+            f"✅ <b>تم فتح صفقة شراء</b>\n"
+            f"📊 الرمز: <code>{symbol}</code>\n"
+            f"💰 السعر: <b>{price:.6f}</b>\n"
+            f"📦 الكمية: <b>{qty:.6f}</b>\n"
+            f"⏱️ {datetime.now().strftime('%H:%M:%S')}"
+        )
+        return order, msg
+
+    except Exception as e:
+        err = f"❌ خطأ أثناء تنفيذ شراء {symbol}: {e}"
+        _print(err)
+        return None, err
 
 # ================== أدوات تشخيص الإشارة ==================
 def get_last_reject(symbol: str):
