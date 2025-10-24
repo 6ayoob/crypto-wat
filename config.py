@@ -31,6 +31,7 @@ TELEGRAM_CHAT_ID = os.getenv("TELEGRAM_CHAT_ID", "")
 OKX_API_KEY      = os.getenv("OKX_API_KEY", "")
 OKX_API_SECRET   = os.getenv("OKX_API_SECRET", "")
 OKX_PASSPHRASE   = os.getenv("OKX_PASSPHRASE", "")
+TRADE_BASE_USDT = 20.0   # حجم الصفقة بالدولار (يمكن تعديله)
 
 # ===============================
 # ⏱ إطارات زمنية تستخدمها الاستراتيجية
