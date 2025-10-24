@@ -281,6 +281,111 @@ def _split_symbol_variant(symbol: str):
         return base, variant
     return symbol, "new"
 
+# ---------- HTF Gate (trend / filter) ----------
+def _ensure_htf_indicators(df):
+    """
+    يضمن توفر ema21 و ema50 و rsi14 على فريم HTF بدون الاعتماد على مكتبات خارجية.
+    """
+    try:
+        if "ema21" not in df:
+            df["ema21"] = df["close"].ewm(span=21, adjust=False).mean()
+        if "ema50" not in df:
+            df["ema50"] = df["close"].ewm(span=50, adjust=False).mean()
+        if "rsi14" not in df:
+            # RSI يدوي بسيط
+            delta = df["close"].diff()
+            gain = (delta.where(delta > 0, 0.0)).ewm(alpha=1/14, adjust=False).mean()
+            loss = (-delta.where(delta < 0, 0.0)).ewm(alpha=1/14, adjust=False).mean()
+            rs = gain / (loss.replace(0, 1e-9))
+            df["rsi14"] = 100 - (100 / (1 + rs))
+    except Exception:
+        pass
+    return df
+
+
+def _htf_gate(base, *args, **kwargs):
+    """
+    فلتر HTF مرن:
+      - rule dict (اختياري): {"tf":"4h", "ind":"ema21", "dir":"above", "bars":1, "fail_open": True}
+      - أو تمُرِّر باراميترات مباشرة: tf="1d", ind="ema50", dir="above"/"below", bars=2
+
+    المنطق:
+      - يجلب بيانات HTF، يحسب المؤشرات (ema21/ema50/rsi14).
+      - إذا ind=emaXX: يتحقق أن إغلاق الشمعة السابقة (أو آخر N شموع) فوق/تحت المؤشر حسب dir.
+      - إذا ind=rsi14: يتحقق من عتبة 50 (above => >=50 ، below => <50).
+      - fail_open=True (افتراضي): في حال فشل الجلب/الحساب لا يمنع الدخول (يرجع True).
+    """
+    # اجمع الإعداد من dict أو kwargs
+    rule = {}
+    if args:
+        # إذا أول وسيط dict
+        if isinstance(args[0], dict):
+            rule.update(args[0])
+        # إذا أول وسيط str اعتبره tf
+        elif isinstance(args[0], str):
+            rule["tf"] = args[0]
+
+    # ادمج kwargs فوق rule
+    rule.update(kwargs or {})
+
+    tf   = (rule.get("tf") or "4h").lower()
+    ind  = (rule.get("ind") or "ema21").lower()    # "ema21" | "ema50" | "rsi14"
+    dire = (rule.get("dir") or "above").lower()    # "above" أو "below"
+    bars = int(rule.get("bars") or 1)              # عدد الشموع المراد تحققها
+    fail_open = bool(rule.get("fail_open", True))  # افتح لو فشلنا (True افتراضي)
+
+    # تطبيع TF الشائع
+    tf_map = {"h1":"1h", "1h":"1h", "h4":"4h", "4h":"4h", "d1":"1d", "1d":"1d"}
+    tf_fetch = tf_map.get(tf, tf)
+
+    try:
+        # جب بيانات كافية لحساب ema/rsi
+        raw = get_ohlcv_cached(base, tf_fetch, 120)
+        if not raw or len(raw) < max(30, bars+2):
+            return True if fail_open else False
+
+        df = _df(raw)
+        df = _ensure_htf_indicators(df)
+
+        # نستخدم الشمعة السابقة (close[-2]) كإغلاق متاح بعد الاكتمال
+        closes = df["close"]
+        if len(closes) < bars + 2:
+            return True if fail_open else False
+
+        if ind in ("ema21", "ema50"):
+            ema_col = ind
+            ema_vals = df[ema_col]
+            # تحقق لآخر `bars` شموع مكتملة
+            for k in range(2, 2 + bars):
+                c = float(closes.iloc[-k])
+                e = float(ema_vals.iloc[-k])
+                if dire == "above":
+                    if not (c >= e):
+                        return False
+                else:  # "below"
+                    if not (c <= e):
+                        return False
+            return True
+
+        elif ind == "rsi14":
+            rsi_vals = df["rsi14"]
+            for k in range(2, 2 + bars):
+                r = float(rsi_vals.iloc[-k])
+                if dire == "above":
+                    if not (r >= 50.0):
+                        return False
+                else:
+                    if not (r < 50.0):
+                        return False
+            return True
+
+        else:
+            # مؤشر غير معروف -> لا تمنع
+            return True
+
+    except Exception:
+        # في حال أي خطأ شبكي/بياني -> لا تمنع إن كان fail_open=True
+        return True if fail_open else False
 
 # ================== تخزين الصفقات ==================
 def _pos_path(symbol):
