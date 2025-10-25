@@ -954,6 +954,71 @@ def maybe_emit_reject_summary():
         pass
     finally:
         _REJ_SUMMARY.clear()
+        # ============================================================
+# 🧠 Soft+ Mode (Dynamic Relaxation)
+# ============================================================
+# هذا النظام يُخفّف شروط ATR/RVOL تلقائياً إذا ظل السوق في ركود لأكثر من 6 ساعات.
+# يتم تفعيله تدريجياً ويُطفأ تلقائياً عند تحسّن الحركة.
+
+soft_mode_state = {
+    "enabled": False,
+    "since": None,
+    "low_atr_rounds": 0
+}
+
+def check_soft_mode_activation(summary_stats: dict, logger=None):
+    """
+    يفحص إن كانت ظروف السوق راكدة لفترة طويلة (ATR و RVOL منخفضة).
+    summary_stats: dict ناتج من آخر جولة (يحتوي على counters مثل ATR rej / RVOL rej).
+    """
+    try:
+        atr_rej = summary_stats.get("atr_rej", 0)
+        rvol_rej = summary_stats.get("rvol_rej", 0)
+        total_syms = summary_stats.get("total", 1)
+
+        atr_ratio = atr_rej / total_syms
+        rvol_ratio = rvol_rej / total_syms
+
+        # حالة الركود = أكثر من 40% رموز ATR منخفض + RVOL منخفض
+        if atr_ratio > 0.4 and rvol_ratio > 0.4:
+            soft_mode_state["low_atr_rounds"] += 1
+        else:
+            soft_mode_state["low_atr_rounds"] = 0
+
+        # إذا استمر الركود 6 جولات (حوالي 6 ساعات)
+        if not soft_mode_state["enabled"] and soft_mode_state["low_atr_rounds"] >= 6:
+            soft_mode_state["enabled"] = True
+            soft_mode_state["since"] = datetime.utcnow()
+            if logger:
+                logger.info("[soft+] 🧠 Soft Mode ACTIVATED — relaxed ATR/RVOL thresholds")
+
+        # إذا تحسن السوق (ركود أقل من 2 جولات)
+        if soft_mode_state["enabled"] and soft_mode_state["low_atr_rounds"] <= 2:
+            soft_mode_state["enabled"] = False
+            soft_mode_state["since"] = None
+            if logger:
+                logger.info("[soft+] ❌ Soft Mode DEACTIVATED — market volatility recovered")
+
+    except Exception as e:
+        if logger:
+            logger.error(f"[soft+] check_soft_mode_activation error: {e}")
+
+
+def adjust_thresholds_for_soft_mode(thresholds: dict):
+    """
+    يخفف شروط ATR و RVOL إذا كان Soft Mode مفعلاً.
+    """
+    if not soft_mode_state["enabled"]:
+        return thresholds
+
+    t = thresholds.copy()
+    if "atr_min" in t:
+        t["atr_min"] *= 0.75  # تخفيف 25%
+    if "rvol_min" in t:
+        t["rvol_min"] = max(1.0, t["rvol_min"] * 0.85)  # تقليل RVOL إلى ~1.0
+
+    return t
+
 # ================== تنفيذ الشراء ==================
 def execute_buy(symbol: str):
     """
