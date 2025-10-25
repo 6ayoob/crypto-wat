@@ -159,6 +159,43 @@ try:
 except Exception as e:
     logger.error(f"[soft+] telegram summary build failed: {e}")
 
+# ============================================================
+# 🧠 Telegram Alerts — Soft+ Mode Notifications
+# ============================================================
+
+def send_telegram_alert(message: str):
+    """
+    إرسال رسالة فورية إلى تيليجرام عند تغيير وضع Soft+.
+    """
+    import requests
+    try:
+        token = TELEGRAM_TOKEN
+        chat_id = TELEGRAM_CHAT_ID
+        url = f"https://api.telegram.org/bot{token}/sendMessage"
+        payload = {
+            "chat_id": chat_id,
+            "text": message,
+            "parse_mode": "HTML"
+        }
+        requests.post(url, json=payload, timeout=5)
+    except Exception as e:
+        if logger:
+            logger.error(f"[soft+] telegram alert failed: {e}")
+
+
+def notify_soft_mode_change(enabled: bool):
+    """
+    يرسل تنبيهًا عند تفعيل أو تعطيل وضع Soft+.
+    """
+    try:
+        if enabled:
+            msg = "🧠 <b>Soft+ Mode ACTIVATED</b>\nالسوق في حالة ركود، تم تخفيف شروط ATR وRVOL مؤقتًا ✅"
+        else:
+            msg = "⚙️ <b>Soft+ Mode DEACTIVATED</b>\nعاد النشاط إلى السوق، تم إعادة الصرامة الافتراضية 🚀"
+        send_telegram_alert(msg)
+    except Exception as e:
+        if logger:
+            logger.error(f"[soft+] notify_soft_mode_change error: {e}")
 
 # ================== إعدادات عامة ==================
 DEBUG_LOG_SIGNALS = _env_bool("DEBUG_LOG_SIGNALS", False)
