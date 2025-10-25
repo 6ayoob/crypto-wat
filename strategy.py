@@ -1087,6 +1087,21 @@ def adjust_thresholds_for_soft_mode(thresholds: dict):
         t["rvol_min"] = max(1.0, t["rvol_min"] * 0.85)  # تقليل RVOL إلى ~1.0
 
     return t
+# عند التفعيل
+if not soft_mode_state["enabled"] and soft_mode_state["low_atr_rounds"] >= 6:
+    soft_mode_state["enabled"] = True
+    soft_mode_state["since"] = datetime.utcnow()
+    if logger:
+        logger.info("[soft+] 🧠 Soft Mode ACTIVATED — relaxed ATR/RVOL thresholds")
+    notify_soft_mode_change(True)  # <=== أضف هذا السطر
+
+# عند التعطيل
+if soft_mode_state["enabled"] and soft_mode_state["low_atr_rounds"] <= 2:
+    soft_mode_state["enabled"] = False
+    soft_mode_state["since"] = None
+    if logger:
+        logger.info("[soft+] ❌ Soft Mode DEACTIVATED — market volatility recovered")
+    notify_soft_mode_change(False)  # <=== أضف هذا السطر
 
 # ================== تنفيذ الشراء ==================
 def execute_buy(symbol: str):
