@@ -33,6 +33,12 @@ logger.setLevel(logging.INFO)
 handler = logging.StreamHandler()
 handler.setFormatter(logging.Formatter("%(asctime)s [%(levelname)s] %(message)s"))
 logger.addHandler(handler)
+# 🧠 Soft+ state initialization
+soft_mode_state = {
+    "enabled": False,
+    "since": None,
+    "low_atr_rounds": 0
+}
 
 # ================== مسارات التشغيل ==================
 BASE_PATH = os.path.dirname(os.path.abspath(__file__))
@@ -106,6 +112,7 @@ def _df(data) -> pd.DataFrame:
 
 def _print(msg: str): 
     logger.info(str(msg))
+ 
 
 # ================== Telegram ==================
 def _tg(text: str):
@@ -1009,7 +1016,8 @@ def build_daily_report_text():
     return f"📊 <b>تقرير اليوم {today}</b>\nعدد الصفقات: <b>{len(todays)}</b> • ربح/خسارة: <b>{total_pnl:.2f}$</b>\n" \
            f"نسبة الفوز: {win_rate}%\n{risk_line}\n{_format_relax_str()}\n" + report
     soft_status = "✅ Soft+ نشط" if soft_mode_state["enabled"] else "⚙️ طبيعي"
-report += f"\n\n🧠 وضع السوق الحالي: {soft_status}"
+summary_text += f"\n\n🧠 وضع السوق الحالي: {soft_status}"
+
 
 
 # ================== ملخص الرفض ==================
@@ -1026,17 +1034,7 @@ def maybe_emit_reject_summary():
         pass
     finally:
         _REJ_SUMMARY.clear()
-        # ============================================================
-# 🧠 Soft+ Mode (Dynamic Relaxation)
-# ============================================================
-# هذا النظام يُخفّف شروط ATR/RVOL تلقائياً إذا ظل السوق في ركود لأكثر من 6 ساعات.
-# يتم تفعيله تدريجياً ويُطفأ تلقائياً عند تحسّن الحركة.
 
-soft_mode_state = {
-    "enabled": False,
-    "since": None,
-    "low_atr_rounds": 0
-}
 
 def check_soft_mode_activation(summary_stats: dict, logger=None):
     """
