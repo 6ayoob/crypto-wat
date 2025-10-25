@@ -1023,15 +1023,29 @@ summary_text += f"\n\n🧠 وضع السوق الحالي: {soft_status}"
 # ================== ملخص الرفض ==================
 _REJ_SUMMARY = {}
 def maybe_emit_reject_summary():
-    """طباعة أعلى أسباب الرفض خلال الجولة"""
-    if not _REJ_SUMMARY:
-        return
+    """طباعة أعلى أسباب الرفض خلال الجولة + حالة Soft+"""
     try:
+        if not _REJ_SUMMARY:
+            return
+
+        # --- بناء ملخص الرفض ---
         top = sorted(_REJ_SUMMARY.items(), key=lambda kv: kv[1], reverse=True)[:5]
         msg = ", ".join(f"{k}:{v}" for k, v in top)
-        _print(f"[summary] rejects_top5: {msg}")
-    except Exception:
-        pass
+
+        # --- حالة Soft+ ---
+        if soft_mode_state["enabled"]:
+            hrs = 0.0
+            if soft_mode_state.get("since"):
+                hrs = (datetime.utcnow() - soft_mode_state["since"]).total_seconds() / 3600
+            soft_status = f"🧠 Soft+ Mode ✅ منذ {hrs:.1f} س"
+        else:
+            soft_status = "⚙️ Soft Mode غير مفعل"
+
+        # --- طباعة نهائية ---
+        _print(f"[summary] rejects_top5: {msg} | {soft_status}")
+
+    except Exception as e:
+        logger.error(f"[soft+] maybe_emit_reject_summary failed: {e}")
     finally:
         _REJ_SUMMARY.clear()
 
