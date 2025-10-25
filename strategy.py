@@ -1008,6 +1008,9 @@ def build_daily_report_text():
 
     return f"📊 <b>تقرير اليوم {today}</b>\nعدد الصفقات: <b>{len(todays)}</b> • ربح/خسارة: <b>{total_pnl:.2f}$</b>\n" \
            f"نسبة الفوز: {win_rate}%\n{risk_line}\n{_format_relax_str()}\n" + report
+    soft_status = "✅ Soft+ نشط" if soft_mode_state["enabled"] else "⚙️ طبيعي"
+report += f"\n\n🧠 وضع السوق الحالي: {soft_status}"
+
 
 # ================== ملخص الرفض ==================
 _REJ_SUMMARY = {}
