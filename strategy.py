@@ -1062,17 +1062,16 @@ def check_soft_mode_activation(summary_stats: dict, logger=None):
             soft_mode_state["enabled"] = True
             soft_mode_state["since"] = datetime.utcnow()
             if logger:
-            logger.info("[soft+] 🧠 Soft Mode ACTIVATED — relaxed ATR/RVOL thresholds")
-            notify_soft_mode_change(True)  # ← بدون مسافة زائدة
+                logger.info("[soft+] 🧠 Soft Mode ACTIVATED — relaxed ATR/RVOL thresholds")
+            notify_soft_mode_change(True)
 
-
-        # إذا تحسن السوق (ركود أقل من 2 جولات)
+        # إذا تحسن السوق (ركود أقل من جولتين)
         if soft_mode_state["enabled"] and soft_mode_state["low_atr_rounds"] <= 2:
             soft_mode_state["enabled"] = False
             soft_mode_state["since"] = None
             if logger:
                 logger.info("[soft+] ❌ Soft Mode DEACTIVATED — market volatility recovered")
-                notify_soft_mode_change(False)  # <=== أضف هذا السطر
+            notify_soft_mode_change(False)
 
     except Exception as e:
         if logger:
