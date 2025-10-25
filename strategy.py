@@ -127,6 +127,38 @@ def _tg_once(key: str, text: str, ttl_sec: int = 900):
     cache[key] = now_ts
     _atomic_write(cache_file, cache)
     _tg(text)
+    # ============================================================
+# 🧠 Telegram Summary Line — Soft+ Status
+# ============================================================
+
+try:
+    soft_line = ""
+    if soft_mode_state["enabled"]:
+        since = soft_mode_state["since"]
+        hrs_active = (
+            (datetime.utcnow() - since).total_seconds() / 3600
+            if since else 0
+        )
+        soft_line = f"\n🧠 <b>Mode:</b> Soft+ ✅ (since {hrs_active:.1f}h)"
+    else:
+        soft_line = "\n🧠 <b>Mode:</b> Normal ⚙️"
+
+    rej_summary = (
+        f"\n📊 <b>Rejections</b>: ATR {summary_stats.get('atr_rej', '?')} | "
+        f"RVOL {summary_stats.get('rvol_rej', '?')} | HTF {summary_stats.get('htf_rej', '?')}"
+    )
+
+    top5 = summary_stats.get("top_reasons", [])
+    top_line = ""
+    if top5:
+        joined = ", ".join([f"{k}:{v}" for k, v in top5])
+        top_line = f"\n📈 <b>Top Causes:</b> {joined}"
+
+    summary_text += f"{soft_line}{rej_summary}{top_line}"
+
+except Exception as e:
+    logger.error(f"[soft+] telegram summary build failed: {e}")
+
 
 # ================== إعدادات عامة ==================
 DEBUG_LOG_SIGNALS = _env_bool("DEBUG_LOG_SIGNALS", False)
