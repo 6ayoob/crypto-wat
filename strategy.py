@@ -238,7 +238,15 @@ def _ensure_ltf_indicators(df: pd.DataFrame) -> pd.DataFrame:
     macd, signal, hist = _macd(df["close"])
     df["macd"] = macd; df["macd_signal"] = signal; df["macd_hist"] = hist
     df["is_nr"] = (df["high"] - df["low"]) < (df["high"] - df["low"]).rolling(10).mean() * 0.7
+
+    # --- RVOL (دولاري) robust ---
+    # rvol = (close*vol) / median(close*vol, 60) مع استخدام median لتقليل أثر الشموع الشاذة
+    dv = (df["close"] * df["volume"]).astype(float)
+    base = dv.rolling(60, min_periods=20).median()
+    df["rvol"] = (dv / (base.replace(0, np.nan))).fillna(1.0).clip(0, 10)
+
     return df
+
 
 # ================== Breadth / اتجاه السوق ==================
 _BREADTH_CACHE: Dict[str, dict] = {}
