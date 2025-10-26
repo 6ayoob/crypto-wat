@@ -25,7 +25,8 @@ import requests
 
 from config import (
     TELEGRAM_TOKEN, TELEGRAM_CHAT_ID,
-    SYMBOLS, STRAT_LTF_TIMEFRAME, STRAT_HTF_TIMEFRAME
+    SYMBOLS, STRAT_LTF_TIMEFRAME, STRAT_HTF_TIMEFRAME,
+    TRADE_BASE_USDT,  # ← جديد
 )
 
 # الاستراتيجية
@@ -35,7 +36,9 @@ from strategy import (
     reset_cycle_cache, metrics_format,
     maybe_emit_reject_summary,
     check_signal_debug,
-    breadth_status
+    breadth_status,
+    _build_entry_plan,   # ← جديد
+    open_trade           # ← جديد
 )
 
 # كاش أسعار جماعي من okx_api لتقليل الضغط (اختياري)
@@ -496,21 +499,24 @@ if __name__ == "__main__":
 
                             is_buy = (sig == "buy") or (isinstance(sig, dict) and str(sig.get("decision", "")).lower() == "buy")
                             if is_buy:
+                                # ====== الجديد: بناء الخطة + فتح الصفقة مع دعم size_mult ======
                                 try:
-                                    order, msg = execute_buy(symbol)
-                                    if msg:
-                                        if _is_error_text(msg):
-                                            tg_error(msg)
-                                        else:
-                                            tg_info(msg, parse_mode="HTML", silent=False)
-                                    elif order:
-                                        price = getattr(order, "price", None) or getattr(order, "avg_price", None) or ""
-                                        qty   = getattr(order, "amount", None) or getattr(order, "qty", None) or ""
-                                        tg_info(f"✅ دخول صفقة\nرمز: <b>{symbol}</b>\nسعر: <b>{price}</b>\nكمية: <b>{qty}</b>", parse_mode="HTML", silent=False)
-                                    open_positions_count = _get_open_positions_count_safe()
+                                    plan = _build_entry_plan(symbol, sig)
+                                    usdt_amount = float(TRADE_BASE_USDT) * float(sig.get("size_mult", 1.0))
+                                    pos = open_trade(symbol, plan, usdt_amount)
+
+                                    if pos:
+                                        try:
+                                            tg_info(pos["messages"]["open"], parse_mode="HTML", silent=False)
+                                        except Exception:
+                                            pass
+                                        open_positions_count = _get_open_positions_count_safe()
+                                    else:
+                                        _print(f"[open_trade] failed to open {symbol}")
                                 except Exception as e:
-                                    _print(f"[execute_buy] {symbol} error: {e}")
+                                    _print(f"[open_trade] {symbol} error: {e}")
                                     continue
+                                # ===============================================================
                             else:
                                 try:
                                     _, reasons = check_signal_debug(symbol)
