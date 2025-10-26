@@ -569,15 +569,28 @@ def regime_thresholds(breadth_ratio: float | None, atrp_now: float) -> dict:
         thr = {"ATRP_MIN_MAJ":0.0022,"ATRP_MIN_ALT":0.0026,"ATRP_MIN_MICRO":0.0030,
                "RVOL_NEED_BASE":1.28,"NOTIONAL_AVG_MIN":28000,"NOTIONAL_MINBAR":max(24000, MIN_BAR_NOTIONAL_USD),
                "NEUTRAL_HTF_PASS":False}
+
+    # مكافأة بيئة ATRP عالي
     if atrp_now >= 0.01:
         thr["RVOL_NEED_BASE"] = max(1.05, thr["RVOL_NEED_BASE"] - 0.05)
+
+    # تخفيف ديناميكي للجولة
     f_atr, f_rvol, notional_min = _round_relax_factors()
     thr["RVOL_NEED_BASE"] *= f_rvol
     thr["ATRP_MIN_ALT"]  *= f_atr
     thr["ATRP_MIN_MAJ"]  *= f_atr
     thr["ATRP_MIN_MICRO"]*= f_atr
     thr["NOTIONAL_MINBAR"] = max(thr["NOTIONAL_MINBAR"]*0.95, notional_min*0.95)
+
+    # --- تطبيق Soft+ على نفس المفاتيح الفعلية ---
+    if soft_mode_state.get("enabled"):
+        thr["RVOL_NEED_BASE"] = max(1.0, thr["RVOL_NEED_BASE"] * 0.85)
+        thr["ATRP_MIN_ALT"]   *= 0.75
+        thr["ATRP_MIN_MAJ"]   *= 0.75
+        thr["ATRP_MIN_MICRO"] *= 0.80
+
     return thr
+
 
 # ================== فحوص RVOL / Notional ==================
 def _rvol_ok(ltf_ctx, sym_ctx, thr):
