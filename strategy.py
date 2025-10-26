@@ -310,12 +310,19 @@ def _get_htf_context(symbol: str, tf: str = STRAT_HTF_TIMEFRAME) -> Optional[dic
 
 # ================== Gate على الاتجاه ==================
 def _htf_gate(trend: str, ltf_ctx: dict, thr: dict) -> bool:
-    """يتحقق من توافق الاتجاه العام (HTF) مع سياق LTF."""
-    if trend == "up": return True
-    if trend == "neutral" and thr.get("NEUTRAL_HTF_PASS", True): return True
-    if trend == "down" and ltf_ctx.get("is_breakout", False):  # سماح خاص لكسر اتجاه هابط
+    """يتحقق من توافق الاتجاه العام (HTF) مع سياق LTF (مخفف)."""
+    if trend == "up":
         return True
+    if trend == "neutral" and thr.get("NEUTRAL_HTF_PASS", True):
+        return True
+    # تخفيف في اتجاه هابط: إذا السعر أعلى EMA200 على LTF أو لدينا breakout
+    if trend == "down":
+        if ltf_ctx.get("ema200_trend") == "up":
+            return True
+        if ltf_ctx.get("is_breakout", False):
+            return True
     return False
+
 # ================== أدوات رفض وتمرير ==================
 _LAST_REJECT: Dict[str, Any] = {}
 _LAST_ENTRY_BAR_TS: Dict[str, int] = {}
