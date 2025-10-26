@@ -620,11 +620,13 @@ def check_signal(symbol: str):
     try:
         # --- سياق HTF ---
         htf_ctx = _get_htf_context(symbol)
-        if not htf_ctx: return _rej("no_htf")
+        if not htf_ctx:
+            return _rej("no_htf")
 
         # --- بيانات LTF ---
         ltf = fetch_ohlcv(symbol, STRAT_LTF_TIMEFRAME, 150)
-        if not ltf or len(ltf) < 80: return _rej("no_ltf")
+        if not ltf or len(ltf) < 80:
+            return _rej("no_ltf")
         df = _df(ltf)
         df = _ensure_ltf_indicators(df)
         closed, prev = df.iloc[-2], df.iloc[-3]
@@ -632,12 +634,13 @@ def check_signal(symbol: str):
         # --- ATR% الحالي ---
         atr_val = _finite_or(None, _atr_from_df(df))
         price = _finite_or(None, closed.get("close"))
-        if not atr_val or not price: return _rej("atr_calc")
+        if not atr_val or not price:
+            return _rej("atr_calc")
         atrp = atr_val / price
 
         # --- تصنيف الحجم (major/alt/micro) ---
         base = symbol.split("/")[0]
-        bucket = "maj" if base in ("BTC","ETH","BNB","SOL") else "alt"
+        bucket = "maj" if base in ("BTC", "ETH", "BNB", "SOL") else "alt"
 
         # --- سياق السيولة ---
         sym_ctx = {
@@ -648,7 +651,7 @@ def check_signal(symbol: str):
             "is_meme": False,
         }
 
-        # دمج بيانات 1h للتحقق الإضافي من السيولة
+        # دمج 1h للتحقق الإضافي من السيولة
         try:
             d1h = fetch_ohlcv(symbol, "1h", 80)
             if d1h and len(d1h) >= 35:
@@ -671,10 +674,10 @@ def check_signal(symbol: str):
             "pullback_ok": closed["low"] <= closed["ema21"] <= closed["close"]
         }
 
-        # --- Breadth ---
+        # --- Breadth + thresholds ---
         br = _get_breadth_ratio_cached()
         thr = regime_thresholds(br, atrp)
-        trend = htf_ctx.get("trend","neutral")
+        trend = htf_ctx.get("trend", "neutral")
 
         if not _htf_gate(trend, ltf_ctx, thr):
             return _rej("htf_trend", trend=trend)
@@ -684,9 +687,9 @@ def check_signal(symbol: str):
         if atrp < need_atrp:
             return _rej("atr_low", atrp=atrp, need=need_atrp)
 
-        # --- RVOL check ---
-        r_ok, rvol_val, need_rvol = _rvol_ok(ltf_ctx, sym_ctx, thr)
-        if not r_ok:
+        # --- RVOL check (مع near-miss) ---
+        r_ok, r_near, rvol_val, need_rvol = _rvol_ok(ltf_ctx, sym_ctx, thr)
+        if not r_ok and not r_near:
             return _rej("rvol_low", rvol=rvol_val, need=need_rvol)
 
         # --- Notional check ---
@@ -698,7 +701,7 @@ def check_signal(symbol: str):
         variant = "new"
         cfg = get_cfg(variant)
         chosen_mode = None
-        for mode in cfg.get("HYBRID_ORDER", ["pullback","breakout"]):
+        for mode in cfg.get("HYBRID_ORDER", ["pullback", "breakout"]):
             if mode == "pullback" and _entry_pullback_logic(df, closed, prev, atr_val, htf_ctx, cfg):
                 chosen_mode = "pullback"; break
             if mode == "breakout" and closed["close"] > hi_range:
@@ -713,19 +716,30 @@ def check_signal(symbol: str):
 
         _pass("buy", mode=chosen_mode, score=int(score))
         _mark_signal_now()
+
+        # --- حجم ديناميكي: scaling عند near-miss RVOL أو ATR% قوي ---
+        size_mult = 1.0
+        if r_near:
+            size_mult = 0.55  # دخول محافظ لنقص طفيف في RVOL
+        elif atrp >= 0.01:
+            size_mult = 1.15  # بيئة عالية التذبذب
+        size_mult = float(max(0.4, min(1.25, size_mult)))
+
         return {
             "decision": "buy",
             "mode": chosen_mode,
             "score": int(score),
             "reasons": why_str,
             "pattern": pattern,
-            "features": {"atrp": atrp, "rvol": rvol_val, "breadth": br, "htf_trend": trend}
+            "features": {"atrp": atrp, "rvol": rvol_val, "breadth": br, "htf_trend": trend},
+            "size_mult": size_mult
         }
 
     except Exception as e:
         return _rej("error", err=str(e))
     finally:
         _CURRENT_SYMKEY = None
+
 
 # ================== بناء خطة الدخول ==================
 def _atr_latest(symbol: str, tf: str, bars: int = 180) -> tuple[float, float, float]:
