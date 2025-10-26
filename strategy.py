@@ -594,15 +594,17 @@ def regime_thresholds(breadth_ratio: float | None, atrp_now: float) -> dict:
 
 # ================== فحوص RVOL / Notional ==================
 def _rvol_ok(ltf_ctx, sym_ctx, thr):
-    rvol = float(ltf_ctx.get("rvol",0) or 0)
-    need = thr["RVOL_NEED_BASE"]
-    if sym_ctx.get("price",1.0) < 0.1 or sym_ctx.get("is_meme"): need -= 0.08
-    if ltf_ctx.get("is_breakout"): need -= 0.05
-    return rvol >= need, rvol, need
+    rvol = float(ltf_ctx.get("rvol", 0) or 0)
+    need = float(thr["RVOL_NEED_BASE"])
+    if sym_ctx.get("price", 1.0) < 0.1 or sym_ctx.get("is_meme"):
+        need -= 0.08
+    if ltf_ctx.get("is_breakout"):
+        need -= 0.05
+    ok = rvol >= need
+    # near-miss: على بُعد 0.08 فقط من الحد → نسمح بدخول بحجم مُخفّض
+    near = (not ok) and (rvol >= max(1.0, need - 0.08))
+    return ok, near, rvol, need
 
-def _notional_ok(sym_ctx, thr):
-    avg30, min30 = float(sym_ctx.get("notional_avg_30",0)), float(sym_ctx.get("notional_min_30",0))
-    return (avg30 >= thr["NOTIONAL_AVG_MIN"] and min30 >= thr["NOTIONAL_MINBAR"]), avg30, min30
 
 # ================== منطق الإشارة ==================
 def check_signal(symbol: str):
