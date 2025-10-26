@@ -876,7 +876,8 @@ def manage_position(symbol):
     targets = pos.get("targets", [])
     tp_hits = pos.get("tp_hits", [False]*len(targets))
     if any(tp_hits):
-        df = _df(get_ohlcv_cached(base, LTF_TIMEFRAME, 120))
+        df_raw = fetch_ohlcv(base, LTF_TIMEFRAME, 120)
+        df = _df(df_raw)
         atr_now = _atr_from_df(df)
         if atr_now > 0:
             new_sl = current - 1.0 * atr_now
@@ -916,6 +917,7 @@ def manage_position(symbol):
             return True
 
     return False
+
 # ================== سجل المخاطر والنتائج ==================
 def register_trade_result(pnl_usdt):
     """تحديث حالة المخاطر اليومية بعد كل صفقة"""
