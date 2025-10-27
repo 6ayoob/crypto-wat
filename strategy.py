@@ -32,7 +32,9 @@ logger = logging.getLogger("strategy")
 logger.setLevel(logging.INFO)
 handler = logging.StreamHandler()
 handler.setFormatter(logging.Formatter("%(asctime)s [%(levelname)s] %(message)s"))
-logger.addHandler(handler)
+if not logger.handlers:
+    logger.addHandler(handler)
+
 # 🧠 Soft+ state initialization
 soft_mode_state = {
     "enabled": False,
