@@ -30,7 +30,8 @@ from config import (
 )
 
 # الاستراتيجية
-from strategy import (
+from strategy import _build_entry_plan as build_entry_plan
+ (
     check_signal, manage_position, load_position, save_position,
     count_open_positions, build_daily_report_text,
     reset_cycle_cache, metrics_format,
