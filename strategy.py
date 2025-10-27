@@ -22,7 +22,7 @@ from okx_api import (
     fetch_ohlcv, fetch_price, place_market_order, fetch_balance, fetch_symbol_filters
 )
 from config import (
-    TRADE_BASE_USDT, MAX_OPEN_POSITIONS, FEE_BPS_ROUNDTRIP,
+    , MAX_OPEN_POSITIONS, FEE_BPS_ROUNDTRIP,
     TELEGRAM_TOKEN, TELEGRAM_CHAT_ID,
     LTF_TIMEFRAME, STRAT_LTF_TIMEFRAME, STRAT_HTF_TIMEFRAME
 )
