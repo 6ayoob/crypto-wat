@@ -70,8 +70,12 @@ def _env_int(name: str, default: int) -> int:
         return int(default)
 
 # ================== أدوات عامة ==================
+# ✅ أعلى الملف بعد الاستيرادات مباشرة
+from datetime import datetime, timedelta, timezone
+RIYADH_TZ = timezone(timedelta(hours=3))
+
 def now_riyadh() -> datetime:
-    return datetime.now(timezone.utc) + timedelta(hours=3)
+    return datetime.now(RIYADH_TZ)
 
 def _today_str() -> str:
     return now_riyadh().strftime("%Y-%m-%d")
