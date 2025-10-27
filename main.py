@@ -29,16 +29,19 @@ from config import (
     TRADE_BASE_USDT,  # ← حجم الأساس بالدولار قبل الـ size_mult
 )
 
-# الاستراتيجية
-from strategy import _build_entry_plan as build_entry_plan (
+# من config (سطر واحد لتجنّب أخطاء المسافات)
+from config import TELEGRAM_TOKEN, TELEGRAM_CHAT_ID, SYMBOLS, STRAT_LTF_TIMEFRAME, STRAT_HTF_TIMEFRAME, TRADE_BASE_USDT
+
+# من strategy — مع عمل alias دّاخل القائمة
+from strategy import (
     check_signal, manage_position, load_position, save_position,
     count_open_positions, build_daily_report_text,
     reset_cycle_cache, metrics_format,
     maybe_emit_reject_summary,
     check_signal_debug,
     breadth_status,
-    _build_entry_plan,   # لبناء خطة الدخول (SL/TP/partials)
-    open_trade           # تنفيذ فتح الصفقة مع خطة الدخول
+    _build_entry_plan as build_entry_plan,  # ← استخدم build_entry_plan في الكود
+    open_trade
 )
 
 # كاش أسعار جماعي من okx_api لتقليل الضغط (اختياري)
