@@ -125,10 +125,12 @@ def _tg(text: str):
     try:
         requests.post(
             f"https://api.telegram.org/bot{TELEGRAM_TOKEN}/sendMessage",
-            json={"chat_id": TELEGRAM_CHAT_ID, "text": text, "parse_mode": "HTML"}
+            json={"chat_id": TELEGRAM_CHAT_ID, "text": text, "parse_mode": "HTML"},
+            timeout=5,  # ✅ مهم لتفادي التعليق
         )
     except Exception as e:
         logger.error(f"[TG] Failed: {e}")
+
 
 def _tg_once(key: str, text: str, ttl_sec: int = 900):
     """رسائل مؤقتة لتفادي التكرار خلال فترة محددة."""
