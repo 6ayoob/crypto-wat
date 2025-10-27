@@ -26,19 +26,19 @@ import requests
 from config import (
     TELEGRAM_TOKEN, TELEGRAM_CHAT_ID,
     SYMBOLS, STRAT_LTF_TIMEFRAME, STRAT_HTF_TIMEFRAME,
-    TRADE_BASE_USDT,  # ← جديد
+    TRADE_BASE_USDT,  # ← حجم الأساس بالدولار قبل الـ size_mult
 )
 
 # الاستراتيجية
 from strategy import (
-    check_signal, execute_buy, manage_position, load_position, save_position,
+    check_signal, manage_position, load_position, save_position,
     count_open_positions, build_daily_report_text,
     reset_cycle_cache, metrics_format,
     maybe_emit_reject_summary,
     check_signal_debug,
     breadth_status,
-    _build_entry_plan,   # ← جديد
-    open_trade           # ← جديد
+    _build_entry_plan,   # لبناء خطة الدخول (SL/TP/partials)
+    open_trade           # تنفيذ فتح الصفقة مع خطة الدخول
 )
 
 # كاش أسعار جماعي من okx_api لتقليل الضغط (اختياري)
@@ -60,13 +60,12 @@ try:
     try:
         # وسائط مدعومة فقط — لا تضف breadth_min هنا
         _risk_cfg = RiskBlockConfig(
-            daily_loss_limit=200.0,   # حد خسارة يومية
-            max_consec_losses=3,           # خسائر متتالية
+            daily_loss_limit=200.0,       # حد خسارة يومية
+            max_consec_losses=3,          # خسائر متتالية
             block_minutes_on_violation=90 # مدة الحظر عند المخالفة
         )
         _risk = RiskBlocker(_risk_cfg, send=_risk_tg_send)
     except Exception as e:
-        # لو فشل التهيئة، نطبع خطأ ونكمل بدون RiskBlocker
         print(f"[risk] init error: {e}", flush=True)
         _risk = None
 except Exception:
@@ -433,7 +432,8 @@ if __name__ == "__main__":
                         if _stop_flag and STOP_POLICY in ("immediate", "debounce"):
                             break
                         try:
-                            closed = manage_position(symbol)
+                            # ✅ إدارة على base دائمًا
+                            closed = manage_position(symbol.split("#")[0])
                             if closed:
                                 text = None
                                 if isinstance(closed, dict):
@@ -443,10 +443,10 @@ if __name__ == "__main__":
                                 if text:
                                     tg_info(text, parse_mode="HTML", silent=False)
                                 else:
-                                    tg_info(f"✅ إغلاق صفقة: <b>{symbol}</b>", parse_mode="HTML", silent=False)
-                                _print(f"[manage] {symbol} closed by TP/SL/TIME")
+                                    tg_info(f"✅ إغلاق صفقة: <b>{symbol.split('#')[0]}</b>", parse_mode="HTML", silent=False)
+                                _print(f"[manage] {symbol.split('#')[0]} closed by TP/SL/TIME")
                         except Exception as e:
-                            _print(f"[manage_position] {symbol} error: {e}")
+                            _print(f"[manage_position] {symbol.split('#')[0]} error: {e}")
                         time.sleep(0.1)
 
                     try:
@@ -482,28 +482,35 @@ if __name__ == "__main__":
                         for symbol in SYMBOLS:
                             if _stop_flag and STOP_POLICY in ("immediate", "debounce"):
                                 break
+
+                            # ✅ العمل على base دومًا لمنع ازدواجية variants
+                            base = symbol.split("#")[0]
+
+                            # حد فتح المراكز
                             if not _can_open_new_position(open_positions_count):
                                 break
-                            if load_position(symbol) is not None:
+
+                            # تجنّب التكرار إن كان هناك مركز مفتوح للـ base
+                            if load_position(base) is not None:
                                 continue
 
-                            # NEW/LIQ: فحص سريع للسيولة داخل الحلقة قبل كل محاولة شراء
+                            # بوابة سيولة لكل محاولة
                             if not _has_liquidity_for_new_trade():
                                 break  # أوقف محاولات الدخول في هذه الجولة
 
                             try:
-                                sig = check_signal(symbol)
+                                sig = check_signal(base)
                             except Exception as e:
-                                _print(f"[check_signal] {symbol} error: {e}")
+                                _print(f"[check_signal] {base} error: {e}")
                                 continue
 
                             is_buy = (sig == "buy") or (isinstance(sig, dict) and str(sig.get("decision", "")).lower() == "buy")
                             if is_buy:
-                                # ====== الجديد: بناء الخطة + فتح الصفقة مع دعم size_mult ======
+                                # ====== بناء الخطة + فتح الصفقة مع دعم size_mult ======
                                 try:
-                                    plan = _build_entry_plan(symbol, sig)
+                                    plan = _build_entry_plan(base, sig)
                                     usdt_amount = float(TRADE_BASE_USDT) * float(sig.get("size_mult", 1.0))
-                                    pos = open_trade(symbol, plan, usdt_amount)
+                                    pos = open_trade(base, plan, usdt_amount)
 
                                     if pos:
                                         try:
@@ -512,16 +519,16 @@ if __name__ == "__main__":
                                             pass
                                         open_positions_count = _get_open_positions_count_safe()
                                     else:
-                                        _print(f"[open_trade] failed to open {symbol}")
+                                        _print(f"[open_trade] failed to open {base}")
                                 except Exception as e:
-                                    _print(f"[open_trade] {symbol} error: {e}")
+                                    _print(f"[open_trade] {base} error: {e}")
                                     continue
                                 # ===============================================================
                             else:
                                 try:
-                                    _, reasons = check_signal_debug(symbol)
+                                    _, reasons = check_signal_debug(base)
                                     if reasons:
-                                        _print(f"[debug] {symbol} reject reasons: {reasons[:5]}")
+                                        _print(f"[debug] {base} reject reasons: {reasons[:5]}")
                                 except Exception:
                                     pass
                             time.sleep(0.15)
