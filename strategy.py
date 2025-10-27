@@ -22,10 +22,20 @@ from okx_api import (
     fetch_ohlcv, fetch_price, place_market_order, fetch_balance, fetch_symbol_filters
 )
 from config import (
-    , MAX_OPEN_POSITIONS, FEE_BPS_ROUNDTRIP,
+    MAX_OPEN_POSITIONS, FEE_BPS_ROUNDTRIP,
     TELEGRAM_TOKEN, TELEGRAM_CHAT_ID,
     LTF_TIMEFRAME, STRAT_LTF_TIMEFRAME, STRAT_HTF_TIMEFRAME
 )
+
+# --- استيراد متغيرات إضافية من config (مستخدمة لاحقًا) ---
+from config import (
+    TRADE_AMOUNT_USDT, MAX_CONSEC_LOSSES, DAILY_LOSS_LIMIT_USDT
+)
+
+# ================== إعداد المنطقة الزمنية (Riyadh) ==================
+RIYADH_TZ = timezone(timedelta(hours=3))
+def now_riyadh() -> datetime:
+    return datetime.now(RIYADH_TZ)
 
 # ================== إعداد Logger ==================
 logger = logging.getLogger("strategy")
@@ -72,13 +82,6 @@ def _env_int(name: str, default: int) -> int:
         return int(default)
 
 # ================== أدوات عامة ==================
-# ✅ أعلى الملف بعد الاستيرادات مباشرة
-from datetime import datetime, timedelta, timezone
-RIYADH_TZ = timezone(timedelta(hours=3))
-
-def now_riyadh() -> datetime:
-    return datetime.now(RIYADH_TZ)
-
 def _today_str() -> str:
     return now_riyadh().strftime("%Y-%m-%d")
 
@@ -109,16 +112,8 @@ def _append_trade_log(entry: dict):
         logs = logs[-2000:]
     _atomic_write(TRADES_LOG_FILE, logs)
 
-# ================== أدوات تحويل DataFrame ==================
-def _df(data) -> pd.DataFrame:
-    if isinstance(data, pd.DataFrame): return data
-    df = pd.DataFrame(data, columns=["timestamp", "open", "high", "low", "close", "volume"])
-    df["timestamp"] = pd.to_datetime(df["timestamp"], unit="ms")
-    return df
-
 def _print(msg: str): 
     logger.info(str(msg))
- 
 
 # ================== Telegram ==================
 def _tg(text: str):
@@ -126,11 +121,10 @@ def _tg(text: str):
         requests.post(
             f"https://api.telegram.org/bot{TELEGRAM_TOKEN}/sendMessage",
             json={"chat_id": TELEGRAM_CHAT_ID, "text": text, "parse_mode": "HTML"},
-            timeout=5,  # ✅ مهم لتفادي التعليق
+            timeout=5,  # تفادي التعليق
         )
     except Exception as e:
         logger.error(f"[TG] Failed: {e}")
-
 
 def _tg_once(key: str, text: str, ttl_sec: int = 900):
     """رسائل مؤقتة لتفادي التكرار خلال فترة محددة."""
@@ -152,7 +146,6 @@ def send_telegram_alert(message: str):
     """
     إرسال رسالة فورية إلى تيليجرام عند تغيير وضع Soft+.
     """
-    import requests
     try:
         token = TELEGRAM_TOKEN
         chat_id = TELEGRAM_CHAT_ID
@@ -166,7 +159,6 @@ def send_telegram_alert(message: str):
     except Exception as e:
         if logger:
             logger.error(f"[soft+] telegram alert failed: {e}")
-
 
 def notify_soft_mode_change(enabled: bool):
     """
@@ -200,7 +192,9 @@ AUTO_RELAX_AFTER_HRS_2 = 6
 BREADTH_MIN_DEFAULT = 0.48
 
 # ================== إحصاءات عامة ==================
+_REJ_SUMMARY: Dict[str, int] = {}
 _REJ_COUNTS: Dict[str, int] = {"atr_low": 0, "rvol": 0, "notional_low": 0}
+
 # ================== مؤشرات فنية ==================
 def _ema(series, period):
     return series.ewm(span=period, adjust=False).mean()
@@ -236,6 +230,12 @@ def _vwap(df):
     vol = df["volume"].cumsum().replace(0, np.nan)
     return pv / vol
 
+def _df(data) -> pd.DataFrame:
+    if isinstance(data, pd.DataFrame): return data
+    df = pd.DataFrame(data, columns=["timestamp", "open", "high", "low", "close", "volume"])
+    df["timestamp"] = pd.to_datetime(df["timestamp"], unit="ms")
+    return df
+
 def _ensure_ltf_indicators(df: pd.DataFrame) -> pd.DataFrame:
     df["ema21"] = _ema(df["close"], 21)
     df["ema50"] = _ema(df["close"], 50)
@@ -247,13 +247,11 @@ def _ensure_ltf_indicators(df: pd.DataFrame) -> pd.DataFrame:
     df["is_nr"] = (df["high"] - df["low"]) < (df["high"] - df["low"]).rolling(10).mean() * 0.7
 
     # --- RVOL (دولاري) robust ---
-    # rvol = (close*vol) / median(close*vol, 60) مع استخدام median لتقليل أثر الشموع الشاذة
     dv = (df["close"] * df["volume"]).astype(float)
     base = dv.rolling(60, min_periods=20).median()
     df["rvol"] = (dv / (base.replace(0, np.nan))).fillna(1.0).clip(0, 10)
 
     return df
-
 
 # ================== Breadth / اتجاه السوق ==================
 _BREADTH_CACHE: Dict[str, dict] = {}
@@ -568,6 +566,7 @@ def _relax_level_current():
     if hrs >= 6: return 2
     if hrs >= 3: return 1
     return 0
+
 # ================== Thresholds ديناميكية ==================
 def regime_thresholds(breadth_ratio: float | None, atrp_now: float) -> dict:
     br = 0.5 if breadth_ratio is None else float(breadth_ratio)
@@ -605,7 +604,6 @@ def regime_thresholds(breadth_ratio: float | None, atrp_now: float) -> dict:
 
     return thr
 
-
 # ================== فحوص RVOL / Notional ==================
 def _rvol_ok(ltf_ctx, sym_ctx, thr):
     rvol = float(ltf_ctx.get("rvol", 0) or 0)
@@ -619,7 +617,7 @@ def _rvol_ok(ltf_ctx, sym_ctx, thr):
     near = (not ok) and (rvol >= max(1.0, need - 0.08))
     return ok, near, rvol, need
 
-  def _notional_ok(sym_ctx: dict, thr: dict) -> tuple[bool, float, float]:
+def _notional_ok(sym_ctx: dict, thr: dict) -> tuple[bool, float, float]:
     """
     يتحقق من سيولة الدولارات (Notional).
     - avg_30: متوسط الدولاري لآخر 30 شمعة
@@ -632,8 +630,6 @@ def _rvol_ok(ltf_ctx, sym_ctx, thr):
     need_minbar = float(thr.get("NOTIONAL_MINBAR", 0.0))
     ok = (avg_30 >= need_avg) and (min_30 >= need_minbar)
     return ok, avg_30, need_minbar
-
-
 
 # ================== منطق الإشارة ==================
 def check_signal(symbol: str):
@@ -762,7 +758,6 @@ def check_signal(symbol: str):
     finally:
         _CURRENT_SYMKEY = None
 
-
 # ================== بناء خطة الدخول ==================
 def _atr_latest(symbol: str, tf: str, bars: int = 180) -> tuple[float, float, float]:
     data = fetch_ohlcv(symbol, tf, bars)
@@ -793,6 +788,7 @@ def _build_entry_plan(symbol: str, sig: dict | None) -> dict:
     sig["atrp"] = atrp
     sig["max_bars_to_tp1"] = 40 if atrp < 0.006 else (46 if atrp < 0.01 else 52)
     return sig
+
 # ================== أوامر الشراء ==================
 def _safe_buy(symbol: str, usdt_amount: float):
     """شراء آمن مع التحقق من الرصيد وتنفيذ جزئي عند الحاجة"""
@@ -835,7 +831,7 @@ def _safe_sell(symbol: str, qty: float):
         filled_qty = float(order.get("filled", qty))
         avg_px = float(order.get("avgPx", price))
         _print(f"[safe_sell] {symbol} sold {filled_qty:.6f} @ {avg_px:.6f}")
-        return order, avg_px, filled_qty
+        return order, avg_px, sold_qty if (sold_qty := filled_qty) else 0.0
     except Exception as e:
         _print(f"[safe_sell] error {symbol}: {e}")
         return None, 0.0, 0.0
@@ -854,12 +850,12 @@ def open_trade(symbol: str, sig: dict, usdt_amount: float):
         "entry_price": avg_px,
         "amount": filled_qty,
         "variant": "new",
-        "score": sig["score"],
-        "pattern": sig["pattern"],
-        "targets": sig["targets"],
-        "partials": sig["partials"],
-        "stop_loss": sig["sl"],
-        "max_bars_to_tp1": sig["max_bars_to_tp1"],
+        "score": sig.get("score"),
+        "pattern": sig.get("pattern"),
+        "targets": sig.get("targets"),
+        "partials": sig.get("partials"),
+        "stop_loss": sig.get("sl"),
+        "max_bars_to_tp1": sig.get("max_bars_to_tp1"),
         "opened_at": now_riyadh().isoformat(timespec="seconds"),
         "messages": {
             "open": f"🚀 <b>دخول</b> {symbol}\n"
@@ -1012,6 +1008,36 @@ def close_trade(symbol, exit_price, pnl_net, reason="MANUAL"):
     _print(f"[close_trade] {symbol} closed @ {exit_price:.6f} | PnL: {pnl_net:.2f}")
 
 # ================== التقارير اليومية ==================
+def _hour_key(dt: datetime):
+    """تحويل التوقيت إلى مفتاح الساعة (للتجميع في risk state)"""
+    return dt.strftime("%H")
+
+def _fmt_table(rows, headers):
+    """تنسيق الجدول لتقرير اليوم بشكل HTML بسيط"""
+    txt = "<pre>\n" + "\t".join(headers) + "\n" + "-"*80 + "\n"
+    for r in rows:
+        txt += "\t".join(str(x) for x in r) + "\n"
+    return txt + "</pre>"
+
+def _fmt_blocked_until_text():
+    """عرض حالة الحظر الحالية في التقرير"""
+    s = load_risk_state()
+    bu = s.get("blocked_until")
+    if not bu:
+        return "✅ طبيعي"
+    try:
+        t = datetime.fromisoformat(bu)
+        if now_riyadh() < t:
+            return f"⛔️ حتى {t.strftime('%H:%M')}"
+    except Exception:
+        pass
+    return "✅ طبيعي"
+
+def _format_relax_str():
+    """عرض مستوى Auto-Relax الحالي"""
+    lvl = _relax_level_current()
+    return "🧘 وضع عادي" if lvl == 0 else ("💤 Auto-Relax 1" if lvl == 1 else "🕊️ Auto-Relax 2")
+
 def build_daily_report_text():
     closed = load_closed_positions()
     today = _today_str()
@@ -1053,10 +1079,8 @@ def build_daily_report_text():
 
     return f"📊 <b>تقرير اليوم {today}</b>\nعدد الصفقات: <b>{len(todays)}</b> • ربح/خسارة: <b>{total_pnl:.2f}$</b>\n" \
            f"نسبة الفوز: {win_rate}%\n{risk_line}\n{_format_relax_str()}\n" + report
-   
 
 # ================== ملخص الرفض ==================
-_REJ_SUMMARY = {}
 def maybe_emit_reject_summary():
     """طباعة أعلى أسباب الرفض خلال الجولة + حالة Soft+"""
     try:
@@ -1083,7 +1107,6 @@ def maybe_emit_reject_summary():
         logger.error(f"[soft+] maybe_emit_reject_summary failed: {e}")
     finally:
         _REJ_SUMMARY.clear()
-
 
 def check_soft_mode_activation(summary_stats: dict, logger=None):
     """
@@ -1124,7 +1147,6 @@ def check_soft_mode_activation(summary_stats: dict, logger=None):
         if logger:
             logger.error(f"[soft+] check_soft_mode_activation error: {e}")
 
-
 def adjust_thresholds_for_soft_mode(thresholds: dict):
     """
     يخفف شروط ATR و RVOL إذا كان Soft Mode مفعلاً.
@@ -1140,8 +1162,7 @@ def adjust_thresholds_for_soft_mode(thresholds: dict):
 
     return t
 
-
-# ================== تنفيذ الشراء ==================
+# ================== تنفيذ الشراء (اختياري للاستخدام الخارجي) ==================
 def execute_buy(symbol: str):
     """
     دالة تنفيذ أمر شراء فعلي للسهم/العملة.
@@ -1188,35 +1209,8 @@ def execute_buy(symbol: str):
         _print(err)
         return None, err
 
-# ================== أدوات تشخيص الإشارة ==================
-def get_last_reject(symbol: str):
-    if symbol in _LAST_REJECT:
-        return _LAST_REJECT[symbol]
-    base = symbol.split("/")[0]
-    for k in (f"{base}|new", base):
-        if k in _LAST_REJECT:
-            return _LAST_REJECT[k]
-    return None
-
-def check_signal_debug(symbol: str):
-    res = check_signal(symbol)
-    if isinstance(res, dict) and res.get("decision") == "buy":
-        return res, ["buy_ok"]
-    last = get_last_reject(symbol)
-    if last:
-        return None, [f"{last.get('stage','-')}:{last.get('details',{})}"]
-    return None, ["no_buy"]
-# ================== وظائف مفقودة تكاملية ==================
-
-# --- استيراد متغيرات إضافية من config ---
-from config import (
-    TRADE_AMOUNT_USDT, MAX_CONSEC_LOSSES, DAILY_LOSS_LIMIT_USDT
-)
-
-# --- إعداد افتراضي للإرسال إلى تيليجرام (لتجنب الخطأ إن لم يُعرّف) ---
-STRAT_TG_SEND = True
-
-# ================== إدارة ملفات المراكز ==================
+# ================== أدوات إدارة المراكز والملفات ==================
+STRAT_TG_SEND = os.getenv("STRAT_TG_SEND", "1").lower() in ("1","true","yes","on")
 
 def _pos_file(symbol: str):
     """توليد مسار ملف المركز بناءً على اسم الرمز"""
@@ -1245,40 +1239,7 @@ def save_closed_positions(data):
     """حفظ سجل المراكز المغلقة"""
     _atomic_write(CLOSED_FILE, data)
 
-# ================== وظائف التقارير اليومية ==================
-
-def _hour_key(dt: datetime):
-    """تحويل التوقيت إلى مفتاح الساعة (للتجميع في risk state)"""
-    return dt.strftime("%H")
-
-def _fmt_table(rows, headers):
-    """تنسيق الجدول لتقرير اليوم بشكل HTML بسيط"""
-    txt = "<pre>\n" + "\t".join(headers) + "\n" + "-"*80 + "\n"
-    for r in rows:
-        txt += "\t".join(str(x) for x in r) + "\n"
-    return txt + "</pre>"
-
-def _fmt_blocked_until_text():
-    """عرض حالة الحظر الحالية في التقرير"""
-    s = load_risk_state()
-    bu = s.get("blocked_until")
-    if not bu:
-        return "✅ طبيعي"
-    try:
-        t = datetime.fromisoformat(bu)
-        if now_riyadh() < t:
-            return f"⛔️ حتى {t.strftime('%H:%M')}"
-    except Exception:
-        pass
-    return "✅ طبيعي"
-
-def _format_relax_str():
-    """عرض مستوى Auto-Relax الحالي"""
-    lvl = _relax_level_current()
-    return "🧘 وضع عادي" if lvl == 0 else ("💤 Auto-Relax 1" if lvl == 1 else "🕊️ Auto-Relax 2")
-
 # ================== أدوات الكاش والإحصائيات ==================
-
 def reset_cycle_cache():
     """إعادة ضبط عدادات الرفض في بداية كل دورة"""
     _REJ_COUNTS["atr_low"] = 0
@@ -1303,6 +1264,7 @@ def breadth_status():
         "min": bmin,
         "ok": (br is not None and br >= bmin)
     }
+
 # ================== عدّ المراكز المفتوحة ==================
 def count_open_positions() -> int:
     """
