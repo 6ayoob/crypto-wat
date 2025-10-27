@@ -620,6 +620,21 @@ def _rvol_ok(ltf_ctx, sym_ctx, thr):
     near = (not ok) and (rvol >= max(1.0, need - 0.08))
     return ok, near, rvol, need
 
+  def _notional_ok(sym_ctx: dict, thr: dict) -> tuple[bool, float, float]:
+    """
+    يتحقق من سيولة الدولارات (Notional).
+    - avg_30: متوسط الدولاري لآخر 30 شمعة
+    - min_30: أدنى دولاري لآخر 30 شمعة
+    يحتاج كلاهما لتجاوز الحدود في regime thresholds.
+    """
+    avg_30 = float(sym_ctx.get("notional_avg_30", 0.0))
+    min_30 = float(sym_ctx.get("notional_min_30", 0.0))
+    need_avg = float(thr.get("NOTIONAL_AVG_MIN", 0.0))
+    need_minbar = float(thr.get("NOTIONAL_MINBAR", 0.0))
+    ok = (avg_30 >= need_avg) and (min_30 >= need_minbar)
+    return ok, avg_30, need_minbar
+
+
 
 # ================== منطق الإشارة ==================
 def check_signal(symbol: str):
