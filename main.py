@@ -38,7 +38,6 @@ from strategy import (
     count_open_positions, build_daily_report_text,
     reset_cycle_cache, metrics_format,
     maybe_emit_reject_summary,
-    check_signal_debug,
     breadth_status,
     _build_entry_plan as build_entry_plan,  # ← استخدم build_entry_plan في الكود
     open_trade
