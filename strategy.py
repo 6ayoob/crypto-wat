@@ -1179,7 +1179,7 @@ def execute_buy(symbol: str):
             f"📊 الرمز: <code>{symbol}</code>\n"
             f"💰 السعر: <b>{price:.6f}</b>\n"
             f"📦 الكمية: <b>{qty:.6f}</b>\n"
-            f"⏱️ {datetime.now().strftime('%H:%M:%S')}"
+            f"⏱️ {now_riyadh().strftime('%H:%M:%S')}"
         )
         return order, msg
 
