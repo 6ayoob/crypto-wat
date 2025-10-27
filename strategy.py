@@ -200,7 +200,6 @@ AUTO_RELAX_AFTER_HRS_2 = 6
 BREADTH_MIN_DEFAULT = 0.48
 
 # ================== إحصاءات عامة ==================
-_REJ_SUMMARY: Dict[str, int] = {}
 _REJ_COUNTS: Dict[str, int] = {"atr_low": 0, "rvol": 0, "notional_low": 0}
 # ================== مؤشرات فنية ==================
 def _ema(series, period):
