@@ -309,7 +309,7 @@ def _get_htf_context(symbol: str, tf: str = STRAT_HTF_TIMEFRAME) -> Optional[dic
         df["ema50"] = _ema(df["close"], 50)
         df["ema200"] = _ema(df["close"], 200)
         close_now, ema50_now = float(df["close"].iloc[-2]), float(df["ema50"].iloc[-2])
-        trend = "up" if close_now > ema50_now else ("down" if close_now < ema50_now else "flat")
+        trend = "up" if close_now > ema50_now else ("down" if close_now < ema50_now else "neutral")
         val = {"close": close_now, "ema50_now": ema50_now, "trend": trend}
         _HTF_CACHE[key] = {"val": val, "ts": now_ts}
         return val
