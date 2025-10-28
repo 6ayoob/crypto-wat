@@ -5,12 +5,12 @@
 # - قفل عملية مفردة (PID file) اختياري لمنع التشغيل المزدوج
 # - توقيتات دقيقة مع تعويض انجراف (drift compensation) + jitter خفيف
 # - إيقاف مرن بسياسة ignore/debounce/immediate (كما هي) مع رسائل أوضح
-# - تلخيص أداء الجولة وإدارة المراكز كما في نسختك + تحسين طباعة الأخطاء
-# - نقاط تكامل محسّنة مع الاستراتيجية (ستستفيد لاحقًا من regime controller في strategy.py)
+# - تلخيص أداء الجولة وإدارة المراكز + تحسين طباعة الأخطاء
+# - تكامل محسّن مع الاستراتيجية (execute_buy / check_signal_debug)
 # - حماية شاملة حول الاستدعاءات + تنظيف (finally) آمن
-# - NEW: اكتشاف أرصدة السبوت (Discovery) وإنشاء ملفات مراكز مستوردة لإدارتها تلقائيًا (بمكافحة التكرار للـ variants)
+# - NEW: اكتشاف أرصدة السبوت (Discovery) وإنشاء ملفات مراكز مستوردة للـ base فقط
 # - NEW/LIQ: بوابة سيولة محدثة مع هامش رسوم اختياري + سجل تشخيصي واضح
-# - NEW/RISK: تكامل اختياري مع RiskBlocker بدون وسيط breadth_min
+# - NEW/RISK: تكامل اختياري مع RiskBlocker (بدون breadth_min)
 
 import os
 import sys
@@ -26,21 +26,16 @@ import requests
 from config import (
     TELEGRAM_TOKEN, TELEGRAM_CHAT_ID,
     SYMBOLS, STRAT_LTF_TIMEFRAME, STRAT_HTF_TIMEFRAME,
-    TRADE_BASE_USDT,  # ← حجم الأساس بالدولار قبل الـ size_mult
+    TRADE_BASE_USDT,  # حجم الأساس (تُستعمل داخل الاستراتيجية أيضًا)
 )
 
-# من config (سطر واحد لتجنّب أخطاء المسافات)
-from config import TELEGRAM_TOKEN, TELEGRAM_CHAT_ID, SYMBOLS, STRAT_LTF_TIMEFRAME, STRAT_HTF_TIMEFRAME, TRADE_BASE_USDT
-
-# من strategy — مع عمل alias دّاخل القائمة
+# من strategy — لاحظ استعمال execute_buy (بديل open_trade) + check_signal_debug
 from strategy import (
-    check_signal, manage_position, load_position, save_position,
+    check_signal, check_signal_debug, manage_position, load_position, save_position,
     count_open_positions, build_daily_report_text,
     reset_cycle_cache, metrics_format,
-    maybe_emit_reject_summary,
-    breadth_status,
-    _build_entry_plan as build_entry_plan,  # ← استخدم build_entry_plan في الكود
-    open_trade
+    maybe_emit_reject_summary, breadth_status,
+    execute_buy,            # ← نستعملها لفتح الصفقة
 )
 
 # كاش أسعار جماعي من okx_api لتقليل الضغط (اختياري)
@@ -60,7 +55,6 @@ _risk = None
 try:
     from risk_and_notify import RiskBlocker, RiskBlockConfig, tg_send as _risk_tg_send
     try:
-        # وسائط مدعومة فقط — لا تضف breadth_min هنا
         _risk_cfg = RiskBlockConfig(
             daily_loss_limit=200.0,       # حد خسارة يومية
             max_consec_losses=3,          # خسائر متتالية
@@ -74,7 +68,6 @@ except Exception:
     _risk = None
 
 def _risk_is_blocked() -> bool:
-    """فحص سريع لحالة الحظر من RiskBlocker إن توفّر."""
     try:
         return bool(_risk and _risk.is_blocked())
     except Exception:
@@ -87,8 +80,8 @@ try:
 except ValueError:
     MAX_OPEN_POSITIONS_OVERRIDE = None
 
-SCAN_INTERVAL_SEC    = int(os.getenv("SCAN_INTERVAL_SEC", "25"))   # فحص إشارات الدخول
-MANAGE_INTERVAL_SEC  = int(os.getenv("MANAGE_INTERVAL_SEC", "10")) # إدارة المراكز
+SCAN_INTERVAL_SEC    = int(os.getenv("SCAN_INTERVAL_SEC", "25"))
+MANAGE_INTERVAL_SEC  = int(os.getenv("MANAGE_INTERVAL_SEC", "10"))
 LOOP_SLEEP_SEC       = float(os.getenv("LOOP_SLEEP_SEC", "1.0"))
 
 ENABLE_DAILY_REPORT  = os.getenv("ENABLE_DAILY_REPORT", "1").lower() in ("1","true","yes")
@@ -104,10 +97,10 @@ STOP_POLICY = os.getenv("STOP_POLICY", "debounce").lower()  # ignore | debounce 
 STOP_DEBOUNCE_WINDOW_SEC = int(os.getenv("STOP_DEBOUNCE_WINDOW_SEC", "5"))
 
 # ---- سيولة ----
-USDT_MIN_RESERVE   = float(os.getenv("USDT_MIN_RESERVE", "5"))     # احتياطي لا يُمس (USD)
+USDT_MIN_RESERVE   = float(os.getenv("USDT_MIN_RESERVE", "5"))     # احتياطي لا يُمس
 USDT_BUY_THRESHOLD = float(os.getenv("USDT_BUY_THRESHOLD", "15"))  # أقل سيولة تسمح بمحاولة شراء
 LIQUIDITY_POLICY   = os.getenv("LIQUIDITY_POLICY", "manage_first") # manage_first | neutral
-FEE_BUFFER_PCT     = float(os.getenv("FEE_BUFFER_PCT", "0.0"))     # هامش رسوم اختياري % (مثال: 0.2)
+FEE_BUFFER_PCT     = float(os.getenv("FEE_BUFFER_PCT", "0.0"))     # هامش رسوم اختياري %
 
 # قفل عملية مفردة (اختياري) عبر ملف PID
 SINGLETON_PIDFILE = os.getenv("PIDFILE", "").strip()
@@ -115,7 +108,6 @@ SINGLETON_PIDFILE = os.getenv("PIDFILE", "").strip()
 RIYADH_TZ = timezone(timedelta(hours=3))
 
 # ================== أدوات عامة ==================
-
 def _now_riyadh():
     return datetime.now(RIYADH_TZ)
 
@@ -129,7 +121,6 @@ def _print(s: str):
             pass
 
 # ================== Telegram ==================
-
 _TELEGRAM_MAX_CHARS = 4096
 
 def _tg_post(url: str, payload: dict, tries: int = 3, timeout=10):
@@ -176,12 +167,6 @@ def send_telegram_message(text, parse_mode=None, disable_notification=False):
             payload["disable_notification"] = True
         _tg_post(url, payload)
 
-def _is_error_text(text: str) -> bool:
-    if not text:
-        return False
-    t = str(text).strip()
-    return t.startswith(("⚠️","❌")) or ("خطأ" in t) or ("Error" in t)
-
 def tg_info(text, parse_mode=None, silent=True):
     if SEND_INFO_TO_TELEGRAM:
         try:
@@ -197,7 +182,6 @@ def tg_error(text, parse_mode=None, silent=True):
             pass
 
 # ================== سيولة: أدوات مساعدة ==================
-
 def _usdt_free() -> float:
     try:
         return float(fetch_balance("USDT") or 0.0)
@@ -225,7 +209,6 @@ def _balance_gate_debug():
     return ok
 
 # ================== قفل مفرد (PID file) اختياري ==================
-
 def _acquire_pidfile(path: str) -> bool:
     if not path:
         return True
@@ -293,7 +276,6 @@ try:
 except Exception:
     pass
 
-
 def _get_open_positions_count_safe():
     try:
         return int(count_open_positions())
@@ -303,14 +285,12 @@ def _get_open_positions_count_safe():
         except Exception:
             return 0
 
-
 def _can_open_new_position(current_open: int) -> bool:
     if MAX_OPEN_POSITIONS_OVERRIDE is None:
         return True
     return current_open < int(MAX_OPEN_POSITIONS_OVERRIDE)
 
 # ================ NEW: اكتشاف أرصدة السبوت (Discovery) بدون تكرار للـ variants ================
-
 def _discover_spot_positions(min_usd: float = 5.0):
     """
     ينشئ ملفات مراكز مستوردة لأي رصيد Spot موجود بدون تكرار للـ variants.
@@ -320,12 +300,11 @@ def _discover_spot_positions(min_usd: float = 5.0):
     try:
         seen_bases = set()
         for symbol in SYMBOLS:
-            base = symbol.split("#")[0]  # احذف الـ variant
+            base = symbol.split("#")[0]
             if base in seen_bases:
                 continue
             seen_bases.add(base)
 
-            # لا تنشئ إذا كان هناك أي ملف مركز موجود لهذا الـ base أو لأي variant
             if load_position(base) is not None:
                 continue
             has_variant_file = any(
@@ -345,12 +324,12 @@ def _discover_spot_positions(min_usd: float = 5.0):
 
             usd_val = qty * px
             if usd_val < float(min_usd):
-                continue  # رصيد صغير جدًا — تجاهله
+                continue
 
             pos = {
-                "symbol": base,           # خزّن على base فقط
+                "symbol": base,
                 "variant": "imported",
-                "entry_price": px,        # تقدير: آخر سعر
+                "entry_price": px,
                 "amount": qty,
                 "imported": True,
                 "created_at": datetime.now(timezone.utc).isoformat(timespec="seconds"),
@@ -374,7 +353,7 @@ if __name__ == "__main__":
         except Exception:
             pass
 
-    # ✅ اكتشاف أي مراكز Spot موجودة بالفعل (Discovery) — بعد إصلاح التكرار
+    # ✅ اكتشاف أي مراكز Spot موجودة بالفعل (Discovery)
     try:
         _discover_spot_positions()
     except Exception as e:
@@ -415,7 +394,7 @@ if __name__ == "__main__":
             # NEW/LIQ: قياس السيولة الحرة كل لفة
             free_now = _usdt_free()
 
-            # NEW/RISK: إن كان RiskBlocker متاحًا ومحظورًا — قدم الإدارة وتخطّ الشراء
+            # NEW/RISK: إن كان RiskBlocker متاحًا ومحظورًا — قدّم الإدارة وتخطّ الشراء
             risk_blocked = _risk_is_blocked()
             if risk_blocked:
                 _print("[risk] blocked — skipping new entries this cycle.")
@@ -434,8 +413,7 @@ if __name__ == "__main__":
                         if _stop_flag and STOP_POLICY in ("immediate", "debounce"):
                             break
                         try:
-                            # ✅ إدارة على base دائمًا
-                            closed = manage_position(symbol.split("#")[0])
+                            closed = manage_position(symbol.split("#")[0])  # إدارة على base دائمًا
                             if closed:
                                 text = None
                                 if isinstance(closed, dict):
@@ -485,11 +463,10 @@ if __name__ == "__main__":
                             if _stop_flag and STOP_POLICY in ("immediate", "debounce"):
                                 break
 
-                            # ✅ العمل على base دومًا لمنع ازدواجية variants
                             base = symbol.split("#")[0]
 
                             # حد فتح المراكز
-                            if not _can_open_new_position(open_positions_count):
+                            if MAX_OPEN_POSITIONS_OVERRIDE is not None and open_positions_count >= MAX_OPEN_POSITIONS_OVERRIDE:
                                 break
 
                             # تجنّب التكرار إن كان هناك مركز مفتوح للـ base
@@ -508,24 +485,18 @@ if __name__ == "__main__":
 
                             is_buy = (sig == "buy") or (isinstance(sig, dict) and str(sig.get("decision", "")).lower() == "buy")
                             if is_buy:
-                                # ====== بناء الخطة + فتح الصفقة مع دعم size_mult ======
+                                # فتح الصفقة عبر execute_buy (الحجم والتدرّج داخل الاستراتيجية نفسها)
                                 try:
-                                    plan = _build_entry_plan(base, sig)
-                                    usdt_amount = float(TRADE_BASE_USDT) * float(sig.get("size_mult", 1.0))
-                                    pos = open_trade(base, plan, usdt_amount)
-
-                                    if pos:
-                                        try:
-                                            tg_info(pos["messages"]["open"], parse_mode="HTML", silent=False)
-                                        except Exception:
-                                            pass
+                                    order, msg = execute_buy(base, sig)
+                                    if order:
+                                        if msg:
+                                            tg_info(msg, parse_mode="HTML", silent=False)
                                         open_positions_count = _get_open_positions_count_safe()
                                     else:
-                                        _print(f"[open_trade] failed to open {base}")
+                                        _print(f"[execute_buy] failed to open {base}: {msg}")
                                 except Exception as e:
-                                    _print(f"[open_trade] {base} error: {e}")
+                                    _print(f"[execute_buy] {base} error: {e}")
                                     continue
-                                # ===============================================================
                             else:
                                 try:
                                     _, reasons = check_signal_debug(base)
