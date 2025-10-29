@@ -53,7 +53,7 @@ except Exception:
 # ===== تكامل اختياري مع RiskBlocker (بدون breadth_min) =====
 _risk = None
 try:
-    from risk_and_notify import RiskBlocker, RiskBlockConfig, tg_send as _risk_tg_send
+    
     def _mk_risk_cfg():
         # جرب أسماء مفاتيح شائعة
         kw_try = [
