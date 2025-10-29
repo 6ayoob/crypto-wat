@@ -10,7 +10,7 @@
 # - حماية شاملة حول الاستدعاءات + تنظيف (finally) آمن
 # - NEW: اكتشاف أرصدة السبوت (Discovery) وإنشاء ملفات مراكز مستوردة للـ base فقط
 # - NEW/LIQ: بوابة سيولة محدثة مع هامش رسوم اختياري + سجل تشخيصي واضح
-# - NEW/RISK: تكامل اختياري مع RiskBlocker (بدون breadth_min)
+# - NEW/RISK: تم تعطيل التكامل الخارجي RiskBlocker نهائيًا (نعتمد ريسك الاستراتيجية)
 
 import os
 import sys
@@ -50,49 +50,11 @@ except Exception:
         fetch_price = lambda symbol: 0.0
     _HAS_CACHE = False
 
-# ===== تكامل اختياري مع RiskBlocker (بدون breadth_min) =====
+# ===== RiskBlocker معطّل نهائيًا (stub آمن) =====
 _risk = None
-try:
-    
-    def _mk_risk_cfg():
-        # جرب أسماء مفاتيح شائعة
-        kw_try = [
-            dict(daily_loss_limit=200.0, max_consec_losses=3, block_minutes_on_violation=90),
-            dict(daily_loss_usdt=200.0, max_consecutive_losses=3, block_minutes=90),
-            dict(daily_limit=200.0, max_losses=3, block_minutes=90),
-        ]
-        for kws in kw_try:
-            try:
-                return RiskBlockConfig(**kws)
-            except TypeError:
-                continue
-        # أخيرًا جرّب positional إذا كان الترتيب (daily, max_losses, minutes)
-        try:
-            return RiskBlockConfig(200.0, 3, 90)
-        except Exception as e:
-            raise e
-
-    try:
-        _risk_cfg = _mk_risk_cfg()
-        _risk = RiskBlocker(_risk_cfg, send=_risk_tg_send)
-        print("[risk] initialized.", flush=True)
-    except Exception as e:
-        print(f"[risk] init error (fallback exhausted): {e}", flush=True)
-        _risk = None
-except Exception:
-    _risk = None
-
 def _risk_is_blocked() -> bool:
-    try:
-        # بعض الإصدارات قد تستعمل is_active_block / blocked
-        for attr in ("is_blocked", "is_active_block", "blocked"):
-            fn = getattr(_risk, attr, None)
-            if callable(fn):
-                return bool(fn())
-        return False
-    except Exception:
-        return False
-
+    # لا يوجد حظر خارجي، نعتمد فقط على نظام الريسك الداخلي في strategy.py
+    return False
 
 # ================== إعدادات الحلقة ==================
 _MAX_OVERRIDE_ENV = os.getenv("MAX_OPEN_POSITIONS_OVERRIDE") or os.getenv("MAX_OPEN_POSITIONS")
@@ -415,7 +377,7 @@ if __name__ == "__main__":
             # NEW/LIQ: قياس السيولة الحرة كل لفة
             free_now = _usdt_free()
 
-            # NEW/RISK: إن كان RiskBlocker متاحًا ومحظورًا — قدّم الإدارة وتخطّ الشراء
+            # NEW/RISK: (RiskBlocker خارجي معطّل) — نعتمد ريسك الاستراتيجية فقط
             risk_blocked = _risk_is_blocked()
             if risk_blocked:
                 _print("[risk] blocked — skipping new entries this cycle.")
@@ -460,7 +422,7 @@ if __name__ == "__main__":
                     if now - next_manage > MANAGE_INTERVAL_SEC:
                         next_manage = now + MANAGE_INTERVAL_SEC
 
-            # 1) فحص إشارات الدخول — مع بوابة سيولة قبل أي شراء + احترام RiskBlocker
+            # 1) فحص إشارات الدخول — مع بوابة سيولة قبل أي شراء + (بدون RiskBlocker خارجي)
             if now >= next_scan:
                 gate_ok = _balance_gate_debug()
                 if (not gate_ok) or risk_blocked:
