@@ -917,11 +917,14 @@ def get_cfg(variant: str):
         cfg.update(BRT_OVERRIDES)
     elif v == "vbr":
         cfg.update(VBR_OVERRIDES)
+    elif v == "alpha":
+        cfg.update(ALPHA_OVERRIDES)
     elif v == "old":
         pass
     else:
         cfg.update(NEW_SCALP_OVERRIDES)
     return cfg
+
 
 # ---------- Scoring ----------
 def _opportunity_score(df, prev, closed):
@@ -964,6 +967,43 @@ def _sweep_then_reclaim(df, prev, closed, ref_val, lookback=20, tol=0.0012):
         reclaimed = cur_close >= float(ref_val)
         bullish_body = (cur_close > float(closed["open"])) or _bullish_engulf(prev, closed)
         return bool(swept and reclaimed and bullish_body)
+    except Exception:
+        return False
+def _entry_alpha_logic(df, closed, prev, atr_ltf, htf_ctx, cfg, thr, sym_ctx):
+    """
+    Alpha: Breakout + سيولة/زخم ديناميكي + فلتر إنهاك.
+    الشروط:
+      - إغلاق أعلى مقاومة 50 شمعة مع هامش buffer.
+      - RVOL >= عتبة ديناميكية (من thr) مع خصم بسيط إذا كان NR-breakout.
+      - تجنّب الإنهاك: RSI <= EXH_RSI_MAX وابتعاد معقول عن EMA50 (بعدة ATR).
+    """
+    try:
+        if len(df) < 80:
+            return False
+        buf = float(cfg.get("BREAKOUT_BUFFER_LTF", 0.0012))
+        hi = float(df["high"].iloc[-52:-2].max())
+        c  = float(closed["close"]); o = float(closed["open"])
+        bo = (c > hi * (1.0 + buf)) and (c > o)
+
+        nr_recent = bool(df["is_nr"].iloc[-3:-1].all())
+        rvol_need = max(1.05, float(thr.get("RVOL_NEED_BASE", cfg.get("RVOL_MIN", 1.3))) - (0.05 if nr_recent else 0.0))
+        rvol_now = float(_finite_or(1.0, closed.get("rvol"), 1.0))
+        if not (bo and rvol_now >= rvol_need):
+            return False
+
+        rsi_now = float(closed.get("rsi", 50.0))
+        if rsi_now > EXH_RSI_MAX:
+            return False
+
+        try:
+            ema50_now = float(closed.get("ema50"))
+            atr_abs = float(atr_ltf)
+            if atr_abs > 0 and abs(c - ema50_now) / atr_abs > EXH_EMA50_DIST_ATR:
+                return False
+        except Exception:
+            pass
+
+        return True
     except Exception:
         return False
 
