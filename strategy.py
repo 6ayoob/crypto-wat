@@ -894,6 +894,13 @@ PER_STRAT_MGMT = {
             "TRAIL_AFTER_TP1":True, "TRAIL_ATR":0.9, "TIME_HRS":8},
     "vbr": {"SL":"atr", "SL_MULT":1.0, "TP1":"vwap_or_sr", "TP2_ATR":1.8,
             "TRAIL_AFTER_TP1":True, "TRAIL_ATR":0.8, "TIME_HRS":3},
+    PER_STRAT_MGMT["alpha"] = {
+    "SL": "atr", "SL_MULT": 0.9,
+    "TP1": "atr", "TP1_ATR": 1.1,
+    "TP2_ATR": 2.0,
+    "TP3_ATR": 3.0,
+    "TRAIL_AFTER_TP1": True, "TRAIL_ATR": 0.9,
+    "TIME_HRS": 8
 }
 def _mgmt(variant: str): return PER_STRAT_MGMT.get(variant, PER_STRAT_MGMT["new"])
 
