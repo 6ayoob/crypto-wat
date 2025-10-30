@@ -827,6 +827,23 @@ SRR_OVERRIDES = {
     "MAX_HOLD_HOURS": 8,
     "SYMBOL_COOLDOWN_MIN": 10,
 }
+ALPHA_OVERRIDES = {
+    "ENTRY_MODE": "alpha",                 # يفعّل منطق دخول خاص
+    "RVOL_MIN": 1.30,                      # سيُعدّل ديناميكياً لاحقاً
+    "ATR_MIN_FOR_TREND": 0.0022,
+    "RSI_GATE_POLICY": "balanced",
+    "BREAKOUT_BUFFER_LTF": 0.0012,         # كسر مع هامش بسيط
+    "USE_ATR_SL_TP": True,
+    "SL_ATR_MULT": 0.9,                    # SL = السعر - 0.9*ATR
+    "TP1_ATR_MULT": 1.1,                   # TP1/2/3 على ATR
+    "TP2_ATR_MULT": 2.0,
+    "TP3_ATR_MULT": 3.0,
+    "TRAIL_AFTER_TP1": True,
+    "TRAIL_ATR_MULT": 0.9,                 # يبدأ بعد TP2
+    "LOCK_MIN_PROFIT_PCT": 0.005,          # قفل ربح بسيط بعد TP1
+    "MAX_HOLD_HOURS": 8,
+    "SYMBOL_COOLDOWN_MIN": 15,
+}
 
 SRR_PLUS_OVERRIDES = {
     "ENTRY_MODE": "pullback",
