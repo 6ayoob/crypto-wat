@@ -276,7 +276,7 @@ def _split_symbol_variant(symbol: str):
         # short aliases → canonical names
         if variant in ("srr+", "srrplus", "srr_plus"):
             variant = "srr_plus"
-        elif variant not in ("old","new","srr","brt","vbr","srr_plus"):
+        elif variant not in ("old","new","srr","brt","vbr","srr_plus","alpha"):
             variant = "new"
         return base, variant
     return symbol, "new"
