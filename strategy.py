@@ -1419,6 +1419,12 @@ def _atr_latest(symbol_base: str, tf: str, bars: int = 180) -> tuple[float, floa
 def _build_entry_plan(symbol: str, sig: dict | None) -> dict:
     base, variant = _split_symbol_variant(symbol)
     cfg = get_cfg(variant)
+    # دعم alpha: اختيار مباشر لمنطق alpha
+if variant == "alpha":
+    chosen_mode = "alpha" if _entry_alpha_logic(df, closed, prev, atr_val, htf_ctx, cfg, thr, sym_ctx) else None
+else:
+    chosen_mode = None
+
 
     if sig is None:
         r = check_signal(symbol)
