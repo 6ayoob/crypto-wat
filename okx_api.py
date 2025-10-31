@@ -169,6 +169,14 @@ def stop_tickers_cache():
     _cache_stop = True
 
 # ================ تسوية الكمية/الحدود ================
+def _decimals_to_step(decimals: Optional[int]) -> Optional[float]:
+    try:
+        if decimals is None:
+            return None
+        return float(10 ** (-int(decimals)))
+    except Exception:
+        return None
+
 def _amount_to_precision(symbol_ccxt: str, amount: float) -> float:
     """
     يضبط الكمية حسب دقة السوق وحدوده (min amount/min cost).
@@ -293,7 +301,7 @@ def place_market_order(symbol: str, side: str, amount: float, send_message=None)
     try:
         # params إضافية اختيارية لـ OKX: {"tgtCcy": "base_ccy"} عند الحاجة
         order = exchange.create_order(sym, type="market", side=side, amount=adj_amount)
-        _log(send_message, f"✅ تم تنفيذ أمر {side.upper()} لـ {symbol} (كمية: {adj_amount})")
+        _log(send_message, f"✅ تم تنفيذ أمر {side.UPPER()} لـ {symbol} (كمية: {adj_amount})")
         return order
     except Exception as e:
         hint = _okx_error_hint(e)
@@ -327,23 +335,78 @@ def list_okx_usdt_spot_symbols() -> List[str]:
     except Exception as e:
         print(f"⚠️ فشل جلب قائمة USDT/Spot: {e}")
         return []
-# ================== fetch_symbol_filters ==================
-def fetch_symbol_filters(symbol: str):
+
+# ================== fetch_symbol_filters (مصَحَّحة) ==================
+def fetch_symbol_filters(symbol: str) -> Dict[str, float]:
     """
     إرجاع فلاتر الرمز (minQty, minNotional, stepSize, tickSize)
     لضمان تنفيذ صحيح في أوامر الشراء/البيع.
+    نعتمد أولاً على ccxt.market(...) ثم نوفّر بدائل آمنة.
     """
+    sym = _fmt_symbol(symbol)
     try:
-        info = _client.public.get_instruments(instType='SPOT').json()
-        for item in info.get("data", []):
-            if item["instId"] == symbol.replace("/", "-"):
-                return {
-                    "minQty": float(item.get("minSz", 0.0)),
-                    "minNotional": float(item.get("minSz", 0.0)) * float(item.get("tickSz", 0.0)),
-                    "stepSize": float(item.get("lotSz", 0.0)),
-                    "tickSize": float(item.get("tickSz", 0.0)),
-                }
+        m = exchange.market(sym)  # يقرأ من الأسواق المحمّلة
     except Exception as e:
-        print(f"[fetch_symbol_filters] error {symbol}: {e}")
-    # fallback default values
-    return {"minQty": 0.0, "minNotional": 0.0, "stepSize": 0.0001, "tickSize": 0.0001}
+        print(f"[fetch_symbol_filters] market() error {sym}: {e}")
+        m = None
+
+    # قيم افتراضية آمنة
+    step_size = 0.000001
+    tick_size = 0.000001
+    min_qty = 0.0
+    min_notional = 0.0
+
+    if m:
+        # stepSize: من lotSz إن توفرت، وإلا من precision.amount (عدد الخانات)
+        try:
+            lot_sz = float(m.get("info", {}).get("lotSz", 0) or 0)
+            if lot_sz and lot_sz > 0:
+                step_size = lot_sz
+            else:
+                dec = m.get("precision", {}).get("amount")
+                step = _decimals_to_step(dec)
+                if step:
+                    step_size = step
+        except Exception:
+            pass
+
+        # tickSize: من tickSz أو من precision.price
+        try:
+            tick_sz = float(m.get("info", {}).get("tickSz", 0) or 0)
+            if tick_sz and tick_sz > 0:
+                tick_size = tick_sz
+            else:
+                pdec = m.get("precision", {}).get("price")
+                step = _decimals_to_step(pdec)
+                if step:
+                    tick_size = step
+        except Exception:
+            pass
+
+        # minQty: من limits.amount.min أو minSz
+        try:
+            min_qty = float(
+                m.get("limits", {}).get("amount", {}).get("min")
+                or m.get("info", {}).get("minSz")
+                or 0.0
+            )
+        except Exception:
+            min_qty = 0.0
+
+        # minNotional (min cost): من limits.cost.min؛ وإلا تقدير = minQty * last
+        try:
+            min_cost = m.get("limits", {}).get("cost", {}).get("min")
+            if min_cost is not None:
+                min_notional = float(min_cost or 0.0)
+            else:
+                last = fetch_price(sym)
+                min_notional = float(min_qty * last) if last > 0 else 0.0
+        except Exception:
+            pass
+
+    return {
+        "minQty": float(max(0.0, min_qty)),
+        "minNotional": float(max(0.0, min_notional)),
+        "stepSize": float(max(1e-12, step_size)),
+        "tickSize": float(max(1e-12, tick_size)),
+    }
