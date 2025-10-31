@@ -1303,8 +1303,9 @@ def check_signal(symbol: str):
         # --- thresholds حسب Breadth + ATR% ---
         br  = _get_breadth_ratio_cached()
         thr = regime_thresholds(br, atrp)
+        need_rvol_base = float(thr["RVOL_NEED_BASE"])  # أساس RVOL لاستخدامه في الاستثناء
 
-        # --- HTF trend gate (fixed + softer) ---
+        # --- HTF trend gate (fixed + softer + استثناء اختراق قوي) ---
         trend = "neutral"
         try:
             if float(htf_ctx["close"]) > float(htf_ctx["ema50_now"]):
@@ -1314,15 +1315,20 @@ def check_signal(symbol: str):
         except Exception:
             trend = "neutral"
 
-        neutral_ok = bool(thr.get("NEUTRAL_HTF_PASS", True))
-        eff_min    = _breadth_min_auto()
-        weak_market= (br is not None) and (br < eff_min)
+        neutral_ok  = bool(thr.get("NEUTRAL_HTF_PASS", True))
+        eff_min     = _breadth_min_auto()
+        weak_market = (br is not None) and (br < eff_min)
+
+        # استثناء: اسمح بالشراء حتى مع HTF هابط/محايد إذا تحقق اختراق قوي على LTF
+        strong_breakout = bool(
+            is_breakout and ltf_ctx.get("ema200_trend") == "up" and rvol >= need_rvol_base * 1.10
+        )
 
         if trend == "down":
-            if not ((br is not None) and (br >= max(0.58, eff_min + 0.04))):
+            if not ((br is not None and br >= max(0.58, eff_min + 0.04)) or strong_breakout):
                 return _rej("htf_trend", trend=trend)
         elif trend == "neutral" and not neutral_ok:
-            if not weak_market:
+            if not (weak_market or strong_breakout):
                 return _rej("htf_trend", trend=trend)
 
         # --- ATR% check ---
@@ -1386,6 +1392,7 @@ def check_signal(symbol: str):
         return _rej("error", err=str(e))
     finally:
         _CURRENT_SYMKEY = None
+
 
 # ================== Entry plan builder ==================
 def _atr_latest(symbol_base: str, tf: str, bars: int = 180) -> tuple[float, float, float]:
