@@ -523,6 +523,24 @@ def get_ohlcv_cached(symbol: str, tf: str, bars: int) -> list:
     data = api_fetch_ohlcv(symbol, tf, bars)
     if data: _OHLCV_CACHE[key] = data
     return data
+def _get_ltf_df_with_fallback(symbol: str, tf: str = None) -> Optional[pd.DataFrame]:
+    tf = tf or STRAT_LTF_TIMEFRAME
+    # جرّب تسلسلاً من الأحجام لنضمن أقل شيء 60-80 شمعة قابلة للاستخدام
+    for bars in (140, 120, 100, 80):
+        try:
+            data = get_ohlcv_cached(symbol, tf, bars)
+            if not data or len(data) < 60:
+                continue
+            df = _df(data)
+            if not _row_is_recent_enough(df, tf, bars_back=2):
+                # بيانات قديمة — جرّب حجماً أصغر
+                continue
+            df = _ensure_ltf_indicators(df)
+            if len(df) >= 60:
+                return df
+        except Exception:
+            continue
+    return None
 
 # ================== HTF context ==================
 def _get_htf_context(symbol):
