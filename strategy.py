@@ -1088,20 +1088,27 @@ def _notional_ok(sym_ctx, thr):
 
 # ================== منطق الإشارة ==================
 def check_signal(symbol: str):
-    global _CURRENT_SYMKEY
-    _CURRENT_SYMKEY = symbol
+    base, variant = _split_symbol_variant(symbol)
+
+# احترام الـ cooldown إن وُجد
+left = _cooldown_left_min(base)
+if left > 0.0:
+    return _rej("cooldown", left_min=round(left, 1), reason=_cooldown_reason(base))
+
     try:
         # --- HTF ---
         htf_ctx = _get_htf_context(symbol)
         if not htf_ctx: return _rej("data_unavailable")
 
-        # --- LTF ---
-        ltf = get_ohlcv_cached(symbol, STRAT_LTF_TIMEFRAME, 140)
-        if not ltf or len(ltf) < 80: return _rej("no_ltf")
-
-        df = _df(ltf); df = _ensure_ltf_indicators(df)
-        if len(df) < 60: return _rej("no_ltf")
+        # --- LTF (مع fallback) ---
+        df = _get_ltf_df_with_fallback(symbol, STRAT_LTF_TIMEFRAME)
+        if df is None or len(df) < 60:
+        # فعِّل كولداون قصير لتخفيف الضغط على API عند غياب بيانات LTF
+        cd_min = _cooldown_minutes_for_variant(variant)
+         _cooldown_set(base, max(5, min(cd_min, 20)), reason="no_ltf")
+        return _rej("no_ltf")
         closed = df.iloc[-2]; prev = df.iloc[-3]
+
 
         # ATR%
         atr_val = _finite_or(None, _atr_from_df(df))
