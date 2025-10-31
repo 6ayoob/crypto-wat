@@ -1,5 +1,5 @@
 # -*- coding: utf-8 -*-
-# strategy.py - Spot-only (v3.4 PRO, unified, stable) — PART 1
+# strategy.py - Spot-only (v3.4 PRO, unified, stable) — PART 1 (updated)
 from __future__ import annotations
 
 import os, json, requests, logging, time, math, traceback
@@ -17,26 +17,34 @@ from config import (
 )
 
 # ===================== ENV helpers =====================
-def _env_bool(name, default=False):
+def _env_bool(name: str, default: bool = False) -> bool:
     v = os.getenv(name)
     if v is None: return default
     return str(v).strip().lower() in ("1","true","t","yes","y","on")
 
-def _env_float(name, default):
-    try: return float(os.getenv(name, str(default)))
-    except Exception: return float(default)
+def _env_float(name: str, default: float) -> float:
+    try:
+        return float(os.getenv(name, str(default)))
+    except Exception:
+        return float(default)
 
-def _env_int(name, default):
-    try: return int(os.getenv(name, str(default)))
-    except Exception: return int(default)
+def _env_int(name: str, default: int) -> int:
+    try:
+        return int(float(os.getenv(name, str(default))))
+    except Exception:
+        return int(default)
 
-def _env_str(name, default=""):
-    v = os.getenv(name); return default if v is None else str(v)
+def _env_str(name: str, default: str = "") -> str:
+    v = os.getenv(name)
+    return default if v is None else str(v)
 
 # USDT free balance
 def get_usdt_free() -> float:
-    try: return float(fetch_balance("USDT") or 0.0)
-    except Exception: return 0.0
+    try:
+        v = fetch_balance("USDT")
+        return float(v or 0.0)
+    except Exception:
+        return 0.0
 
 # Exchange symbol filters (minQty/minNotional/stepSize/tickSize)
 def fetch_symbol_filters(base: str) -> dict:
@@ -45,7 +53,8 @@ def fetch_symbol_filters(base: str) -> dict:
     If okx_api doesn't provide them, fallback to safe defaults (minNotional من config).
     """
     try:
-        info = {}  # إن توفّرت لدى okx_api: market(base)
+        # TODO: إن توفّر دعم الأسواق في okx_api استخدمه هنا
+        info = {}  # market(base) → {"stepSize":..., "minQty":..., "minNotional":..., "tickSize":...}
         step = float(info.get("stepSize", 0.000001)) or 0.000001
         min_qty = float(info.get("minQty", 0.0)) or 0.0
         min_notional = float(info.get("minNotional", MIN_NOTIONAL_USDT)) or MIN_NOTIONAL_USDT
@@ -60,7 +69,7 @@ def _round_to_tick(px: float, tick: float) -> float:
 
 # ===== MTF strict flag (H1/4H/1D) =====
 try:
-    ENABLE_MTF_STRICT
+    ENABLE_MTF_STRICT  # type: ignore[name-defined]
 except NameError:
     ENABLE_MTF_STRICT = _env_bool("ENABLE_MTF_STRICT", False)
 
@@ -70,7 +79,8 @@ if not logging.getLogger().hasHandlers():
     logging.basicConfig(level=logging.INFO, format="%(asctime)s [%(levelname)s] %(name)s: %(message)s")
 
 DEBUG_LOG_SIGNALS = _env_bool("DEBUG_LOG_SIGNALS", False)
-def _print(s: str):
+
+def _print(s: str) -> None:
     try:
         print(s, flush=True)
     except Exception:
@@ -85,6 +95,12 @@ RIYADH_TZ = timezone(timedelta(hours=3))
 POSITIONS_DIR = "positions"
 CLOSED_POSITIONS_FILE = "closed_positions.json"
 RISK_STATE_FILE = "risk_state.json"
+
+# تأكد من وجود مجلد المراكز مبكّرًا
+try:
+    os.makedirs(POSITIONS_DIR, exist_ok=True)
+except Exception:
+    pass
 
 STRAT_TG_SEND = _env_bool("STRAT_TG_SEND", False)
 
@@ -184,12 +200,14 @@ _REJ_COUNTS = {"atr_low": 0, "rvol_low": 0, "notional_low": 0}
 _REJ_SUMMARY: Dict[str, int] = {}
 
 # ================== Helpers & basics ==================
-def reset_cycle_cache():
+def reset_cycle_cache() -> None:
+    """Clear transient caches and counters at the start of a scan cycle."""
     _OHLCV_CACHE.clear()
     for k in _METRICS: _METRICS[k] = 0
     for k in _REJ_COUNTS: _REJ_COUNTS[k] = 0
 
-def metrics_snapshot() -> dict: return dict(_METRICS)
+def metrics_snapshot() -> dict:
+    return dict(_METRICS)
 
 def metrics_format() -> str:
     m = _METRICS
@@ -200,37 +218,39 @@ def metrics_format() -> str:
         f"- HTF hits/misses: <b>{m['htf_cache_hits']}/{m['htf_cache_misses']}</b>"
     )
 
-def _tg(text, parse_mode="HTML"):
+def _tg(text: str, parse_mode: str | None = "HTML") -> None:
     if not STRAT_TG_SEND: return
     try:
         if not TELEGRAM_TOKEN or not TELEGRAM_CHAT_ID: return
         url = f"https://api.telegram.org/bot{TELEGRAM_TOKEN}/sendMessage"
         data = {"chat_id": TELEGRAM_CHAT_ID, "text": text}
         if parse_mode: data["parse_mode"] = parse_mode
-        requests.post(url, data=data, timeout=10)
+        # تجنّب حظر الشبكة الطويل
+        requests.post(url, data=data, timeout=8)
     except Exception:
+        # نتجاهل أي أخطاء تليجرام كي لا تعطل الدورة
         pass
 
 # --- Telegram de-dup guard ---
 _MSG_DEDUP: Dict[str, float] = {}
-def _tg_once(key: str, text: str, ttl_sec: int = 900, parse_mode: str = "HTML"):
+def _tg_once(key: str, text: str, ttl_sec: int = 900, parse_mode: str = "HTML") -> None:
     now = time.time()
     last = _MSG_DEDUP.get(key, 0.0)
     if now - last < ttl_sec: return
     _MSG_DEDUP[key] = now
     _tg(text, parse_mode=parse_mode)
 
-def now_riyadh(): return datetime.now(RIYADH_TZ)
-def _today_str(): return now_riyadh().strftime("%Y-%m-%d")
+def now_riyadh() -> datetime: return datetime.now(RIYADH_TZ)
+def _today_str() -> str: return now_riyadh().strftime("%Y-%m-%d")
 def _hour_key(dt: datetime) -> str: return dt.strftime("%Y-%m-%d %H")
 
-def _atomic_write(path, data):
+def _atomic_write(path: str, data: Any) -> None:
     tmp = path + ".tmp"
     with open(tmp, "w", encoding="utf-8") as f:
         json.dump(data, f, ensure_ascii=False, indent=2)
     os.replace(tmp, path)
 
-def _read_json(path, default):
+def _read_json(path: str, default: Any) -> Any:
     try:
         if os.path.exists(path):
             with open(path, "r", encoding="utf-8") as f:
@@ -239,16 +259,23 @@ def _read_json(path, default):
         pass
     return default
 
-def _df(data):
+def _df(data: list) -> pd.DataFrame:
     df = pd.DataFrame(data, columns=["timestamp","open","high","low","close","volume"])
+    # أصلح توقيتات بالثواني → ميلي ثانية
     try:
         if len(df) and df["timestamp"].iloc[-1] < 10**12:
             df["timestamp"] = df["timestamp"] * 1000
     except Exception:
         pass
+    # أنواع رقمية آمنة
+    for c in ("open","high","low","close","volume"):
+        try:
+            df[c] = pd.to_numeric(df[c], errors="coerce")
+        except Exception:
+            pass
     return df
 
-def _finite_or(default, *vals):
+def _finite_or(default: float | None, *vals: Any) -> float | None:
     for v in vals:
         try:
             f = float(v)
@@ -257,7 +284,7 @@ def _finite_or(default, *vals):
             pass
     return default
 
-def _split_symbol_variant(symbol: str):
+def _split_symbol_variant(symbol: str) -> Tuple[str, str]:
     if "#" in symbol:
         base, variant = symbol.split("#", 1)
         variant = (variant or "new").lower().strip()
@@ -269,7 +296,7 @@ def _split_symbol_variant(symbol: str):
     return symbol, "new"
 
 # ---------- HTF Gate (trend / filter) ----------
-def _ensure_htf_indicators(df):
+def _ensure_htf_indicators(df: pd.DataFrame) -> pd.DataFrame:
     """Ensure ema21/ema50/rsi14 on HTF df."""
     try:
         if "ema21" not in df:
@@ -286,12 +313,12 @@ def _ensure_htf_indicators(df):
         pass
     return df
 
-def _htf_gate(base, *args, **kwargs):
+def _htf_gate(base: str, *args, **kwargs) -> bool:
     """
     Flexible HTF filter:
       - Pass rule dict (optional): {"tf":"4h","ind":"ema21","dir":"above","bars":1,"fail_open":True}
     """
-    rule = {}
+    rule: Dict[str, Any] = {}
     if args:
         if isinstance(args[0], dict): rule.update(args[0])
         elif isinstance(args[0], str): rule["tf"] = args[0]
@@ -336,43 +363,43 @@ def _htf_gate(base, *args, **kwargs):
         return True if fail_open else False
 
 # ================== Positions storage ==================
-def _pos_path(symbol):
+def _pos_path(symbol: str) -> str:
     os.makedirs(POSITIONS_DIR, exist_ok=True)
     return f"{POSITIONS_DIR}/{symbol.replace('/', '_')}.json"
 
-def load_position(symbol): return _read_json(_pos_path(symbol), None)
-def save_position(symbol, position): _atomic_write(_pos_path(symbol), position)
-def clear_position(symbol):
+def load_position(symbol: str) -> Any: return _read_json(_pos_path(symbol), None)
+def save_position(symbol: str, position: Any) -> None: _atomic_write(_pos_path(symbol), position)
+def clear_position(symbol: str) -> None:
     try:
         p = _pos_path(symbol)
         if os.path.exists(p): os.remove(p)
     except Exception:
         pass
 
-def count_open_positions():
+def count_open_positions() -> int:
     os.makedirs(POSITIONS_DIR, exist_ok=True)
     return len([f for f in os.listdir(POSITIONS_DIR) if f.endswith(".json")])
 
-def load_closed_positions(): return _read_json(CLOSED_POSITIONS_FILE, [])
-def save_closed_positions(lst): _atomic_write(CLOSED_POSITIONS_FILE, lst)
+def load_closed_positions() -> list: return _read_json(CLOSED_POSITIONS_FILE, [])
+def save_closed_positions(lst: list) -> None: _atomic_write(CLOSED_POSITIONS_FILE, lst)
 
 # ================== Indicators ==================
-def ema(s, n): return s.ewm(span=n, adjust=False).mean()
+def ema(s: pd.Series, n: int) -> pd.Series: return s.ewm(span=n, adjust=False).mean()
 
-def rsi(series, period=14):
+def rsi(series: pd.Series, period: int = 14) -> pd.Series:
     d = series.diff(); gain = d.where(d > 0, 0.0); loss = -d.where(d < 0, 0.0)
     ag = gain.ewm(alpha=1/period, adjust=False).mean()
     al = loss.ewm(alpha=1/period, adjust=False).mean().replace(0, 1e-9)
     rs = ag / al; return 100 - (100 / (1 + rs))
 
-def macd_cols(df, fast=12, slow=26, signal=9):
+def macd_cols(df: pd.DataFrame, fast: int = 12, slow: int = 26, signal: int = 9) -> pd.DataFrame:
     df["ema_fast"], df["ema_slow"] = ema(df["close"], fast), ema(df["close"], slow)
     df["macd"] = df["ema_fast"] - df["ema_slow"]
     df["macd_signal"] = df["macd"].ewm(span=signal, adjust=False).mean()
     df["macd_hist"] = df["macd"] - df["macd_signal"]
     return df
 
-def add_indicators(df):
+def add_indicators(df: pd.DataFrame) -> pd.DataFrame:
     df["ema9"]   = ema(df["close"], EMA_FAST)
     df["ema21"]  = ema(df["close"], EMA_SLOW)
     df["ema50"]  = ema(df["close"], EMA_TREND)
@@ -382,7 +409,7 @@ def add_indicators(df):
     df = macd_cols(df)
     return df
 
-def _ensure_ltf_indicators(df):
+def _ensure_ltf_indicators(df: pd.DataFrame) -> pd.DataFrame:
     df = add_indicators(df.copy())
     ts = pd.to_datetime(df["timestamp"], unit="ms").dt.tz_localize("UTC").dt.tz_convert("Asia/Riyadh")
     day_changed = ts.dt.date
@@ -402,7 +429,7 @@ def _ensure_ltf_indicators(df):
     df["avg_body20"] = df["body"].rolling(20).mean()
     return df
 
-def _atr_from_df(df, period=ATR_PERIOD):
+def _atr_from_df(df: pd.DataFrame, period: int = ATR_PERIOD) -> float:
     c = df["close"].shift(1)
     tr = pd.concat([
         (df["high"]-df["low"]).abs(),
@@ -412,14 +439,14 @@ def _atr_from_df(df, period=ATR_PERIOD):
     atr = tr.ewm(alpha=1/period, adjust=False).mean()
     return float(atr.iloc[-2])
 
-def atr(h, l, c, period=14) -> pd.Series:
+def atr(h, l, c, period: int = 14) -> pd.Series:
     h, l, c = pd.Series(h), pd.Series(l), pd.Series(c)
     prev_c = c.shift(1)
     tr = pd.concat([(h - l).abs(), (h - prev_c).abs(), (l - prev_c).abs()], axis=1).max(axis=1)
     return tr.ewm(alpha=1/period, adjust=False).mean()
 
 # ===== Swing/SR =====
-def _swing_points(df, left=2, right=2):
+def _swing_points(df: pd.DataFrame, left: int = 2, right: int = 2) -> Tuple[float | None, float | None]:
     highs, lows = df["high"], df["low"]
     idx = len(df) - 3
     swing_high = swing_low = None
@@ -429,11 +456,11 @@ def _swing_points(df, left=2, right=2):
         if lows[i]  == min(lows[i-left:i+right+1]):  swing_low  = float(lows[i])
     return swing_high, swing_low
 
-def _bullish_engulf(prev, cur):
+def _bullish_engulf(prev: pd.Series, cur: pd.Series) -> bool:
     return (cur["close"] > cur["open"]) and (prev["close"] < prev["open"]) and \
            (cur["close"] >= prev["open"]) and (cur["open"] <= prev["close"])
 
-def get_sr_on_closed(df, window=SR_WINDOW):
+def get_sr_on_closed(df: pd.DataFrame, window: int = SR_WINDOW) -> Tuple[float | None, float | None]:
     if len(df) < window + 3: return None, None
     df_prev = df.iloc[:-1]; w = min(window, len(df_prev))
     resistance = df_prev["high"].rolling(w, min_periods=max(5, w//3)).max().iloc[-1]
@@ -441,13 +468,13 @@ def get_sr_on_closed(df, window=SR_WINDOW):
     if pd.isna(resistance) or pd.isna(support): return None, None
     return float(support), float(resistance)
 
-def recent_swing(df, lookback=60):
+def recent_swing(df: pd.DataFrame, lookback: int = 60) -> Tuple[float | None, float | None]:
     if len(df) < lookback + 5: return None, None
     seg = df.iloc[-(lookback+1):-1]; hhv = seg["high"].max(); llv = seg["low"].min()
     if pd.isna(hhv) or pd.isna(llv) or hhv <= llv: return None, None
     return float(hhv), float(llv)
 
-def _rolling_sr(symbol: str, tf: str, window: int, bars: int = 300):
+def _rolling_sr(symbol: str, tf: str, window: int, bars: int = 300) -> Tuple[float | None, float | None]:
     data = get_ohlcv_cached(symbol, tf, bars)
     if not data: return None, None
     df = _df(data)
@@ -465,7 +492,7 @@ SR_LEVELS_CFG = [
     ("HTF_D1", "1d", 30, 1.5),
 ]
 
-def get_sr_multi(symbol: str):
+def get_sr_multi(symbol: str) -> Dict[str, Dict[str, Any]]:
     levels: Dict[str, Dict[str, Any]] = {}
     base = symbol.split("#")[0]
     for name, tf, window, near_mult in SR_LEVELS_CFG:
@@ -478,7 +505,7 @@ def get_sr_multi(symbol: str):
     return levels
 
 # ===== MACD/RSI Gate =====
-def macd_rsi_gate(prev_row, closed_row, policy):
+def macd_rsi_gate(prev_row: pd.Series, closed_row: pd.Series, policy: str | None) -> bool:
     if not policy: return True
     rsi_now = float(closed_row.get("rsi", 50.0))
     rsi_up  = rsi_now > float(prev_row.get("rsi", rsi_now))
@@ -497,8 +524,8 @@ def macd_rsi_gate(prev_row, closed_row, policy):
     return k >= 2  # balanced
 
 # ================== OHLCV cache + Retry ==================
-def _retry_fetch_ohlcv(symbol, tf, bars, attempts=3, base_wait=1.2, max_wait=6.0):
-    last_exc = None
+def _retry_fetch_ohlcv(symbol: str, tf: str, bars: int, attempts: int = 3, base_wait: float = 1.2, max_wait: float = 6.0) -> list | None:
+    last_exc: Exception | None = None
     for i in range(attempts):
         try:
             data = fetch_ohlcv(symbol, tf, bars)
@@ -507,7 +534,8 @@ def _retry_fetch_ohlcv(symbol, tf, bars, attempts=3, base_wait=1.2, max_wait=6.0
             last_exc = e
             wait = min(max_wait, base_wait * (2 ** i)) * (0.9 + 0.2 * np.random.rand())
             time.sleep(wait)
-    if last_exc: raise last_exc
+    if last_exc:  # أعِد آخر استثناء كي يظهر في اللوج
+        raise last_exc
     return None
 
 def api_fetch_ohlcv(symbol: str, tf: str, bars: int) -> list:
@@ -523,7 +551,8 @@ def get_ohlcv_cached(symbol: str, tf: str, bars: int) -> list:
     data = api_fetch_ohlcv(symbol, tf, bars)
     if data: _OHLCV_CACHE[key] = data
     return data
-def _get_ltf_df_with_fallback(symbol: str, tf: str = None) -> Optional[pd.DataFrame]:
+
+def _get_ltf_df_with_fallback(symbol: str, tf: str | None = None) -> Optional[pd.DataFrame]:
     tf = tf or STRAT_LTF_TIMEFRAME
     # جرّب تسلسلاً من الأحجام لنضمن أقل شيء 60-80 شمعة قابلة للاستخدام
     for bars in (140, 120, 100, 80):
@@ -543,7 +572,7 @@ def _get_ltf_df_with_fallback(symbol: str, tf: str = None) -> Optional[pd.DataFr
     return None
 
 # ================== HTF context ==================
-def _get_htf_context(symbol):
+def _get_htf_context(symbol: str) -> Dict[str, Any] | None:
     base = symbol.split("#")[0]
     now = now_riyadh()
     ent = _HTF_CACHE.get(base)
@@ -576,7 +605,7 @@ def _get_htf_context(symbol):
     }
 
     if ENABLE_MTF_STRICT:
-        def _tf_info(tf, bars=160):
+        def _tf_info(tf: str, bars: int = 160) -> Dict[str, Any] | None:
             try:
                 d = get_ohlcv_cached(base, tf, bars)
                 if not d or len(d) < 80: return None
@@ -599,7 +628,7 @@ def _get_htf_context(symbol):
 
 # ================== Breadth Guard ==================
 _BREADTH_CACHE = {"t": 0.0, "ratio": None}
-def breadth_status():
+def breadth_status() -> Dict[str, Any]:
     try:
         r = _get_breadth_ratio_cached()
         eff_min = _breadth_min_auto()
@@ -699,7 +728,7 @@ def _breadth_min_auto() -> float:
         return BREADTH_MIN_RATIO
 
 # ===== سلوك القائد =====
-def _is_relative_leader_vs_btc(symbol_base: str, tf="1h", lookback=24, edge=0.02) -> bool:
+def _is_relative_leader_vs_btc(symbol_base: str, tf: str = "1h", lookback: int = 24, edge: float = 0.02) -> bool:
     try:
         d1 = get_ohlcv_cached(symbol_base, tf, lookback+10)
         d2 = get_ohlcv_cached("BTC/USDT", tf, lookback+10)
@@ -720,7 +749,7 @@ _LAST_ENTRY_BAR_TS: Dict[str, int] = {}
 _SYMBOL_LAST_TRADE_AT: Dict[str, datetime] = {}
 _CURRENT_SYMKEY: Optional[str] = None
 
-def _rej(stage, **kv):
+def _rej(stage: str, **kv) -> None:
     if stage in _REJ_COUNTS: _REJ_COUNTS[stage] += 1
     try: _REJ_SUMMARY[stage] = int(_REJ_SUMMARY.get(stage, 0)) + 1
     except Exception: pass
@@ -737,12 +766,12 @@ def _rej(stage, **kv):
         logger.info(f"[REJECT] {stage} | {kvs}")
     return None
 
-def _pass(stage, **kv):
+def _pass(stage: str, **kv) -> None:
     if DEBUG_LOG_SIGNALS:
         kvs = " ".join(f"{k}={v}" for k, v in kv.items())
         logger.info(f"[PASS]   {stage} | {kvs}")
 
-def _round_relax_factors():
+def _round_relax_factors() -> Tuple[float, float, float]:
     f_atr, f_rvol = 1.0, 1.0
     notional_min = MIN_BAR_NOTIONAL_USD
     c = _REJ_COUNTS
@@ -882,7 +911,7 @@ PER_STRAT_MGMT = {
 }
 def _mgmt(variant: str): return PER_STRAT_MGMT.get(variant, PER_STRAT_MGMT["new"])
 
-def get_cfg(variant: str):
+def get_cfg(variant: str) -> Dict[str, Any]:
     cfg = dict(BASE_CFG)
     v = (variant or "new").lower()
     if v == "new": cfg.update(NEW_SCALP_OVERRIDES)
@@ -896,7 +925,7 @@ def get_cfg(variant: str):
     return cfg
 
 # ---------- Scoring ----------
-def _opportunity_score(df, prev, closed):
+def _opportunity_score(df: pd.DataFrame, prev: pd.Series, closed: pd.Series) -> Tuple[int, str, str]:
     score, why, pattern = 0, [], ""
     try:
         if closed["close"] > closed["open"]:
@@ -923,10 +952,13 @@ def _opportunity_score(df, prev, closed):
 
 # ---------- SRR+ helper ----------
 def _sweep_then_reclaim(df, prev, closed, ref_val, lookback=20, tol=0.0012):
+    """يكشف كسر قاع سابق (sweep) ثم استرجاع فوق مرجع (VWAP/EMA21) مع جسم صاعد."""
     try:
-        if ref_val is None: return False
+        if ref_val is None or len(df) < lookback + 5:
+            return False
         lows_window = df["low"].iloc[-(lookback + 2):-2]
-        if lows_window.empty: return False
+        if lows_window.empty:
+            return False
         ll = float(lows_window.min())
         cur_low = float(closed["low"])
         cur_close = float(closed["close"])
@@ -942,19 +974,28 @@ def _entry_alpha_logic(df, closed, prev, atr_ltf, htf_ctx, cfg, thr, sym_ctx):
     Alpha: Breakout + زخم/سيولة ديناميكي + فلتر إنهاك.
     """
     try:
-        if len(df) < 80: return False
+        if len(df) < 80:
+            return False
+
         buf = float(cfg.get("BREAKOUT_BUFFER_LTF", 0.0012))
-        hi = float(df["high"].iloc[-52:-2].max())
-        c  = float(closed["close"]); o = float(closed["open"])
-        bo = (c > hi * (1.0 + buf)) and (c > o)
+        hi  = float(df["high"].iloc[-52:-2].max())
+        c   = float(closed["close"])
+        o   = float(closed["open"])
+        bo  = (c > hi * (1.0 + buf)) and (c > o)
 
         nr_recent = bool(df["is_nr"].iloc[-3:-1].all())
-        rvol_need = max(1.05, float(thr.get("RVOL_NEED_BASE", cfg.get("RVOL_MIN", 1.3))) - (0.05 if nr_recent else 0.0))
+        rvol_need = max(
+            1.05,
+            float(thr.get("RVOL_NEED_BASE", cfg.get("RVOL_MIN", 1.3))) - (0.05 if nr_recent else 0.0)
+        )
         rvol_now = float(_finite_or(1.0, closed.get("rvol"), 1.0))
-        if not (bo and rvol_now >= rvol_need): return False
+        if not (bo and rvol_now >= rvol_need):
+            return False
 
+        # فلتر الإنهاك
         rsi_now = float(closed.get("rsi", 50.0))
-        if rsi_now > EXH_RSI_MAX: return False
+        if rsi_now > EXH_RSI_MAX:
+            return False
 
         try:
             ema50_now = float(closed.get("ema50"))
@@ -969,155 +1010,221 @@ def _entry_alpha_logic(df, closed, prev, atr_ltf, htf_ctx, cfg, thr, sym_ctx):
         return False
 
 def _entry_pullback_logic(df, closed, prev, atr_ltf, htf_ctx, cfg):
-    if cfg["PULLBACK_VALUE_REF"] == "ema21":
-        ref_val = _finite_or(None, closed.get("ema21"))
-    else:
-        ref_val = _finite_or(None, closed.get("vwap"))
-        if ref_val is None:
+    """دخول Pullback حول قيمة (VWAP/EMA21) مع تأكيد اختياري."""
+    try:
+        if cfg.get("PULLBACK_VALUE_REF") == "ema21":
             ref_val = _finite_or(None, closed.get("ema21"))
-    ref_val = _finite_or(float(closed["close"]), ref_val, closed.get("ema50"), closed.get("close"))
+        else:
+            ref_val = _finite_or(None, closed.get("vwap"))
+            if ref_val is None:
+                ref_val = _finite_or(None, closed.get("ema21"))
 
-    close_v = _finite_or(None, closed.get("close"))
-    low_v   = _finite_or(None, closed.get("low"))
-    if close_v is None or low_v is None: return False
+        ref_val = _finite_or(float(closed.get("close", 0.0)), ref_val, closed.get("ema50"), closed.get("close"))
 
-    near_val = (close_v >= ref_val) and (low_v <= ref_val)
-    if not near_val: return False
+        close_v = _finite_or(None, closed.get("close"))
+        low_v   = _finite_or(None, closed.get("low"))
+        if close_v is None or low_v is None:
+            return False
 
-    if not macd_rsi_gate(prev, closed, cfg.get("RSI_GATE_POLICY")):
+        near_val = (close_v >= ref_val) and (low_v <= ref_val)
+        if not near_val:
+            return False
+
+        if not macd_rsi_gate(prev, closed, cfg.get("RSI_GATE_POLICY")):
+            return False
+
+        confirm = (cfg.get("PULLBACK_CONFIRM") or "").lower()
+        if confirm == "bullish_engulf":
+            return _bullish_engulf(prev, closed)
+        if confirm == "bos":
+            swing_high, _ = _swing_points(df)
+            sh = _finite_or(None, swing_high)
+            return bool(sh is not None and close_v > sh)
+        if confirm == "sweep_reclaim":
+            return _sweep_then_reclaim(df, prev, closed, ref_val, lookback=20, tol=0.0012)
+        return True
+    except Exception:
         return False
-
-    confirm = (cfg.get("PULLBACK_CONFIRM") or "").lower()
-    if confirm == "bullish_engulf":
-        return _bullish_engulf(prev, closed)
-    if confirm == "bos":
-        swing_high, _ = _swing_points(df)
-        sh = _finite_or(None, swing_high)
-        return bool(sh is not None and close_v > sh)
-    if confirm == "sweep_reclaim":
-        return _sweep_then_reclaim(df, prev, closed, ref_val, lookback=20, tol=0.0012)
-    return True
 
 def _entry_breakout_logic(df, closed, prev, atr_ltf, htf_ctx, cfg):
     """Breakout مُنتقى + حماية RVOL + بدائل NR/VWAP."""
     try:
-        n = int(cfg.get("SWING_LOOKBACK", 60))
+        n   = int(cfg.get("SWING_LOOKBACK", 60))
         buf = float(cfg.get("BREAKOUT_BUFFER_LTF", 0.0015))
-        if len(df) < max(40, n+3): return False
-        hi = float(df["high"].iloc[-n-2:-2].max())
-        close_v = float(closed["close"]); open_v = float(closed["open"])
-        vwap_v  = _finite_or(None, closed.get("vwap"), closed.get("ema21"))
-        bo = (close_v > hi * (1.0 + buf)) and (close_v > open_v)
-        rvol_v = float(_finite_or(1.0, closed.get("rvol"), 1.0))
-        need_rvol = float(cfg.get("RVOL_MIN", 1.2))
-        if bo and (rvol_v >= max(need_rvol, 1.1)): return True
+        if len(df) < max(40, n + 3):
+            return False
+
+        hi       = float(df["high"].iloc[-n-2:-2].max())
+        close_v  = float(closed["close"])
+        open_v   = float(closed["open"])
+        vwap_v   = _finite_or(None, closed.get("vwap"), closed.get("ema21"))
+        bo       = (close_v > hi * (1.0 + buf)) and (close_v > open_v)
+        rvol_v   = float(_finite_or(1.0, closed.get("rvol"), 1.0))
+        need_rvol= float(cfg.get("RVOL_MIN", 1.2))
+
+        if bo and (rvol_v >= max(need_rvol, 1.1)):
+            return True
+
         nr_recent = bool(df["is_nr"].iloc[-3:-1].all())
-        if nr_recent and (close_v > hi): return True
+        if nr_recent and (close_v > hi):
+            return True
+
         if bo and vwap_v is not None:
             rng14 = (df["high"] - df["low"]).rolling(14).mean().iloc[-2]
-            if rng14 and abs(close_v - vwap_v) <= 0.6 * float(rng14): return True
+            if rng14 and abs(close_v - vwap_v) <= 0.6 * float(rng14):
+                return True
+
         return False
     except Exception:
         return False
 
 # ================== Thresholds ديناميكية ==================
 def regime_thresholds(breadth_ratio: float | None, atrp_now: float) -> dict:
+    """توليد عتبات ديناميكية حسب Breadth و ATR% + تليين وقتي/سوقي + Auto-relax."""
     br = 0.5 if breadth_ratio is None else float(breadth_ratio)
+
     if br >= 0.60:
         thr = {"ATRP_MIN_MAJ":0.0015,"ATRP_MIN_ALT":0.0018,"ATRP_MIN_MICRO":0.0022,
-               "RVOL_NEED_BASE":1.10,"NOTIONAL_AVG_MIN":18000,"NOTIONAL_MINBAR":max(14000, MIN_BAR_NOTIONAL_USD*0.6),
+               "RVOL_NEED_BASE":1.10,"NOTIONAL_AVG_MIN":18000,
+               "NOTIONAL_MINBAR":max(14000, MIN_BAR_NOTIONAL_USD*0.6),
                "NEUTRAL_HTF_PASS":True}
     elif br >= 0.50:
         thr = {"ATRP_MIN_MAJ":0.0018,"ATRP_MIN_ALT":0.0022,"ATRP_MIN_MICRO":0.0026,
-               "RVOL_NEED_BASE":1.20,"NOTIONAL_AVG_MIN":23000,"NOTIONAL_MINBAR":max(19000, MIN_BAR_NOTIONAL_USD*0.9),
+               "RVOL_NEED_BASE":1.20,"NOTIONAL_AVG_MIN":23000,
+               "NOTIONAL_MINBAR":max(19000, MIN_BAR_NOTIONAL_USD*0.9),
                "NEUTRAL_HTF_PASS":True}
     else:
         thr = {"ATRP_MIN_MAJ":0.0022,"ATRP_MIN_ALT":0.0026,"ATRP_MIN_MICRO":0.0030,
-               "RVOL_NEED_BASE":1.28,"NOTIONAL_AVG_MIN":28000,"NOTIONAL_MINBAR":max(24000, MIN_BAR_NOTIONAL_USD),
+               "RVOL_NEED_BASE":1.28,"NOTIONAL_AVG_MIN":28000,
+               "NOTIONAL_MINBAR":max(24000, MIN_BAR_NOTIONAL_USD),
                "NEUTRAL_HTF_PASS":False}
+
+    # إذا كان ATR% مرتفعًا جدًا، خفّض شرط RVOL قليلًا
     if atrp_now >= 0.01:
         thr["RVOL_NEED_BASE"] = max(1.05, thr["RVOL_NEED_BASE"] - 0.05)
-    f_atr, f_rvol, notional_min = _round_relax_factors()
-    thr["RVOL_NEED_BASE"] *= f_rvol
-    thr["ATRP_MIN_ALT"]  *= f_atr
-    thr["ATRP_MIN_MAJ"]  *= f_atr
-    thr["ATRP_MIN_MICRO"]*= f_atr
-    thr["NOTIONAL_MINBAR"] = max(thr["NOTIONAL_MINBAR"]*0.95, notional_min*0.95)
 
-    # time/market soft scaling
+    # Auto-relax حسب رفضات الجولة
+    f_atr, f_rvol, notional_min = _round_relax_factors()
+    thr["RVOL_NEED_BASE"]     *= f_rvol
+    thr["ATRP_MIN_ALT"]       *= f_atr
+    thr["ATRP_MIN_MAJ"]       *= f_atr
+    thr["ATRP_MIN_MICRO"]     *= f_atr
+    thr["NOTIONAL_MINBAR"]     = max(thr["NOTIONAL_MINBAR"]*0.95, notional_min*0.95)
+
+    # تليين إضافي ضمن نافذة soft-schedule ومع سوق ضعيف
     try:
         eff_min = _breadth_min_auto()
         scale, _note = _soft_scale_by_time_and_market(breadth_ratio, eff_min)
         if scale < 1.0:
             ease = 1.0 - (1.0 - scale) * 0.3
-            thr["RVOL_NEED_BASE"] = max(1.05, thr["RVOL_NEED_BASE"] * ease)
-            thr["ATRP_MIN_ALT"]   = thr["ATRP_MIN_ALT"]  * ease
-            thr["ATRP_MIN_MAJ"]   = thr["ATRP_MIN_MAJ"]  * ease
-            thr["ATRP_MIN_MICRO"] = thr["ATRP_MIN_MICRO"]* ease
+            thr["RVOL_NEED_BASE"]  = max(1.05, thr["RVOL_NEED_BASE"] * ease)
+            thr["ATRP_MIN_ALT"]    = thr["ATRP_MIN_ALT"]  * ease
+            thr["ATRP_MIN_MAJ"]    = thr["ATRP_MIN_MAJ"]  * ease
+            thr["ATRP_MIN_MICRO"]  = thr["ATRP_MIN_MICRO"]* ease
     except Exception:
         pass
 
     return thr
 
 def _partials_for(score: int, tp_count: int, atrp: float) -> list:
+    """توزيع الدفعات الجزئية على الأهداف حسب القوة/التذبذب."""
     tp_count = max(1, min(int(tp_count), MAX_TP_COUNT))
     base = [1.0] if tp_count == 1 else [0.5, 0.3, 0.2, 0.0, 0.0][:tp_count]
-    if score >= 55 and tp_count >= 3: base = [0.45, 0.30, 0.25, 0.0, 0.0][:tp_count]
-    if atrp >= 0.008 and tp_count >= 3: base = [0.40, 0.30, 0.30, 0.0, 0.0][:tp_count]
-    s = sum(base); return [round(x/s, 6) for x in base]
+    if score >= 55 and tp_count >= 3:
+        base = [0.45, 0.30, 0.25, 0.0, 0.0][:tp_count]
+    if atrp >= 0.008 and tp_count >= 3:
+        base = [0.40, 0.30, 0.30, 0.0, 0.0][:tp_count]
+    s = sum(base)
+    return [round(x/s, 6) for x in base]
 
 def _atrp_min_for_symbol(sym_ctx, thr):
     bucket = sym_ctx.get("bucket","alt")
     q35 = float(sym_ctx.get("atrp_q35_lookback",0) or 0)
-    base = {"maj": thr["ATRP_MIN_MAJ"], "alt": thr["ATRP_MIN_ALT"], "micro": thr["ATRP_MIN_MICRO"]}.get(bucket,"alt")
+    base = {"maj": thr["ATRP_MIN_MAJ"],
+            "alt": thr["ATRP_MIN_ALT"],
+            "micro": thr["ATRP_MIN_MICRO"]}.get(bucket, thr["ATRP_MIN_ALT"])
     need = max(base, q35*0.9 if q35>0 else base)
     return need
 
 def _rvol_ok(ltf_ctx, sym_ctx, thr):
     rvol = float(ltf_ctx.get("rvol",0) or 0)
-    rvol_need = thr["RVOL_NEED_BASE"]
-    if sym_ctx.get("price",1.0) < 0.1 or sym_ctx.get("is_meme"): rvol_need -= 0.08
-    if ltf_ctx.get("is_breakout"): rvol_need -= 0.05
+    rvol_need = float(thr["RVOL_NEED_BASE"])
+    if sym_ctx.get("price",1.0) < 0.1 or sym_ctx.get("is_meme"):
+        rvol_need -= 0.08
+    if ltf_ctx.get("is_breakout"):
+        rvol_need -= 0.05
     return rvol >= rvol_need, rvol, rvol_need
 
 def _notional_ok(sym_ctx, thr):
     avg_notional_30 = float(sym_ctx.get("notional_avg_30",0))
     min_notional_30 = float(sym_ctx.get("notional_min_30",0))
-    return (avg_notional_30 >= thr["NOTIONAL_AVG_MIN"] 
-            and min_notional_30 >= thr["NOTIONAL_MINBAR"]), avg_notional_30, min_notional_30
+    return (avg_notional_30 >= float(thr["NOTIONAL_AVG_MIN"])
+            and min_notional_30 >= float(thr["NOTIONAL_MINBAR"])), avg_notional_30, min_notional_30
+
+# ---------- تبريد الرموز (cooldown) ----------
+_COOLDOWNS: Dict[str, Dict[str, Any]] = {}
+
+def _cooldown_minutes_for_variant(variant: str) -> int:
+    return {"new": 8, "srr": 10, "srr_plus": 10, "brt": 10, "vbr": 8, "alpha": 15}.get(variant, 8)
+
+def _cooldown_reason(base: str) -> str:
+    ent = _COOLDOWNS.get(base) or {}
+    return ent.get("reason", "cooldown")
+
+def _cooldown_set(base: str, minutes: int, reason: str = "cooldown") -> None:
+    until = now_riyadh() + timedelta(minutes=int(minutes))
+    _COOLDOWNS[base] = {"until": until, "reason": reason}
+
+def _cooldown_left_min(base: str) -> float:
+    ent = _COOLDOWNS.get(base)
+    if not ent:
+        return 0.0
+    until = ent.get("until")
+    if not until:
+        return 0.0
+    left = (until - now_riyadh()).total_seconds() / 60.0
+    if left <= 0:
+        _COOLDOWNS.pop(base, None)
+        return 0.0
+    return float(max(0.0, left))
 
 # ================== منطق الإشارة ==================
 def check_signal(symbol: str):
+    """ينتج قرار شراء/رفض مع تفاصيل أسباب الرفض/التمرير."""
+    global _CURRENT_SYMKEY
     base, variant = _split_symbol_variant(symbol)
+    _CURRENT_SYMKEY = base  # لتتبّع آخر سبب رفض لكل رمز
 
-# احترام الـ cooldown إن وُجد
-left = _cooldown_left_min(base)
-if left > 0.0:
-    return _rej("cooldown", left_min=round(left, 1), reason=_cooldown_reason(base))
+    # احترام الـ cooldown إن وُجد
+    left = _cooldown_left_min(base)
+    if left > 0.0:
+        return _rej("cooldown", left_min=round(left, 1), reason=_cooldown_reason(base))
 
     try:
         # --- HTF ---
         htf_ctx = _get_htf_context(symbol)
-        if not htf_ctx: return _rej("data_unavailable")
+        if not htf_ctx:
+            return _rej("data_unavailable")
 
         # --- LTF (مع fallback) ---
         df = _get_ltf_df_with_fallback(symbol, STRAT_LTF_TIMEFRAME)
         if df is None or len(df) < 60:
-        # فعِّل كولداون قصير لتخفيف الضغط على API عند غياب بيانات LTF
-        cd_min = _cooldown_minutes_for_variant(variant)
-         _cooldown_set(base, max(5, min(cd_min, 20)), reason="no_ltf")
-        return _rej("no_ltf")
-        closed = df.iloc[-2]; prev = df.iloc[-3]
+            # فعِّل كولداون قصير لتخفيف الضغط على API عند غياب بيانات LTF
+            cd_min = _cooldown_minutes_for_variant(variant)
+            _cooldown_set(base, max(5, min(cd_min, 20)), reason="no_ltf")
+            return _rej("no_ltf")
 
+        closed = df.iloc[-2]
+        prev   = df.iloc[-3]
 
         # ATR%
         atr_val = _finite_or(None, _atr_from_df(df))
         price   = _finite_or(None, closed.get("close"))
-        if atr_val is None or price is None or price <= 0: return _rej("atr_calc")
+        if atr_val is None or price is None or price <= 0:
+            return _rej("atr_calc")
         atrp = float(atr_val) / float(price)
 
         # variant & bucket
-        base, variant = _split_symbol_variant(symbol)
         bucket = "maj" if base.split("/")[0] in ("BTC","ETH","BNB","SOL") else "alt"
 
         # سيولة 1h التحفّظيّة
@@ -1138,6 +1245,7 @@ if left > 0.0:
                 minbar30 = float(df1h["volume"].iloc[-30:].min())
                 avg_notional_30_h1 = vol30 * px1h
                 min_notional_30_h1 = minbar30 * px1h
+                # احتراس: خذ الحد الأدنى عبر الأُطر لتحصين الشرط
                 sym_ctx["notional_avg_30"] = float(min(sym_ctx["notional_avg_30"], avg_notional_30_h1))
                 sym_ctx["notional_min_30"] = float(min(sym_ctx["notional_min_30"], min_notional_30_h1))
         except Exception:
@@ -1147,9 +1255,11 @@ if left > 0.0:
         rvol = float(_finite_or(1.0, closed.get("rvol"), 1.0))
         nr_recent = bool(df["is_nr"].iloc[-3:-1].all())
         hi_slice = df["high"].iloc[-NR_WINDOW-2:-2]
-        if len(hi_slice) < 3: return _rej("no_ltf")
+        if len(hi_slice) < 3:
+            return _rej("no_ltf")
         hi_range = float(hi_slice.max())
-        if not math.isfinite(hi_range): return _rej("no_ltf")
+        if not math.isfinite(hi_range):
+            return _rej("no_ltf")
 
         is_breakout = bool(
             (float(closed["close"]) > hi_range) and
@@ -1159,41 +1269,54 @@ if left > 0.0:
         # اتجاه ema200 على LTF
         try:
             ema200_val = float(closed.get("ema200"))
-            if float(closed["close"]) > ema200_val: ema200_trend = "up"
-            elif float(closed["close"]) < ema200_val: ema200_trend = "down"
-            else: ema200_trend = "flat_up"
+            if float(closed["close"]) > ema200_val:
+                ema200_trend = "up"
+            elif float(closed["close"]) < ema200_val:
+                ema200_trend = "down"
+            else:
+                ema200_trend = "flat_up"
         except Exception:
             ema200_trend = "flat_up"
 
-        # صلاحية pullback
+        # صلاحية pullback سريعة (للاصطفاء في الدرجة التالية)
         try:
             ema21_val = _finite_or(None, closed.get("ema21"))
             vwap_val  = _finite_or(None, closed.get("vwap"))
             close_v, low_v = float(closed["close"]), float(closed["low"])
             pb_ok = False
             for ref in [vwap_val, ema21_val]:
-                if ref is None: continue
-                if (close_v >= ref) and (low_v <= ref): pb_ok = True; break
+                if ref is None:
+                    continue
+                if (close_v >= ref) and (low_v <= ref):
+                    pb_ok = True
+                    break
         except Exception:
             pb_ok = False
 
-        ltf_ctx = {"rvol": rvol, "is_breakout": is_breakout, "ema200_trend": ema200_trend, "pullback_ok": pb_ok}
+        ltf_ctx = {
+            "rvol": rvol,
+            "is_breakout": is_breakout,
+            "ema200_trend": ema200_trend,
+            "pullback_ok": pb_ok
+        }
 
         # --- thresholds حسب Breadth + ATR% ---
-        br = _get_breadth_ratio_cached()
+        br  = _get_breadth_ratio_cached()
         thr = regime_thresholds(br, atrp)
 
         # --- HTF trend gate (fixed + softer) ---
         trend = "neutral"
         try:
-            if float(htf_ctx["close"]) > float(htf_ctx["ema50_now"]): trend = "up"
-            elif float(htf_ctx["close"]) < float(htf_ctx["ema50_now"]): trend = "down"
+            if float(htf_ctx["close"]) > float(htf_ctx["ema50_now"]):
+                trend = "up"
+            elif float(htf_ctx["close"]) < float(htf_ctx["ema50_now"]):
+                trend = "down"
         except Exception:
             trend = "neutral"
 
         neutral_ok = bool(thr.get("NEUTRAL_HTF_PASS", True))
-        eff_min = _breadth_min_auto()
-        weak_market = (br is not None) and (br < eff_min)
+        eff_min    = _breadth_min_auto()
+        weak_market= (br is not None) and (br < eff_min)
 
         if trend == "down":
             if not ((br is not None) and (br >= max(0.58, eff_min + 0.04))):
@@ -1218,16 +1341,15 @@ if left > 0.0:
             return _rej("notional_low", avg=avg_not, minbar=minbar)
 
         # --- entry mode logic (hybrid/alpha) ---
-        _, variant = _split_symbol_variant(symbol)
         cfg = get_cfg(variant)
         chosen_mode = None
         if cfg.get("ENTRY_MODE") == "alpha":
-            # يمر عبر منطق alpha
             if _entry_alpha_logic(df, closed, prev, atr_val, htf_ctx, cfg, thr, sym_ctx):
                 chosen_mode = "alpha"
         else:
             mode_pref = cfg.get("ENTRY_MODE", "hybrid")
             order = cfg.get("HYBRID_ORDER", ["pullback","breakout"]) if mode_pref == "hybrid" else [mode_pref]
+            # جرّب الترتيب المفضّل ثم أكمله بالبديل لضمان عدم ضياع الإشارة
             for m in (order + [x for x in ["pullback","breakout"] if x not in order]):
                 if m == "pullback" and _entry_pullback_logic(df, closed, prev, atr_val, htf_ctx, cfg):
                     chosen_mode = "pullback"; break
@@ -1244,6 +1366,7 @@ if left > 0.0:
 
         _pass("buy", mode=chosen_mode, score=int(score))
         _mark_signal_now()
+
         return {
             "decision": "buy",
             "mode": chosen_mode,
@@ -1267,12 +1390,16 @@ if left > 0.0:
 # ================== Entry plan builder ==================
 def _atr_latest(symbol_base: str, tf: str, bars: int = 180) -> tuple[float, float, float]:
     data = get_ohlcv_cached(symbol_base, tf, bars)
-    if not data: raise RuntimeError("no LTF data")
+    if not data:
+        raise RuntimeError("no LTF data")
     df = _df(data); df = _ensure_ltf_indicators(df)
-    if len(df) < 50: raise RuntimeError("ltf too short")
-    closed = df.iloc[-2]; px = float(closed["close"])
+    if len(df) < 50:
+        raise RuntimeError("ltf too short")
+    closed = df.iloc[-2]
+    px = float(closed["close"])
     atr_abs = _atr_from_df(df)
-    if not atr_abs or atr_abs <= 0: raise RuntimeError("atr invalid")
+    if not atr_abs or atr_abs <= 0:
+        raise RuntimeError("atr invalid")
     atrp = atr_abs / max(px, 1e-9)
     return px, atr_abs, atrp
 
@@ -1289,7 +1416,8 @@ def _build_entry_plan(symbol: str, sig: dict | None) -> dict:
 
     # Stop-loss
     if mgmt.get("SL") in ("atr","atr_below_sweep","atr_below_retest"):
-        sl_mult = float(mgmt.get("SL_MULT", 1.0)); sl = float(price - sl_mult * atr_abs)
+        sl_mult = float(mgmt.get("SL_MULT", 1.0))
+        sl = float(price - sl_mult * atr_abs)
     elif mgmt.get("SL") == "pct":
         sl = float(price * (1.0 - float(mgmt.get("SL_PCT", 0.02))))
     else:
@@ -1300,7 +1428,8 @@ def _build_entry_plan(symbol: str, sig: dict | None) -> dict:
     if ENABLE_MULTI_TARGETS:
         mults = []
         for k in ("TP1_ATR", "TP2_ATR", "TP3_ATR"):
-            if k in mgmt: mults.append(float(mgmt[k]))
+            if k in mgmt:
+                mults.append(float(mgmt[k]))
         if not mults:
             mults = list(TP_ATR_MULTS_TREND)[:3]
         for m in mults[:MAX_TP_COUNT]:
@@ -1316,9 +1445,12 @@ def _build_entry_plan(symbol: str, sig: dict | None) -> dict:
     # Dynamic bars
     max_bars = None
     if USE_DYNAMIC_MAX_BARS:
-        if atrp >= 0.01: max_bars = MAX_BARS_BASE + 6
-        elif atrp >= 0.006: max_bars = MAX_BARS_BASE + 3
-        else: max_bars = MAX_BARS_BASE
+        if atrp >= 0.01:
+            max_bars = MAX_BARS_BASE + 6
+        elif atrp >= 0.006:
+            max_bars = MAX_BARS_BASE + 3
+        else:
+            max_bars = MAX_BARS_BASE
 
     sig = dict(sig)
     sig["sl"] = float(sl)
@@ -1357,8 +1489,10 @@ def execute_buy(symbol: str, sig: dict | None = None):
     is_leader = _is_relative_leader_vs_btc(base)
 
     if br is not None:
-        if br < 0.45:   trade_usdt *= 0.72
-        elif br < 0.55: trade_usdt *= 0.88
+        if br < 0.45:
+            trade_usdt *= 0.72
+        elif br < 0.55:
+            trade_usdt *= 0.88
 
     if SOFT_BREADTH_ENABLE and (br is not None) and (br < eff_min) and (not is_leader):
         scale, note = _soft_scale_by_time_and_market(br, eff_min)
@@ -1402,10 +1536,12 @@ def execute_buy(symbol: str, sig: dict | None = None):
         need_amt = math.ceil((min_notional / price) / step) * step
         trade_usdt = need_amt * price
         if trade_usdt > max_affordable:
-            _tg_once(f"warn_min_notional:{base}",
-                     (f"⚠️ <b>قيمة الصفقة أقل من الحد الأدنى</b>\n"
-                      f"القيمة: <code>{amount*price:.2f}$</code> • الحد الأدنى: <code>{min_notional:.2f}$</code>."),
-                     ttl_sec=900)
+            _tg_once(
+                f"warn_min_notional:{base}",
+                (f"⚠️ <b>قيمة الصفقة أقل من الحد الأدنى</b>\n"
+                 f"القيمة: <code>{amount*price:.2f}$</code> • الحد الأدنى: <code>{min_notional:.2f}$</code>."),
+                ttl_sec=900
+            )
             return None, "🚫 قيمة الصفقة أقل من الحد الأدنى ضمن رصيدك المتاح."
         amount = need_amt
 
@@ -1489,11 +1625,11 @@ def execute_buy(symbol: str, sig: dict | None = None):
 
     return order, f"✅ شراء {symbol} | SL: {pos['stop_loss']:.6f} | 💰 {trade_usdt:.2f}$"
 
-# ================== بيع آمن (تُستكمَل في الجزء الثاني) ==================
+# ================== بيع آمن ==================
 def _safe_sell(base_symbol: str, want_qty: float):
     """
     يبيع الكمية المتاحة فقط مع احترام step/minQty/minNotional لمنع أخطاء OKX 51008.
-    يُستدعى من manage_position (موجود في الجزء الثاني).
+    يُستدعى من manage_position.
     """
     try:
         avail = float(fetch_balance(base_symbol.split("/")[0]) or 0.0)
@@ -1565,7 +1701,7 @@ def _safe_sell(base_symbol: str, want_qty: float):
     exit_px = float(order.get("average") or order.get("price") or fetch_price(base_symbol) or 0.0)
     return order, exit_px, qty
 
-# ================== دوال المخاطر/البلوك (مطلوبة للجزء الأول) ==================
+# ================== دوال المخاطر/البلوك ==================
 def _default_risk_state():
     return {"date": _today_str(), "daily_pnl": 0.0, "consecutive_losses": 0, "trades_today": 0,
             "blocked_until": None, "hourly_pnl": {}, "last_signal_ts": None, "relax_success_count": 0}
@@ -1667,9 +1803,9 @@ def _soft_scale_by_time_and_market(br: Optional[float], eff_min: float) -> tuple
     note = " • ".join(note_parts)
     return float(scale), note
 
-
 # ================== إدارة الصفقة ==================
 def manage_position(symbol):
+    """إدارة الصفقة (جزء متكامل مع المنطق الختامي)."""
     pos = load_position(symbol)
     if not pos:
         return False
@@ -1706,30 +1842,45 @@ def manage_position(symbol):
         save_position(symbol, pos)
 
     # =============== المنطق الأساسي ===============
-    base = pos["symbol"].split("#")[0]
-    current = float(fetch_price(base))
-    entry   = float(pos["entry_price"])
-    amount  = float(pos.get("amount", pos.get("qty", 0.0)))
-    targets = pos.get("targets") or []
-    partials = pos.get("partials") or []
-    variant = pos.get("variant", "new")
-    mgmt = _mgmt(variant)
+    base    = pos["symbol"].split("#")[0]
+    try:
+        current = float(fetch_price(base))
+        if not (current > 0):
+            raise ValueError("bad price")
+    except Exception:
+        # لو السعر غير متاح نتوقف بأمان ونعاود بالمرة القادمة
+        return False
+
+    entry   = float(pos.get("entry_price", 0.0))
+    amount  = float(pos.get("amount", pos.get("qty", 0.0)) or 0.0)
+    targets = list(pos.get("targets") or [])
+    partials= list(pos.get("partials") or [])
+    variant = str(pos.get("variant", "new"))
+    mgmt    = _mgmt(variant)
 
     if amount <= 0:
         clear_position(symbol)
         return False
 
+    # تأكيد مصفوفة TP hits بطول الأهداف (وقاية من IndexError)
+    if targets:
+        tp_hits = list(pos.get("tp_hits") or [])
+        if len(tp_hits) != len(targets):
+            tp_hits = [False] * len(targets)
+            pos["tp_hits"] = tp_hits
+            save_position(symbol, pos)
+
     # (1) وقف HTF
     stop_rule = pos.get("htf_stop")
     if stop_rule:
         tf = (stop_rule.get("tf") or "4h").lower()
-        tf_map = {"h1": "1h", "1h": "1h", "h4": "4h", "4h": "4h", "d1": "1d", "1d": "1d"}
-        tf_fetch = tf_map.get(tf, "4h")
+        tf_map  = {"h1": "1h", "1h": "1h", "h4": "4h", "4h": "4h", "d1": "1d", "1d": "1d"}
+        tf_fetch= tf_map.get(tf, "4h")
         data_htf = get_ohlcv_cached(base, tf_fetch, 200)
         if data_htf is not None and len(data_htf) >= 2:
-            dfh = _df(data_htf)
-            row = dfh.iloc[-2]
-            level = float(stop_rule.get("level", pos["stop_loss"]))
+            dfh  = _df(data_htf)
+            row  = dfh.iloc[-2]  # آخر شمعة مُغلَقة
+            level= float(stop_rule.get("level", pos["stop_loss"]))
             if float(row["close"]) < level:
                 order, exit_px, sold_qty = _safe_sell(base, amount)
                 if order and sold_qty > 0:
@@ -1742,7 +1893,7 @@ def manage_position(symbol):
                     except Exception as e:
                         _print(f"[manage_position] failed to update amount after HTF sell for {symbol}: {e}")
 
-                    if pos["amount"] <= 0:
+                    if float(pos.get("amount", 0.0)) <= 0.0:
                         close_trade(symbol, exit_px, pnl_net, reason="HTF_STOP")
                         if STRAT_TG_SEND:
                             _tg(f"🛑 وقف HTF {symbol} عند <code>{exit_px:.6f}</code>")
@@ -1755,11 +1906,11 @@ def manage_position(symbol):
 
     # (2) خروج زمني لـ TP1
     max_bars = pos.get("max_bars_to_tp1")
-    if max_bars and isinstance(max_bars, int) and max_bars > 0:
+    if isinstance(max_bars, int) and max_bars > 0:
         try:
-            opened_at = datetime.fromisoformat(pos["opened_at"])
-            bar_min = _tf_minutes(LTF_TIMEFRAME)
-            bars_passed = int((now_riyadh() - opened_at) // timedelta(minutes=bar_min))
+            opened_at  = datetime.fromisoformat(pos["opened_at"])
+            bar_min    = _tf_minutes(LTF_TIMEFRAME)
+            bars_passed= int((now_riyadh() - opened_at) // timedelta(minutes=bar_min))
         except Exception:
             bars_passed = 0
 
@@ -1768,10 +1919,10 @@ def manage_position(symbol):
             if order and sold_qty > 0:
                 pnl_net = (exit_px - entry) * sold_qty - (entry + exit_px) * sold_qty * (FEE_BPS_ROUNDTRIP / 10000.0)
                 p = load_position(symbol) or {}
-                p["amount"] = max(0.0, p.get("amount", 0.0) - float(sold_qty))
+                p["amount"] = max(0.0, float(p.get("amount", 0.0)) - float(sold_qty))
                 save_position(symbol, p)
                 pos = p
-                if pos["amount"] <= 0:
+                if float(pos.get("amount", 0.0)) <= 0.0:
                     close_trade(symbol, exit_px, pnl_net, reason="TIME_EXIT")
                     if STRAT_TG_SEND:
                         _tg(pos.get("messages", {}).get("time", "⌛ خروج زمني"))
@@ -1784,35 +1935,27 @@ def manage_position(symbol):
 
     # (2c) خروج مؤقت ذكي Smart Hybrid Exit
     try:
-        max_bars = pos.get("max_bars_to_tp1")
-        if max_bars and isinstance(max_bars, int) and max_bars > 0:
-            opened_at = datetime.fromisoformat(pos["opened_at"])
-            bar_min = _tf_minutes(LTF_TIMEFRAME)
-            bars_passed = int((now_riyadh() - opened_at) // timedelta(minutes=bar_min))
+        if isinstance(max_bars, int) and max_bars > 0:
+            opened_at  = datetime.fromisoformat(pos["opened_at"])
+            bar_min    = _tf_minutes(LTF_TIMEFRAME)
+            bars_passed= int((now_riyadh() - opened_at) // timedelta(minutes=bar_min))
 
             if bars_passed >= max_bars:
                 df_ltf = _df(get_ohlcv_cached(base, LTF_TIMEFRAME, 120))
                 if len(df_ltf) >= 40:
-                    df_ltf = _ensure_ltf_indicators(df_ltf)
-                    atr_now = _atr_from_df(df_ltf)
+                    df_ltf    = _ensure_ltf_indicators(df_ltf)
+                    atr_now   = _atr_from_df(df_ltf)
                     ema21_now = float(df_ltf["ema21"].iloc[-2])
-                    vol_ma20 = float(df_ltf["volume"].rolling(20).mean().iloc[-1] or 1e-9)
-                    rvol_now = float(df_ltf["volume"].iloc[-1] / vol_ma20)
+                    vol_ma20  = float(df_ltf["volume"].rolling(20).mean().iloc[-2] or 1e-9)  # آخر شمعة مُغلَقة
+                    rvol_now  = float(df_ltf["volume"].iloc[-2] / vol_ma20)
                     atr_entry = float(pos.get("atr_entry", atr_now))
-                    atr_drop = (atr_now < 0.6 * atr_entry)
-                    weak = (rvol_now < 0.8) or (float(current) < ema21_now)
+                    atr_drop  = (atr_now < 0.6 * atr_entry)
+                    weak      = (rvol_now < 0.8) or (current < ema21_now)
 
-                    if atr_drop or weak or bars_passed >= max_bars * 1.5:
-                        part = pos["amount"] * 0.5 if pos["amount"] > 0 else 0
-
-                        # حد أدنى القيمة: لو الجزء صغير جدًا نحوّل لخروج كامل
+                    if atr_drop or weak or bars_passed >= int(max_bars * 1.5):
+                        part = pos["amount"] * 0.5 if pos["amount"] > 0 else 0.0
+                        # حد أدنى للقيمة: لو الجزء صغير جدًا حوِّله لخروج كامل
                         if part * current < MIN_NOTIONAL_USDT:
-                            if STRAT_TG_SEND:
-                                _tg(
-                                    f"⚠️ <b>قيمة الصفقة صغيرة جدًا</b> {symbol}\n"
-                                    f"💰 {part * current:.2f} USDT < الحد الأدنى {MIN_NOTIONAL_USDT} USDT\n"
-                                    f"🔄 سيتم تنفيذ <b>خروج كامل</b> بدل جزئي."
-                                )
                             part = pos["amount"]
 
                         order, exit_px, sold_qty = _safe_sell(base, part)
@@ -1831,7 +1974,7 @@ def manage_position(symbol):
                                     f"⏱️ البارات: {bars_passed}/{max_bars}\n"
                                     f"📉 ATR↓: {atr_now/atr_entry:.2f} • RVOL: {rvol_now:.2f}"
                                 )
-                            if pos["amount"] <= 0:
+                            if float(pos.get("amount", 0.0)) <= 0.0:
                                 close_trade(symbol, exit_px, pnl_net, reason="SMART_EXIT")
                             return True
     except Exception as e:
@@ -1842,21 +1985,23 @@ def manage_position(symbol):
         max_hold_hours = float(pos.get("max_hold_hours") or mgmt.get("TIME_HRS") or 0)
     except Exception:
         max_hold_hours = 0.0
+
     if max_hold_hours > 0:
         try:
             opened_at = datetime.fromisoformat(pos["opened_at"])
             hold_expired = (now_riyadh() - opened_at) >= timedelta(hours=max_hold_hours)
         except Exception:
             hold_expired = False
+
         if hold_expired:
             order, exit_px, sold_qty = _safe_sell(base, amount)
             if order and sold_qty > 0:
                 pnl_net = (exit_px - entry) * sold_qty - (entry + exit_px) * sold_qty * (FEE_BPS_ROUNDTRIP / 10000.0)
                 p = load_position(symbol) or {}
-                p["amount"] = max(0.0, p.get("amount", 0.0) - float(sold_qty))
+                p["amount"] = max(0.0, float(p.get("amount", 0.0)) - float(sold_qty))
                 save_position(symbol, p)
                 pos = p
-                if pos["amount"] <= 0:
+                if float(pos.get("amount", 0.0)) <= 0.0:
                     close_trade(symbol, exit_px, pnl_net, reason="TIME_HOLD_MAX")
                     if STRAT_TG_SEND:
                         _tg("⌛ خروج لانتهاء مدة الاحتفاظ")
@@ -1868,15 +2013,13 @@ def manage_position(symbol):
                     return True
 
     # (3) أهداف + Partials + تريلينغ
-    targets = pos.get("targets") or []
-    partials = pos.get("partials") or []
     if targets and partials and len(targets) == len(partials):
-        current = float(fetch_price(base))
+        current = float(fetch_price(base))  # تحديث السعر قبل تقييم الأهداف
         for i, tp in enumerate(targets):
-            if not pos["tp_hits"][i] and current >= tp and pos["amount"] > 0:
-                part_qty = pos["amount"] * float(partials[i])
+            if not pos["tp_hits"][i] and current >= float(tp) and pos["amount"] > 0:
+                part_qty = float(pos["amount"]) * float(partials[i])
                 if part_qty * current < MIN_NOTIONAL_USDT:
-                    part_qty = pos["amount"]
+                    part_qty = float(pos["amount"])
 
                 order, exit_px, sold_qty = _safe_sell(base, part_qty)
                 if order and sold_qty > 0:
@@ -1891,13 +2034,13 @@ def manage_position(symbol):
                     if STRAT_TG_SEND:
                         _tg(pos.get("messages", {}).get(f"tp{i+1}", f"🎯 TP{i+1} تحقق"))
 
-                    # قفل بعد TP1 (مع تقريب على tickSize)
+                    # قفل بعد TP1 (مع tickSize)
                     if i == 0 and pos["amount"] > 0:
-                        f = fetch_symbol_filters(base)
+                        f    = fetch_symbol_filters(base)
                         tick = float(f.get("tickSize", 0.00000001)) or 0.00000001
                         lock_sl_raw = entry * (1.0 + float(get_cfg(variant).get("LOCK_MIN_PROFIT_PCT", 0.0)))
-                        lock_sl = _round_to_tick(lock_sl_raw, tick)
-                        if lock_sl > pos["stop_loss"]:
+                        lock_sl     = _round_to_tick(lock_sl_raw, tick)
+                        if lock_sl > float(pos.get("stop_loss", 0.0)):
                             pos["stop_loss"] = float(lock_sl)
                             save_position(symbol, pos)
                             if STRAT_TG_SEND:
@@ -1910,29 +2053,31 @@ def manage_position(symbol):
                             df_atr = _df(data_for_atr)
                             atr_val2 = _atr_from_df(df_atr)
                             if atr_val2 and atr_val2 > 0:
-                                f = fetch_symbol_filters(base)
+                                f    = fetch_symbol_filters(base)
                                 tick = float(f.get("tickSize", 0.00000001)) or 0.00000001
-                                new_sl = current - atr_val2
+                                new_sl = float(current) - float(atr_val2)
                                 new_sl = _round_to_tick(new_sl, tick)
-                                if new_sl > pos["stop_loss"] * (1 + TRAIL_MIN_STEP_RATIO):
+                                min_step_ratio = float(globals().get("TRAIL_MIN_STEP_RATIO", 0.0) or 0.0)
+                                if new_sl > float(pos.get("stop_loss", 0.0)) * (1 + min_step_ratio):
                                     pos["stop_loss"] = float(new_sl)
                                     save_position(symbol, pos)
                                     if STRAT_TG_SEND:
                                         _tg(f"🧭 Trailing SL {symbol} → <code>{new_sl:.6f}</code>")
 
-    # (3b) تريلينغ عام بعد أي TP (مع tickSize)
-    if _mgmt(variant).get("TRAIL_AFTER_TP1") and pos["amount"] > 0 and any(pos.get("tp_hits", [])):
+    # (3ب) تريلينغ عام بعد أي TP (مع tickSize)
+    if mgmt.get("TRAIL_AFTER_TP1") and pos["amount"] > 0 and any(pos.get("tp_hits", [])):
         data_for_atr = get_ohlcv_cached(base, LTF_TIMEFRAME, 140)
         if data_for_atr:
-            df_atr = _df(data_for_atr)
+            df_atr  = _df(data_for_atr)
             atr_val3 = _atr_from_df(df_atr)
             if atr_val3 and atr_val3 > 0:
                 current = float(fetch_price(base))
-                f = fetch_symbol_filters(base)
+                f    = fetch_symbol_filters(base)
                 tick = float(f.get("tickSize", 0.00000001)) or 0.00000001
-                new_sl = current - _mgmt(variant).get("TRAIL_ATR", 1.0) * atr_val3
+                new_sl = float(current) - float(mgmt.get("TRAIL_ATR", 1.0)) * float(atr_val3)
                 new_sl = _round_to_tick(new_sl, tick)
-                if new_sl > pos["stop_loss"] * (1 + TRAIL_MIN_STEP_RATIO):
+                min_step_ratio = float(globals().get("TRAIL_MIN_STEP_RATIO", 0.0) or 0.0)
+                if new_sl > float(pos.get("stop_loss", 0.0)) * (1 + min_step_ratio):
                     pos["stop_loss"] = float(new_sl)
                     save_position(symbol, pos)
                     if STRAT_TG_SEND:
@@ -1940,7 +2085,7 @@ def manage_position(symbol):
 
     # (4) وقف نهائي
     current = float(fetch_price(base))
-    if current <= pos["stop_loss"] and pos["amount"] > 0:
+    if current <= float(pos.get("stop_loss", 0.0)) and pos["amount"] > 0:
         sellable = float(pos["amount"])
         order, exit_px, sold_qty = _safe_sell(base, sellable)
         if order and sold_qty > 0:
@@ -1949,10 +2094,10 @@ def manage_position(symbol):
             pnl_net = pnl_gross - fees
 
             p = load_position(symbol) or {}
-            p["amount"] = max(0.0, p.get("amount", 0.0) - float(sold_qty))
+            p["amount"] = max(0.0, float(p.get("amount", 0.0)) - float(sold_qty))
             save_position(symbol, p)
             pos = p
-            if pos["amount"] <= 0:
+            if float(pos.get("amount", 0.0)) <= 0.0:
                 close_trade(symbol, exit_px, pnl_net, reason="SL")
                 if STRAT_TG_SEND:
                     _tg(pos.get("messages", {}).get("sl", "🛑 SL"))
@@ -2070,10 +2215,10 @@ def build_daily_report_text():
     todays = [t for t in closed if str(t.get("closed_at", "")).startswith(today)]
     s = load_risk_state()
 
-    def f6(x): 
+    def f6(x):
         try: return "{:,.6f}".format(float(x))
         except Exception: return str(x)
-    def f2(x): 
+    def f2(x):
         try: return "{:,.2f}".format(float(x))
         except Exception: return str(x)
 
