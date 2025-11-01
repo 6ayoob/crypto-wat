@@ -9,12 +9,13 @@
 # - تكامل محسّن مع الاستراتيجية (execute_buy / check_signal_debug)
 # - حماية شاملة حول الاستدعاءات + تنظيف (finally) آمن
 # - NEW: اكتشاف أرصدة السبوت (Discovery) وإنشاء ملفات مراكز مستوردة للـ base فقط
-# - NEW/LIQ: بوابة سيولة محدثة مع هامش رسوم اختياري + سجل تشخيصي واضح
+# - NEW/LIQ: بوابة سيولة مبسّطة وغير خانقة — تسمح بالعمل حتى مع أرصدة صغيرة
 # - NEW/RISK: تم تعطيل التكامل الخارجي RiskBlocker نهائيًا (نعتمد ريسك الاستراتيجية)
 
 import os
 import sys
 import time
+import math
 import random
 import signal
 import traceback
@@ -35,7 +36,7 @@ from strategy import (
     count_open_positions, build_daily_report_text,
     reset_cycle_cache, metrics_format,
     maybe_emit_reject_summary, breadth_status,
-    execute_buy,            # ← نستعملها لفتح الصفقة
+    execute_buy,            # ← فتح الصفقة داخل الاستراتيجية (هي تتحكم بالحجم والتدرّج)
 )
 
 # كاش أسعار جماعي من okx_api لتقليل الضغط (اختياري)
@@ -46,8 +47,8 @@ except Exception:
     try:
         from okx_api import fetch_balance, fetch_price
     except Exception:
-        fetch_balance = lambda asset: 0.0
-        fetch_price = lambda symbol: 0.0
+        fetch_balance = lambda asset=None: 0.0
+        fetch_price = lambda symbol=None: 0.0
     _HAS_CACHE = False
 
 # ===== RiskBlocker معطّل نهائيًا (stub آمن) =====
@@ -79,11 +80,14 @@ SEND_METRICS_TO_TELEGRAM  = os.getenv("SEND_METRICS_TO_TELEGRAM", "0").lower() i
 STOP_POLICY = os.getenv("STOP_POLICY", "debounce").lower()  # ignore | debounce | immediate
 STOP_DEBOUNCE_WINDOW_SEC = int(os.getenv("STOP_DEBOUNCE_WINDOW_SEC", "5"))
 
-# ---- سيولة ----
-USDT_MIN_RESERVE   = float(os.getenv("USDT_MIN_RESERVE", "5"))     # احتياطي لا يُمس
-USDT_BUY_THRESHOLD = float(os.getenv("USDT_BUY_THRESHOLD", "15"))  # أقل سيولة تسمح بمحاولة شراء
-LIQUIDITY_POLICY   = os.getenv("LIQUIDITY_POLICY", "manage_first") # manage_first | neutral
-FEE_BUFFER_PCT     = float(os.getenv("FEE_BUFFER_PCT", "0.0"))     # هامش رسوم اختياري %
+# ---- سيولة (مبسّطة وغير خانقة) ----
+# بدلاً من اشتراط 15 + 5 USDT (الذي كان يسبب BLOCK دائم)، نستخدم حد أدنى منطقي قابل للتعديل.
+EXCHANGE_MIN_NOTIONAL_USDT = float(os.getenv("EXCHANGE_MIN_NOTIONAL_USDT", "5.0"))  # حد المنصّة الأدنى
+BALANCE_THRESHOLD_USDT     = float(os.getenv("BALANCE_THRESHOLD_USDT", "3.0"))      # سماح بمحاولات صغيرة
+BALANCE_RESERVE_USDT       = float(os.getenv("BALANCE_RESERVE_USDT", "0.0"))       # احتياطي بسيط
+FEE_BUF_BPS                = float(os.getenv("FEE_BUF_BPS", "20"))                  # 0.20% افتراضيًا
+# سياسة تقديم الإدارة عند ضعف السيولة
+LIQUIDITY_POLICY           = os.getenv("LIQUIDITY_POLICY", "manage_first")          # manage_first | neutral
 
 # قفل عملية مفردة (اختياري) عبر ملف PID
 SINGLETON_PIDFILE = os.getenv("PIDFILE", "").strip()
@@ -164,30 +168,37 @@ def tg_error(text, parse_mode=None, silent=True):
         except Exception:
             pass
 
-# ================== سيولة: أدوات مساعدة ==================
+# ================== سيولة: أدوات مساعدة (بوابة غير خانقة) ==================
 def _usdt_free() -> float:
     try:
-        return float(fetch_balance("USDT") or 0.0)
+        # يدعم صيغ fetch_balance المختلفة: fetch_balance("USDT") أو قاموس
+        val = fetch_balance("USDT")
+        return float(val or 0.0)
     except Exception:
         return 0.0
 
+def _min_req_now(want_usdt: float | None = None) -> float:
+    """الحد الأدنى الواقعي المطلوب لمحاولة شراء (مع هامش رسوم بسيط)."""
+    if want_usdt is None:
+        want_usdt = float(TRADE_BASE_USDT or 0.0)
+    fee_buf = (FEE_BUF_BPS / 10000.0) * max(want_usdt, EXCHANGE_MIN_NOTIONAL_USDT)
+    # نأخذ الأكبر بين حد المنصّة والحدّ المحلي الخفيف + احتياطي
+    base_need = max(EXCHANGE_MIN_NOTIONAL_USDT, BALANCE_THRESHOLD_USDT)
+    return base_need + BALANCE_RESERVE_USDT + fee_buf
+
 def _has_liquidity_for_new_trade() -> bool:
-    """
-    بوابة فتح صفقات جديدة:
-    نحتاج (USDT_BUY_THRESHOLD * (1 + FEE_BUFFER_PCT%) + USDT_MIN_RESERVE) على الأقل.
-    """
-    fee_buf = max(0.0, float(FEE_BUFFER_PCT)) / 100.0
-    min_req = (USDT_BUY_THRESHOLD * (1.0 + fee_buf)) + USDT_MIN_RESERVE
-    return _usdt_free() >= min_req
+    """تسمح بالمحاولة حتى مع رصيد صغير إن كان فوق الحد الأدنى الواقعي."""
+    free_now = _usdt_free()
+    need = _min_req_now(TRADE_BASE_USDT)
+    return free_now >= need
 
 def _balance_gate_debug():
     free_now = _usdt_free()
-    fee_buf = max(0.0, float(FEE_BUFFER_PCT)) / 100.0
-    min_req = (USDT_BUY_THRESHOLD * (1.0 + fee_buf)) + USDT_MIN_RESERVE
-    ok = free_now >= min_req
+    need = _min_req_now(TRADE_BASE_USDT)
+    ok = free_now >= need
     _print(
-        f"[balance_gate] free={free_now:.2f} min_req={min_req:.2f} "
-        f"(thr={USDT_BUY_THRESHOLD}, res={USDT_MIN_RESERVE}, fee_buf={fee_buf*100:.2f}%) => {'OK' if ok else 'BLOCK'}"
+        f"[balance_gate] free={free_now:.2f} need>={need:.2f} "
+        f"(min_notional={EXCHANGE_MIN_NOTIONAL_USDT}, thr={BALANCE_THRESHOLD_USDT}, res={BALANCE_RESERVE_USDT}, fee_buf≈{FEE_BUF_BPS/100:.2f}%) => {'OK' if ok else 'BLOCK'}"
     )
     return ok
 
@@ -374,7 +385,7 @@ if __name__ == "__main__":
 
             now = time.time()
 
-            # NEW/LIQ: قياس السيولة الحرة كل لفة
+            # NEW/LIQ: قياس السيولة الحرة كل لفة (لأغراض الطباعة فقط)
             free_now = _usdt_free()
 
             # NEW/RISK: (RiskBlocker خارجي معطّل) — نعتمد ريسك الاستراتيجية فقط
@@ -422,12 +433,12 @@ if __name__ == "__main__":
                     if now - next_manage > MANAGE_INTERVAL_SEC:
                         next_manage = now + MANAGE_INTERVAL_SEC
 
-            # 1) فحص إشارات الدخول — مع بوابة سيولة قبل أي شراء + (بدون RiskBlocker خارجي)
+            # 1) فحص إشارات الدخول — مع بوابة سيولة مخففة + (بدون RiskBlocker خارجي)
             if now >= next_scan:
                 gate_ok = _balance_gate_debug()
                 if (not gate_ok) or risk_blocked:
                     if not gate_ok:
-                        _print(f"[scan] skipped — free USDT {free_now:.2f} < threshold+reserve")
+                        _print(f"[scan] skipped — free USDT {free_now:.2f} < min_required")
                     if risk_blocked:
                         _print("[scan] skipped — risk blocker active.")
                     next_scan += SCAN_INTERVAL_SEC
@@ -456,7 +467,7 @@ if __name__ == "__main__":
                             if load_position(base) is not None:
                                 continue
 
-                            # بوابة سيولة لكل محاولة
+                            # بوابة سيولة لكل محاولة (خفيفة)
                             if not _has_liquidity_for_new_trade():
                                 break  # أوقف محاولات الدخول في هذه الجولة
 
@@ -468,7 +479,7 @@ if __name__ == "__main__":
 
                             is_buy = (sig == "buy") or (isinstance(sig, dict) and str(sig.get("decision", "")).lower() == "buy")
                             if is_buy:
-                                # فتح الصفقة عبر execute_buy (الحجم والتدرّج داخل الاستراتيجية نفسها)
+                                # فتح الصفقة عبر execute_buy — الاستراتيجية تتحكم بالحجم والتدرج داخليًا
                                 try:
                                     order, msg = execute_buy(base, sig)
                                     if order:
