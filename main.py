@@ -11,11 +11,11 @@
 # - NEW: اكتشاف أرصدة السبوت (Discovery) وإنشاء ملفات مراكز مستوردة للـ base فقط
 # - NEW/LIQ: بوابة سيولة مبسّطة وغير خانقة — تسمح بالعمل حتى مع أرصدة صغيرة
 # - NEW/RISK: تم تعطيل التكامل الخارجي RiskBlocker نهائيًا (نعتمد ريسك الاستراتيجية)
+# - NEW/TG: إشعار دخول «مؤكّد» حتى لو لم تُرجع strategy رسالة (fallback افتراضي)
 
 import os
 import sys
 import time
-import math
 import random
 import signal
 import traceback
@@ -81,13 +81,15 @@ STOP_POLICY = os.getenv("STOP_POLICY", "debounce").lower()  # ignore | debounce 
 STOP_DEBOUNCE_WINDOW_SEC = int(os.getenv("STOP_DEBOUNCE_WINDOW_SEC", "5"))
 
 # ---- سيولة (مبسّطة وغير خانقة) ----
-# بدلاً من اشتراط 15 + 5 USDT (الذي كان يسبب BLOCK دائم)، نستخدم حد أدنى منطقي قابل للتعديل.
 EXCHANGE_MIN_NOTIONAL_USDT = float(os.getenv("EXCHANGE_MIN_NOTIONAL_USDT", "5.0"))  # حد المنصّة الأدنى
 BALANCE_THRESHOLD_USDT     = float(os.getenv("BALANCE_THRESHOLD_USDT", "3.0"))      # سماح بمحاولات صغيرة
-BALANCE_RESERVE_USDT       = float(os.getenv("BALANCE_RESERVE_USDT", "0.0"))       # احتياطي بسيط
+BALANCE_RESERVE_USDT       = float(os.getenv("BALANCE_RESERVE_USDT", "0.0"))        # احتياطي بسيط
 FEE_BUF_BPS                = float(os.getenv("FEE_BUF_BPS", "20"))                  # 0.20% افتراضيًا
-# سياسة تقديم الإدارة عند ضعف السيولة
 LIQUIDITY_POLICY           = os.getenv("LIQUIDITY_POLICY", "manage_first")          # manage_first | neutral
+
+# ---- إشعارات تيليجرام (تحكم دقيق) ----
+NOTIFY_ENTRIES = os.getenv("NOTIFY_ENTRIES", "1").lower() in ("1","true","yes")
+NOTIFY_EXITS   = os.getenv("NOTIFY_EXITS",   "1").lower() in ("1","true","yes")
 
 # قفل عملية مفردة (اختياري) عبر ملف PID
 SINGLETON_PIDFILE = os.getenv("PIDFILE", "").strip()
@@ -168,7 +170,43 @@ def tg_error(text, parse_mode=None, silent=True):
         except Exception:
             pass
 
+# ===== تنسيقات سريعة لإشعارات الدخول/الخروج =====
+def _fmt_num(v, nd=4):
+    try:
+        return (f"{float(v):.{nd}f}")
+    except Exception:
+        return str(v)
+
+def tg_trade_open(symbol: str, order: dict | None, extra: dict | None = None):
+    if not NOTIFY_ENTRIES:
+        return
+    # محاولة قراءة حقول شائعة من order
+    p = None
+    amt = None
+    cost = None
+    if isinstance(order, dict):
+        p = order.get("price") or order.get("avg") or order.get("average")
+        amt = order.get("amount") or order.get("filled") or order.get("qty")
+        cost = order.get("cost")
+    parts = [f"🚀 <b>دخول صفقة</b> — <b>{symbol}</b>"]
+    if p is not None:   parts.append(f"السعر: <code>{_fmt_num(p, 6)}</code>")
+    if amt is not None: parts.append(f"الكمية: <code>{_fmt_num(amt, 6)}</code>")
+    if cost is not None:parts.append(f"القيمة: <code>{_fmt_num(cost, 2)}</code> USDT")
+    if extra and extra.get("note"):
+        parts.append(str(extra["note"]))
+    msg = "\n".join(parts)
+    tg_info(msg, parse_mode="HTML", silent=False)
+
+def tg_trade_close(symbol: str, text: str | None = None):
+    if not NOTIFY_EXITS:
+        return
+    if text:
+        tg_info(text, parse_mode="HTML", silent=False)
+    else:
+        tg_info(f"✅ إغلاق صفقة: <b>{symbol}</b>", parse_mode="HTML", silent=False)
+
 # ================== سيولة: أدوات مساعدة (بوابة غير خانقة) ==================
+
 def _usdt_free() -> float:
     try:
         # يدعم صيغ fetch_balance المختلفة: fetch_balance("USDT") أو قاموس
@@ -177,20 +215,22 @@ def _usdt_free() -> float:
     except Exception:
         return 0.0
 
+
 def _min_req_now(want_usdt: float | None = None) -> float:
     """الحد الأدنى الواقعي المطلوب لمحاولة شراء (مع هامش رسوم بسيط)."""
     if want_usdt is None:
         want_usdt = float(TRADE_BASE_USDT or 0.0)
     fee_buf = (FEE_BUF_BPS / 10000.0) * max(want_usdt, EXCHANGE_MIN_NOTIONAL_USDT)
-    # نأخذ الأكبر بين حد المنصّة والحدّ المحلي الخفيف + احتياطي
     base_need = max(EXCHANGE_MIN_NOTIONAL_USDT, BALANCE_THRESHOLD_USDT)
     return base_need + BALANCE_RESERVE_USDT + fee_buf
+
 
 def _has_liquidity_for_new_trade() -> bool:
     """تسمح بالمحاولة حتى مع رصيد صغير إن كان فوق الحد الأدنى الواقعي."""
     free_now = _usdt_free()
     need = _min_req_now(TRADE_BASE_USDT)
     return free_now >= need
+
 
 def _balance_gate_debug():
     free_now = _usdt_free()
@@ -203,6 +243,7 @@ def _balance_gate_debug():
     return ok
 
 # ================== قفل مفرد (PID file) اختياري ==================
+
 def _acquire_pidfile(path: str) -> bool:
     if not path:
         return True
@@ -217,6 +258,7 @@ def _acquire_pidfile(path: str) -> bool:
         _print(f"⚠️ فشل إنشاء PIDFILE {path}: {e}")
         return True  # لا نمنع التشغيل إذا فشلنا بالكتابة
 
+
 def _release_pidfile(path: str):
     if not path:
         return
@@ -229,6 +271,7 @@ def _release_pidfile(path: str):
 # ================== أدوات الحلقة / المراكز ==================
 _stop_flag = False
 _last_stop_signal_ts = 0.0
+
 
 def _handle_stop(signum, frame):
     """
@@ -264,11 +307,13 @@ def _handle_stop(signum, frame):
     except Exception:
         pass
 
+
 try:
     signal.signal(signal.SIGINT, _handle_stop)
     signal.signal(signal.SIGTERM, _handle_stop)
 except Exception:
     pass
+
 
 def _get_open_positions_count_safe():
     try:
@@ -279,12 +324,15 @@ def _get_open_positions_count_safe():
         except Exception:
             return 0
 
+
 def _can_open_new_position(current_open: int) -> bool:
     if MAX_OPEN_POSITIONS_OVERRIDE is None:
         return True
     return current_open < int(MAX_OPEN_POSITIONS_OVERRIDE)
 
+
 # ================ NEW: اكتشاف أرصدة السبوت (Discovery) بدون تكرار للـ variants ================
+
 def _discover_spot_positions(min_usd: float = 5.0):
     """
     ينشئ ملفات مراكز مستوردة لأي رصيد Spot موجود بدون تكرار للـ variants.
@@ -302,7 +350,7 @@ def _discover_spot_positions(min_usd: float = 5.0):
             if load_position(base) is not None:
                 continue
             has_variant_file = any(
-                load_position(f"{base}#{v}") is not None for v in ("old", "srr", "brt", "vbr")
+                load_position(f"{base}#" + v) is not None for v in ("old", "srr", "brt", "vbr")
             )
             if has_variant_file:
                 continue
@@ -327,12 +375,13 @@ def _discover_spot_positions(min_usd: float = 5.0):
                 "amount": qty,
                 "imported": True,
                 "created_at": datetime.now(timezone.utc).isoformat(timespec="seconds"),
-                "notes": "auto-imported from spot balance"
+                "notes": "auto-imported from spot balance",
             }
             save_position(base, pos)
             _print(f"[import] created position for {base}: qty={qty}, px={px}, ~${usd_val:.2f}")
     except Exception as e:
         _print(f"[import] discovery error: {e}")
+
 
 # ================== الحلقة الرئيسية ==================
 if __name__ == "__main__":
@@ -364,7 +413,7 @@ if __name__ == "__main__":
         tg_info(
             f"🚀 تشغيل البوت — {len(SYMBOLS)} رمز | HTF={STRAT_HTF_TIMEFRAME} / LTF={STRAT_LTF_TIMEFRAME}\n"
             f"📡 {bs_line}",
-            silent=True
+            silent=True,
         )
     except Exception:
         _print("🚀 تشغيل البوت")
@@ -409,15 +458,13 @@ if __name__ == "__main__":
                         try:
                             closed = manage_position(symbol.split("#")[0])  # إدارة على base دائمًا
                             if closed:
+                                # نص الإغلاق من الاستراتيجية إن وجد، وإلا نص افتراضي
                                 text = None
                                 if isinstance(closed, dict):
                                     text = closed.get("text") or closed.get("msg")
                                 elif isinstance(closed, (list, tuple)) and closed:
                                     text = closed[0]
-                                if text:
-                                    tg_info(text, parse_mode="HTML", silent=False)
-                                else:
-                                    tg_info(f"✅ إغلاق صفقة: <b>{symbol.split('#')[0]}</b>", parse_mode="HTML", silent=False)
+                                tg_trade_close(symbol.split('#')[0], text)
                                 _print(f"[manage] {symbol.split('#')[0]} closed by TP/SL/TIME")
                         except Exception as e:
                             _print(f"[manage_position] {symbol.split('#')[0]} error: {e}")
@@ -483,8 +530,11 @@ if __name__ == "__main__":
                                 try:
                                     order, msg = execute_buy(base, sig)
                                     if order:
-                                        if msg:
+                                        # إشعار مضمون حتى لو msg فارغ
+                                        if msg and isinstance(msg, str):
                                             tg_info(msg, parse_mode="HTML", silent=False)
+                                        else:
+                                            tg_trade_open(base, order)
                                         open_positions_count = _get_open_positions_count_safe()
                                     else:
                                         _print(f"[execute_buy] failed to open {base}: {msg}")
