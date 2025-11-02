@@ -405,8 +405,8 @@ if __name__ == "__main__":
     # معلومات بدء مع عرض الإطارات الزمنية الفعلية + حالة السعة
     try:
         bs0 = breadth_status() or {}
-        ratio_txt = "—" if bs0.get("ratio") is None else f"{bs0.get('ratio', 0.0):.2f}"
-        min_txt   = f"{bs0.get('min', 0.0):.2f}"
+        ratio_txt = "—" if bs0.get("ratio") is None else f"{bs0.get("ratio", 0.0):.2f}"
+        min_txt   = f"{bs0.get("min", 0.0):.2f}"
         ok_txt    = "✅" if bs0.get("ok") else "❌"
         bs_line   = f"breadth: {ratio_txt}, min={min_txt}, ok={ok_txt}"
 
