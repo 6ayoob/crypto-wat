@@ -1986,7 +1986,7 @@ def manage_position(symbol):
                             pos = p
                             register_trade_result(pnl_net)
                             if STRAT_TG_SEND:
-                                reason = "ضعف الزخم" إذا (atr_drop أو weak) else "مرور الوقت"
+                                reason = "ضعف الزخم" إذا (atr_drop or weak) else "مرور الوقت"
                                 _tg(
                                     f"⌛ <b>خروج مؤقت ذكي</b> {symbol}\n"
                                     f"🧭 السبب: {reason}\n"
