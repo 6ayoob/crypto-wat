@@ -1478,6 +1478,20 @@ def _build_entry_plan(symbol: str, sig: dict | None) -> dict:
     return sig
 
 # ================== execute_buy ==================
+def _is_relative_leader_vs_btc(base: str, lookback: int = 24) -> bool:
+    try:
+        if base in ("BTC/USDT", "BTC/USDC"): 
+            return True
+        d_base = _df(get_ohlcv_cached(base, "1h", lookback+2))
+        d_btc  = _df(get_ohlcv_cached("BTC/USDT", "1h", lookback+2))
+        if len(d_base) < lookback or len(d_btc) < lookback: 
+            return False
+        rb = float(d_base["close"].iloc[-lookback] / d_base["close"].iloc[-(lookback+1)] - 1.0)
+        rt = float(d_btc["close"].iloc[-lookback]  / d_btc["close"].iloc[-(lookback+1)]  - 1.0)
+        return rb >= rt
+    except Exception:
+        return False
+
 def execute_buy(symbol: str, sig: dict | None = None):
     """
     Spot-only (tdMode='cash') + لا اقتراض + فحوص رصيد/قيود المنصّة + سقف انزلاق + Rollback.
