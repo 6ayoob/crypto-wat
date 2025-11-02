@@ -1403,6 +1403,15 @@ def register_trade_result(pnl_net: float) -> None:
         _rr(pnl_net)
     except Exception:
         pass
+        
+def register_trade_result(pnl_usdt: float):
+    try:
+        from risk_and_notify import register_trade_result as _rr
+        _rr(float(pnl_usdt)); return
+    except Exception:
+        pass
+    # المحلي...
+    # (استخدم جسم النسخة الأحدث لديك فقط وتخلّص من التعريف المكرر)
 
 # ================== Entry plan builder ==================
 def _atr_latest(symbol_base: str, tf: str, bars: int = 180) -> tuple[float, float, float]:
