@@ -36,7 +36,7 @@ from strategy import (
     count_open_positions, build_daily_report_text,
     reset_cycle_cache, metrics_format,
     maybe_emit_reject_summary, breadth_status,
-    execute_buy,            # ← فتح الصفقة داخل الاستراتيجية (هي تتحكم بالحجم والتدرّج)
+    execute_buy,  # ← فتح الصفقة داخل الاستراتيجية (هي تتحكم بالحجم والتدرّج)
 )
 
 # كاش أسعار جماعي من okx_api لتقليل الضغط (اختياري)
@@ -215,7 +215,6 @@ def _usdt_free() -> float:
     except Exception:
         return 0.0
 
-
 def _min_req_now(want_usdt: float | None = None) -> float:
     """الحد الأدنى الواقعي المطلوب لمحاولة شراء (مع هامش رسوم بسيط)."""
     if want_usdt is None:
@@ -224,13 +223,11 @@ def _min_req_now(want_usdt: float | None = None) -> float:
     base_need = max(EXCHANGE_MIN_NOTIONAL_USDT, BALANCE_THRESHOLD_USDT)
     return base_need + BALANCE_RESERVE_USDT + fee_buf
 
-
 def _has_liquidity_for_new_trade() -> bool:
     """تسمح بالمحاولة حتى مع رصيد صغير إن كان فوق الحد الأدنى الواقعي."""
     free_now = _usdt_free()
     need = _min_req_now(TRADE_BASE_USDT)
     return free_now >= need
-
 
 def _balance_gate_debug():
     free_now = _usdt_free()
@@ -258,7 +255,6 @@ def _acquire_pidfile(path: str) -> bool:
         _print(f"⚠️ فشل إنشاء PIDFILE {path}: {e}")
         return True  # لا نمنع التشغيل إذا فشلنا بالكتابة
 
-
 def _release_pidfile(path: str):
     if not path:
         return
@@ -271,7 +267,6 @@ def _release_pidfile(path: str):
 # ================== أدوات الحلقة / المراكز ==================
 _stop_flag = False
 _last_stop_signal_ts = 0.0
-
 
 def _handle_stop(signum, frame):
     """
@@ -307,13 +302,11 @@ def _handle_stop(signum, frame):
     except Exception:
         pass
 
-
 try:
     signal.signal(signal.SIGINT, _handle_stop)
     signal.signal(signal.SIGTERM, _handle_stop)
 except Exception:
     pass
-
 
 def _get_open_positions_count_safe():
     try:
@@ -324,12 +317,10 @@ def _get_open_positions_count_safe():
         except Exception:
             return 0
 
-
 def _can_open_new_position(current_open: int) -> bool:
     if MAX_OPEN_POSITIONS_OVERRIDE is None:
         return True
     return current_open < int(MAX_OPEN_POSITIONS_OVERRIDE)
-
 
 # ================ NEW: اكتشاف أرصدة السبوت (Discovery) بدون تكرار للـ variants ================
 
@@ -382,7 +373,6 @@ def _discover_spot_positions(min_usd: float = 5.0):
     except Exception as e:
         _print(f"[import] discovery error: {e}")
 
-
 # ================== الحلقة الرئيسية ==================
 if __name__ == "__main__":
     # قفل مفرد (اختياري)
@@ -405,8 +395,8 @@ if __name__ == "__main__":
     # معلومات بدء مع عرض الإطارات الزمنية الفعلية + حالة السعة
     try:
         bs0 = breadth_status() or {}
-        ratio_txt = "—" if bs0.get("ratio") is None else f"{bs0.get("ratio", 0.0):.2f}"
-        min_txt   = f"{bs0.get("min", 0.0):.2f}"
+        ratio_txt = "—" if bs0.get("ratio") is None else f"{bs0.get('ratio', 0.0):.2f}"
+        min_txt   = f"{bs0.get('min', 0.0):.2f}"
         ok_txt    = "✅" if bs0.get("ok") else "❌"
         bs_line   = f"breadth: {ratio_txt}, min={min_txt}, ok={ok_txt}"
 
