@@ -2155,13 +2155,24 @@ def register_trade_result(pnl_usdt):
 
 def close_trade(symbol, exit_price, pnl_net, reason="MANUAL"):
     pos = load_position(symbol)
-    if not pos: return
+    if not pos:
+        return
+
     closed = load_closed_positions()
 
-    entry = float(pos.get("entry_price", 0.0))
-    amount = float(pos.get("amount", 0.0))
+    # حمايات بسيطة
+    try:
+        entry  = float(pos.get("entry_price", 0.0))
+    except Exception:
+        entry = 0.0
+    try:
+        amount = float(pos.get("amount", 0.0))
+    except Exception:
+        amount = 0.0
+
     pnl_pct = ((float(exit_price) / entry) - 1.0) if entry else 0.0
 
+    # تلخيص TP hits إن وجدت
     tp_hits = {}
     try:
         if "targets" in pos and "tp_hits" in pos and isinstance(pos["tp_hits"], list):
@@ -2170,6 +2181,7 @@ def close_trade(symbol, exit_price, pnl_net, reason="MANUAL"):
     except Exception:
         pass
 
+    # سجل الإغلاق
     closed.append({
         "symbol": pos.get("symbol", symbol),
         "entry_price": float(entry),
@@ -2187,8 +2199,25 @@ def close_trade(symbol, exit_price, pnl_net, reason="MANUAL"):
         **tp_hits
     })
     save_closed_positions(closed)
+
+    # تحديت مقاييس المخاطر
     register_trade_result(float(pnl_net))
+
+    # 🔔 إشعار تلغرام مضمون عند الخروج الكامل
+    try:
+        if STRAT_TG_SEND:
+            _tg(
+                f"🔻 <b>خروج كامل</b> {symbol}\n"
+                f"🚪 السبب: <code>{reason}</code>\n"
+                f"💵 P&L: <code>{float(pnl_net):+.2f} USDT</code>\n"
+                f"🎯 دخول: <code>{float(entry):.6f}</code> • خروج: <code>{float(exit_price):.6f}</code>"
+            )
+    except Exception as e:
+        print(f"[tg] close_trade notify err: {e}", flush=True)
+
+    # تنظيف المركز
     clear_position(symbol)
+
 
 # ================== تقارير وتشخيص ==================
 def _fmt_table(rows, headers):
