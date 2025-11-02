@@ -1952,6 +1952,8 @@ def manage_position(symbol):
     if isinstance(max_bars, int) and max_bars > 0:
         try:
             opened_at  = datetime.fromisoformat(pos["opened_at"])
+            if opened_at.tzinfo is None:
+                opened_at = opened_at.replace(tzinfo=now_riyadh().tzinfo)
             bar_min    = _tf_minutes(LTF_TIMEFRAME)
             bars_passed= int((now_riyadh() - opened_at) // timedelta(minutes=bar_min))
         except Exception:
@@ -1980,6 +1982,8 @@ def manage_position(symbol):
     try:
         if isinstance(max_bars, int) and max_bars > 0:
             opened_at  = datetime.fromisoformat(pos["opened_at"])
+            if opened_at.tzinfo is None:
+                opened_at = opened_at.replace(tzinfo=now_riyadh().tzinfo)
             bar_min    = _tf_minutes(LTF_TIMEFRAME)
             bars_passed= int((now_riyadh() - opened_at) // timedelta(minutes=bar_min))
 
@@ -2009,7 +2013,7 @@ def manage_position(symbol):
                             pos = p
                             register_trade_result(pnl_net)
                             if STRAT_TG_SEND:
-                                reason = "ضعف الزخم" إذا (atr_drop or weak) else "مرور الوقت"
+                                reason = "ضعف الزخم" if (atr_drop or weak) else "مرور الوقت"
                                 _tg(
                                     f"⌛ <b>خروج مؤقت ذكي</b> {symbol}\n"
                                     f"🧭 السبب: {reason}\n"
@@ -2031,6 +2035,8 @@ def manage_position(symbol):
     if max_hold_hours > 0:
         try:
             opened_at = datetime.fromisoformat(pos["opened_at"])
+            if opened_at.tzinfo is None:
+                opened_at = opened_at.replace(tzinfo=now_riyadh().tzinfo)
             hold_expired = (now_riyadh() - opened_at) >= timedelta(hours=max_hold_hours)
         except Exception:
             hold_expired = False
