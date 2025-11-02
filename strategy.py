@@ -1811,6 +1811,81 @@ def _soft_scale_by_time_and_market(br: Optional[float], eff_min: float) -> tuple
     return float(scale), note
 
 # ================== إدارة الصفقة ==================
+
+ def close_trend(symbol: str):
+    """
+    إغلاق بسبب انعكاس ترند HTF تحت EMA50 مع مراعاة حالة السوق (Breadth).
+    يعيد (تم_التصرف: bool, حالة: str)
+    الحالات: 'closed' | 'partial' | 'dust_closed' | 'hold' | 'no_pos' | 'no_htf'
+    """
+    pos = load_position(symbol)
+    if not pos:
+        return False, "no_pos"
+
+    base = pos.get("symbol", symbol).split("#")[0]
+    data = get_ohlcv_cached(base, STRAT_HTF_TIMEFRAME, 200)
+    if not data or len(data) < 60:
+        return False, "no_htf"
+
+    try:
+        df = _df(data)
+        df["ema50_htf"] = ema(df["close"], HTF_EMA_TREND_PERIOD)
+        row_close = float(df["close"].iloc[-2])
+        row_ema   = float(df["ema50_htf"].iloc[-2])
+    except Exception:
+        return False, "no_htf"
+
+    # حالة السوق: اسمح بالإغلاق عندما السوق ضعيف (Breadth أدنى من الحد الفعّال)
+    br = _get_breadth_ratio_cached()
+    eff_min = _breadth_min_auto()
+    market_weak = (br is None) or (br < max(0.58, eff_min))  # أكثر تحفظًا قليلاً
+
+    # شرط الإغلاق: إغلاق HTF تحت EMA50 والسوق ضعيف
+    if not (row_close < row_ema and market_weak):
+        return False, "hold"
+
+    # تجهيز بيانات الصفقة
+    entry   = float(pos.get("entry_price", 0.0))
+    amount  = float(pos.get("amount", pos.get("qty", 0.0)) or 0.0)
+    if amount <= 0.0:
+        clear_position(symbol)
+        return False, "hold"
+
+    # بيع آمن
+    order, exit_px, sold_qty = _safe_sell(base, amount)
+
+    # Dust: قيمة أقل من الحد الأدنى — نغلق محليًا
+    if sold_qty == -1.0:
+        pnl_net = 0.0
+        close_trade(symbol, float(fetch_price(base) or entry), pnl_net, reason="CLOSE_TREND_DUST")
+        if STRAT_TG_SEND:
+            _tg(f"🧭 <b>CloseTrend</b> (Dust) {symbol} — إغلاق محلي بسبب حد القيمة الأدنى.")
+        return True, "dust_closed"
+
+    if not order or not exit_px or sold_qty <= 0.0:
+        return False, "hold"
+
+    # حساب P&L وتسجيله
+    fees = (entry + float(exit_px)) * float(sold_qty) * (FEE_BPS_ROUNDTRIP / 10000.0)
+    pnl_net = (float(exit_px) - entry) * float(sold_qty) - fees
+
+    # تحديث الكمية المتبقية
+    p = load_position(symbol) or {}
+    p["amount"] = max(0.0, float(p.get("amount", 0.0)) - float(sold_qty))
+    save_position(symbol, p)
+
+    # إغلاق كامل أم جزئي؟
+    if float(p.get("amount", 0.0)) <= 0.0:
+        close_trade(symbol, float(exit_px), pnl_net, reason="CLOSE_TREND_EMA50")
+        if STRAT_TG_SEND:
+            _tg(f"🧭 <b>CloseTrend</b> {symbol} — HTF↓ EMA50 @ <code>{float(exit_px):.6f}</code>")
+        return True, "closed"
+    else:
+        register_trade_result(pnl_net)
+        if STRAT_TG_SEND:
+            _tg(f"🧭 <b>CloseTrend</b> جزئي {symbol} @ <code>{float(exit_px):.6f}</code> • المتبقي: <b>{p['amount']:.6f}</b>")
+        return True, "partial"
+
 def manage_position(symbol):
     """إدارة الصفقة (جزء متكامل مع المنطق الختامي)."""
     pos = load_position(symbol)
