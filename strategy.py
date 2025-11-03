@@ -517,7 +517,7 @@ def metrics_format() -> str:
         f"- HTF hits/misses: <b>{m['htf_cache_hits']}/{m['htf_cache_misses']}</b>"
     )
 
-def _retry_fetch_ohlcv(symbol: str, tf: str, bars: int, attempts: int = 3, base_wait: float = 1.2, max_wait: float = 6.0) -> list | None:
+def _retry_fetch_ohlcv(symbol: str, tf: str, bars: int, attempts: int = 5, base_wait: float = 1.5, max_wait: float = 12.0) -> list | None:
     last_exc: Exception | None = None
     for i in range(attempts):
         try:
@@ -525,11 +525,15 @@ def _retry_fetch_ohlcv(symbol: str, tf: str, bars: int, attempts: int = 3, base_
             return data
         except Exception as e:
             last_exc = e
-            wait = min(max_wait, base_wait * (2 ** i)) * (0.9 + 0.2 * np.random.rand())
+            msg = str(e)
+            # Boost backoff if OKX 50011 (rate limit)
+            boost = 2.5 if ("50011" in msg or "Too Many Requests" in msg) else 1.0
+            wait = min(max_wait, base_wait * (2 ** i) * boost) * (0.9 + 0.3 * np.random.rand())
             time.sleep(wait)
     if last_exc:
         raise last_exc
     return None
+
 
 def api_fetch_ohlcv(symbol: str, tf: str, bars: int) -> list:
     _METRICS["ohlcv_api_calls"] += 1
