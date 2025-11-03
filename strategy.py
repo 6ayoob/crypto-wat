@@ -1548,6 +1548,25 @@ def _is_relative_leader_vs_btc(base: str, lookback: int = 24) -> bool:
         return rb >= rt
     except Exception:
         return False
+    # --- تحجيم ديناميكي بالحالة (Score/ATR%) ---
+    try:
+        sc   = int(sig.get("score", SCORE_THRESHOLD))
+        atrp_sig = float(sig.get("atrp", 0.0))
+        # سقف اختياري من ENV
+        _MAX_TRADE_USDT_ENV = float(os.getenv("MAX_TRADE_USDT", "0") or 0)
+
+        if sc >= 55:
+            trade_usdt *= 1.25
+        elif sc >= 45:
+            trade_usdt *= 1.10
+
+        if atrp_sig >= 0.008:
+            trade_usdt *= 1.10
+
+        if _MAX_TRADE_USDT_ENV > 0:
+            trade_usdt = min(trade_usdt, _MAX_TRADE_USDT_ENV)
+    except Exception:
+        pass
 
 def execute_buy(symbol: str, sig: dict | None = None):
     """
