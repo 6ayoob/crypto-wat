@@ -1148,14 +1148,28 @@ def regime_thresholds(breadth_ratio: float | None, atrp_now: float) -> dict:
     return thr
 
 def _partials_for(score: int, tp_count: int, atrp: float) -> list:
+    """
+    توزيع ديناميكي للجزئيات:
+    - Score ≥ 55: تركيز أكبر بعد TP1 (يحفظ الزخم).
+    - Score 45-54: توزيع متوازن.
+    - Score < 45: تخفيف بعد TP1 لحماية الربح المبكر.
+    - Boost طفيف إن كان ATR% عالي.
+    """
     tp_count = max(1, min(int(tp_count), MAX_TP_COUNT))
-    base = [1.0] if tp_count == 1 else [0.5, 0.3, 0.2, 0.0, 0.0][:tp_count]
     if score >= 55 and tp_count >= 3:
+        base = [0.40, 0.30, 0.30, 0.0, 0.0][:tp_count]
+    elif score >= 45 and tp_count >= 3:
         base = [0.45, 0.30, 0.25, 0.0, 0.0][:tp_count]
+    else:
+        base = [1.0] if tp_count == 1 else [0.50, 0.30, 0.20, 0.0, 0.0][:tp_count]
+
+    # تعزيز بسيط إذا كانت التقلبات النسبية عالية
     if atrp >= 0.008 and tp_count >= 3:
         base = [0.40, 0.30, 0.30, 0.0, 0.0][:tp_count]
+
     s = sum(base)
     return [round(x/s, 6) for x in base]
+
 
 def _atrp_min_for_symbol(sym_ctx, thr):
     bucket = sym_ctx.get("bucket","alt")
