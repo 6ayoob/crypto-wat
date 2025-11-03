@@ -1376,43 +1376,6 @@ def check_signal(symbol: str):
     finally:
         _CURRENT_SYMKEY = None
 
-# ====== FALLBACKS لوحدة المخاطر ======
-def _is_blocked() -> bool:
-    try:
-        from risk_and_notify import RiskBlocker  # noqa: F401
-        from risk_and_notify import _risk  # type: ignore
-        return bool(_risk and _risk.is_blocked())
-    except Exception:
-        return False
-
-_signal_ts = 0.0
-def _mark_signal_now() -> None:
-    global _signal_ts
-    _signal_ts = time.time()
-
-def register_trade_opened() -> None:
-    try:
-        from risk_and_notify import register_trade_opened as _rt
-        _rt()
-    except Exception:
-        pass
-
-def register_trade_result(pnl_net: float) -> None:
-    try:
-        from risk_and_notify import register_trade_result as _rr
-        _rr(pnl_net)
-    except Exception:
-        pass
-        
-def register_trade_result(pnl_usdt: float):
-    try:
-        from risk_and_notify import register_trade_result as _rr
-        _rr(float(pnl_usdt)); return
-    except Exception:
-        pass
-    # المحلي...
-    # (استخدم جسم النسخة الأحدث لديك فقط وتخلّص من التعريف المكرر)
-
 # ================== Entry plan builder ==================
 def _atr_latest(symbol_base: str, tf: str, bars: int = 180) -> tuple[float, float, float]:
     data = get_ohlcv_cached(symbol_base, tf, bars)
