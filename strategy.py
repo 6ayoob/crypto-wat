@@ -395,12 +395,17 @@ def _ensure_ltf_indicators(df: pd.DataFrame) -> pd.DataFrame:
     df = add_indicators(df.copy())
     ts = pd.to_datetime(df["timestamp"], unit="ms").dt.tz_localize("UTC").dt.tz_convert("Asia/Riyadh")
     day_changed = ts.dt.date
+
     tp = (df["high"] + df["low"] + df["close"]) / 3.0
     df["tpv"] = tp * df["volume"]
+
+    # تجميع تراكمي داخل اليوم فقط
     df["cum_vol"] = df.groupby(day_changed, sort=False)["volume"].cumsum()
     df["cum_tpv"] = df.groupby(day_changed, sort=False)["tpv"].cumsum()
-    # UPDATED: حماية من القسمة على صفر في vwap
-    df["vwap"] = (df["cum_tpv"] / df["cum_vol"].replace(0, np.nan)).fillna(method="ffill").fillna(method="bfill")
+
+    # UPDATED: حساب VWAP آمن وحديث، ومعالجة NaN داخل كل يوم فقط
+    df["vwap"] = (df["cum_tpv"] / df["cum_vol"].replace(0, np.nan))
+    df["vwap"] = df.groupby(day_changed, sort=False)["vwap"].transform(lambda s: s.ffill().bfill())
 
     # --- Dual-window RVOL (fast/slow) + blended ---
     vol_ma_f = df["volume"].rolling(RVOL_WINDOW_FAST, min_periods=max(1, RVOL_WINDOW_FAST//3)).mean()  # UPDATED
@@ -410,12 +415,14 @@ def _ensure_ltf_indicators(df: pd.DataFrame) -> pd.DataFrame:
     df["rvol_slow"] = df["volume"] / vol_ma_s.replace(0, 1e-9)
     df["rvol"]      = (df["rvol_fast"] * RVOL_BLEND) + (df["rvol_slow"] * (1.0 - RVOL_BLEND))
 
-    rng = df["high"] - df["low"]; rng_ma = rng.rolling(NR_WINDOW, min_periods=max(3, NR_WINDOW//2)).mean()  # UPDATED
+    rng = df["high"] - df["low"]
+    rng_ma = rng.rolling(NR_WINDOW, min_periods=max(3, NR_WINDOW//2)).mean()  # UPDATED
     df["is_nr"] = rng < (NR_FACTOR * rng_ma)
 
     df["body"] = (df["close"] - df["open"]).abs()
     df["avg_body20"] = df["body"].rolling(20, min_periods=5).mean()  # UPDATED
     return df
+
 
 def _atr_from_df(df: pd.DataFrame, period: int = ATR_PERIOD) -> float:
     if len(df) < max(5, period + 2):  # UPDATED: حماية طول البيانات
