@@ -1198,7 +1198,7 @@ def _cooldown_left_min(base: str) -> float:
         return 0.0
     return float(max(0.0, left))
 
-# ================== منطق الإشارة ==================
+# ================== منطق الإشارة (نسخة مُحَدَّثة برفول هجين) ==================
 def check_signal(symbol: str):
     global _CURRENT_SYMKEY
     base, variant = _split_symbol_variant(symbol)
@@ -1252,7 +1252,14 @@ def check_signal(symbol: str):
         except Exception:
             pass
 
-        rvol = float(_finite_or(1.0, closed.get("rvol"), 1.0))
+        # ==== RVOL (Hybrid 24/30) + Breakout-aware ====
+        RVOL_WINDOW_FAST = _env_int("RVOL_WINDOW_FAST", 24)
+        RVOL_WINDOW_SLOW = _env_int("RVOL_WINDOW_SLOW", 30)
+        RVOL_BLEND_ALPHA = _env_float("RVOL_BLEND_ALPHA", 0.60)      # وزن السريع داخل المزيج
+        RVOL_BREAKOUT_BOOST = _env_float("RVOL_BREAKOUT_BOOST", 0.05) # تعزيز بسيط عند الاختراق
+        RVOL_NR_GAIN = _env_float("RVOL_NR_GAIN", 1.03)               # مكافأة طفيفة لو فيه تضيّق حديث
+
+        # NR + أعلى قمة قريبة
         nr_recent = bool(df["is_nr"].iloc[-3:-1].all())
         hi_slice = df["high"].iloc[-NR_WINDOW-2:-2]
         if len(hi_slice) < 3:
@@ -1261,11 +1268,40 @@ def check_signal(symbol: str):
         if not math.isfinite(hi_range):
             return _rej("no_ltf")
 
+        # تعريف الاختراق
         is_breakout = bool(
             (float(closed["close"]) > hi_range) and
             (nr_recent or float(closed["close"]) > _finite_or(float(closed["close"]), closed.get("vwap"), closed.get("ema21")))
         )
 
+        # حساب RVOL سريع/بطيء يدويًا على آخر شمعة مُغلَقة (-2)
+        def _safe_div(a, b, eps=1e-9):
+            try:
+                return float(a) / float(b if b not in (0, None, float("nan")) else eps)
+            except Exception:
+                return 1.0
+
+        try:
+            vol_fast_ma = float(df["volume"].rolling(RVOL_WINDOW_FAST).mean().iloc[-2])
+            vol_slow_ma = float(df["volume"].rolling(RVOL_WINDOW_SLOW).mean().iloc[-2])
+        except Exception:
+            vol_fast_ma = float(df["volume"].rolling(24).mean().iloc[-2])
+            vol_slow_ma = float(df["volume"].rolling(30).mean().iloc[-2])
+
+        vol_now = float(closed.get("volume", df["volume"].iloc[-2]))
+        rvol_fast = _safe_div(vol_now, vol_fast_ma)
+        rvol_slow = _safe_div(vol_now, vol_slow_ma)
+        rvol_blend = float(RVOL_BLEND_ALPHA * rvol_fast + (1.0 - RVOL_BLEND_ALPHA) * rvol_slow)
+
+        # اختيار RVOL الفعّال حسب السياق (اختراق/عادي)
+        if is_breakout:
+            rvol_eff = max(rvol_fast, rvol_blend) + RVOL_BREAKOUT_BOOST
+            rvol_mode = "fast+boost"
+        else:
+            rvol_eff = rvol_blend * (RVOL_NR_GAIN if nr_recent else 1.0)
+            rvol_mode = "blend" if not nr_recent else "blend+nr"
+
+        # ===== EMA200 trend كما هو =====
         try:
             ema200_val = float(closed.get("ema200"))
             if float(closed["close"]) > ema200_val:
@@ -1277,6 +1313,7 @@ def check_signal(symbol: str):
         except Exception:
             ema200_trend = "flat_up"
 
+        # ===== pullback_ok كما هو =====
         try:
             ema21_val = _finite_or(None, closed.get("ema21"))
             vwap_val  = _finite_or(None, closed.get("vwap"))
@@ -1291,13 +1328,18 @@ def check_signal(symbol: str):
         except Exception:
             pb_ok = False
 
+        # LTF context مع القيم الجديدة
         ltf_ctx = {
-            "rvol": rvol,
-            "is_breakout": is_breakout,
+            "rvol": float(rvol_eff),
+            "rvol_fast": float(rvol_fast),
+            "rvol_slow": float(rvol_slow),
+            "rvol_mode": rvol_mode,
+            "is_breakout": bool(is_breakout),
             "ema200_trend": ema200_trend,
-            "pullback_ok": pb_ok
+            "pullback_ok": bool(pb_ok),
         }
 
+        # ===== الأعتاب الديناميكية كما هي =====
         br  = _get_breadth_ratio_cached()
         thr = regime_thresholds(br, atrp)
         need_rvol_base = float(thr["RVOL_NEED_BASE"])
@@ -1316,7 +1358,7 @@ def check_signal(symbol: str):
         weak_market = (br is not None) and (br < eff_min)
 
         strong_breakout = bool(
-            is_breakout and ltf_ctx.get("ema200_trend") == "up" and rvol >= need_rvol_base * 1.10
+            is_breakout and ltf_ctx.get("ema200_trend") == "up" and rvol_eff >= need_rvol_base * 1.10
         )
 
         if trend == "down":
@@ -1330,7 +1372,16 @@ def check_signal(symbol: str):
         if float(atrp) < float(need_atrp):
             return _rej("atr_low", atrp=atrp, need=need_atrp)
 
-        r_ok, rvol_val, need_rvol = _rvol_ok(ltf_ctx, sym_ctx, thr)
+        # فحص RVOL باستخدام rvol_eff
+        def _rvol_ok_with_eff(ltf_ctx, sym_ctx, thr, rvol_value):
+            rvol_need = float(thr["RVOL_NEED_BASE"])
+            if sym_ctx.get("price",1.0) < 0.1 or sym_ctx.get("is_meme"):
+                rvol_need -= 0.08
+            if ltf_ctx.get("is_breakout"):
+                rvol_need -= 0.05
+            return rvol_value >= rvol_need, rvol_value, rvol_need
+
+        r_ok, rvol_val, need_rvol = _rvol_ok_with_eff(ltf_ctx, sym_ctx, thr, float(ltf_ctx["rvol"]))
         if not r_ok:
             return _rej("rvol_low", rvol=rvol_val, need=need_rvol)
 
@@ -1371,6 +1422,9 @@ def check_signal(symbol: str):
             "features": {
                 "atrp": float(atrp),
                 "rvol": float(rvol_val),
+                "rvol_fast": float(ltf_ctx["rvol_fast"]),
+                "rvol_slow": float(ltf_ctx["rvol_slow"]),
+                "rvol_mode": str(ltf_ctx["rvol_mode"]),
                 "breadth_ratio": (None if br is None else float(br)),
                 "htf_ok": bool(trend in ("up","neutral")),
                 "notional_avg_30": float(avg_not),
@@ -1381,6 +1435,7 @@ def check_signal(symbol: str):
         return _rej("error", err=str(e))
     finally:
         _CURRENT_SYMKEY = None
+
 
 # ================== Entry plan builder ==================
 def _atr_latest(symbol_base: str, tf: str, bars: int = 180) -> tuple[float, float, float]:
