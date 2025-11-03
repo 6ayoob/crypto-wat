@@ -200,24 +200,30 @@ _REJ_COUNTS = {"atr_low": 0, "rvol_low": 0, "notional_low": 0}
 _REJ_SUMMARY: Dict[str, int] = {}
 
 # ================== Telegram helpers ==================
-def _tg(text: str, parse_mode: str | None = "HTML") -> None:
-    if not STRAT_TG_SEND: return
+def _tg(text: str, parse_mode: str | None = "HTML") -> bool:
+    if not STRAT_TG_SEND:
+        return False
     try:
-        if not TELEGRAM_TOKEN or not TELEGRAM_CHAT_ID: return
+        if not TELEGRAM_TOKEN or not TELEGRAM_CHAT_ID:
+            _print("[tg] missing TELEGRAM_TOKEN/CHAT_ID"); 
+            return False
         url = f"https://api.telegram.org/bot{TELEGRAM_TOKEN}/sendMessage"
-        data = {"chat_id": TELEGRAM_CHAT_ID, "text": text}
-        if parse_mode: data["parse_mode"] = parse_mode
-        requests.post(url, data=data, timeout=8)
-    except Exception:
-        pass
+        data = {
+            "chat_id": str(TELEGRAM_CHAT_ID),
+            "text": text,
+            "disable_web_page_preview": True,
+        }
+        if parse_mode:
+            data["parse_mode"] = parse_mode
+        r = requests.post(url, data=data, timeout=10)
+        if not r.ok:
+            _print(f"[tg] send failed {r.status_code}: {r.text[:200]}")
+            return False
+        return True
+    except Exception as e:
+        _print(f"[tg] exception: {e}")
+        return False
 
-_MSG_DEDUP: Dict[str, float] = {}
-def _tg_once(key: str, text: str, ttl_sec: int = 900, parse_mode: str = "HTML") -> None:
-    now = time.time()
-    last = _MSG_DEDUP.get(key, 0.0)
-    if now - last < ttl_sec: return
-    _MSG_DEDUP[key] = now
-    _tg(text, parse_mode=parse_mode)
 
 # ================== Basic utils & storage ==================
 def now_riyadh() -> datetime: return datetime.now(RIYADH_TZ)
