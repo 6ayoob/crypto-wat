@@ -109,7 +109,9 @@ LTF_TIMEFRAME = STRAT_LTF_TIMEFRAME
 EMA_FAST, EMA_SLOW, EMA_TREND, EMA_LONG = 9, 21, 50, 200
 VOL_MA, SR_WINDOW = 20, 50
 ATR_PERIOD = 14
-RVOL_WINDOW = 20
+RVOL_WINDOW_FAST = _env_int("RVOL_WINDOW_FAST", 24)
+RVOL_WINDOW_SLOW = _env_int("RVOL_WINDOW_SLOW", 30)
+RVOL_BLEND       = _env_float("RVOL_BLEND", 0.55)
 NR_WINDOW = 10
 NR_FACTOR = 0.75
 HTF_EMA_TREND_PERIOD = 50
@@ -388,9 +390,13 @@ def _ensure_ltf_indicators(df: pd.DataFrame) -> pd.DataFrame:
     df["cum_vol"] = df.groupby(day_changed)["volume"].cumsum()
     df["cum_tpv"] = df.groupby(day_changed)["tpv"].cumsum()
     df["vwap"] = (df["cum_tpv"] / df["cum_vol"]).replace([pd.NA, pd.NaT], None)
+# --- Dual-window RVOL (fast/slow) + blended ---
+    vol_ma_f = df["volume"].rolling(RVOL_WINDOW_FAST).mean()
+    vol_ma_s = df["volume"].rolling(RVOL_WINDOW_SLOW).mean()
 
-    vol_ma = df["volume"].rolling(RVOL_WINDOW).mean()
-    df["rvol"] = df["volume"] / vol_ma.replace(0, 1e-9)
+    df["rvol_fast"] = df["volume"] / vol_ma_f.replace(0, 1e-9)
+    df["rvol_slow"] = df["volume"] / vol_ma_s.replace(0, 1e-9)
+    df["rvol"]      = (df["rvol_fast"] * RVOL_BLEND) + (df["rvol_slow"] * (1.0 - RVOL_BLEND))
 
     rng = df["high"] - df["low"]; rng_ma = rng.rolling(NR_WINDOW).mean()
     df["is_nr"] = rng < (NR_FACTOR * rng_ma)
