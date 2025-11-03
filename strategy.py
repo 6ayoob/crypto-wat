@@ -1458,8 +1458,8 @@ def _is_relative_leader_vs_btc(base: str, lookback: int = 24) -> bool:
         d_btc  = _df(get_ohlcv_cached("BTC/USDT", "1h", lookback+2))
         if len(d_base) < lookback or len(d_btc) < lookback: 
             return False
-        rb = float(d_base["close"].iloc[-lookback] / d_base["close"].iloc[-(lookback+1)] - 1.0)
-        rt = float(d_btc["close"].iloc[-lookback]  / d_btc["close"].iloc[-(lookback+1)]  - 1.0)
+        rb = float(d_base["close"].iloc[-2] / d_base["close"].iloc[-(lookback+2)] - 1.0)
+        rt = float(d_btc ["close"].iloc[-2] / d_btc ["close"].iloc[-(lookback+2)] - 1.0)
         return rb >= rt
     except Exception:
         return False
