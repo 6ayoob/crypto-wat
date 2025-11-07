@@ -386,6 +386,7 @@ def add_indicators(df: pd.DataFrame) -> pd.DataFrame:
     df["ema21"]  = ema(df["close"], EMA_SLOW)
     df["ema50"]  = ema(df["close"], EMA_TREND)
     df["ema200"] = ema(df["close"], EMA_LONG)
+    df["ema100"] = ema(df["close"], 100)
     df["rsi"] = rsi(df["close"], 14)
     df["vol_ma20"] = df["volume"].rolling(VOL_MA, min_periods=1).mean()  # UPDATED: min_periods=1
     df = macd_cols(df)
