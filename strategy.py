@@ -2039,15 +2039,14 @@ def execute_buy(symbol: str, sig: dict | None = None):
 
     if EARLY_SCOUT_ENABLE:
         try:
-            # إذا الإشارة نفسها مميزة كـ early_scout من check_signal نلتزم بها
-            if bool(sig.get("is_early_scout", False)):
+            mode = str(sig.get("mode", "")).lower()
+            # إذا check_signal أعطتنا mode=early_scout أو early_scout=True نلتزم
+            if mode == "early_scout" or bool(sig.get("early_scout", False)):
                 is_early_scout = True
             else:
-                # أوتوماتيكياً:
-                # إذا السكور بين الحد الأدنى للدخول المبكر و أقل من الحد الكامل
+                # منطق إضافي اختياري: بين سكورات معينة وبالقرب من EMA50
                 sc = int(sig.get("score", 0))
                 if EARLY_SCOUT_SCORE_MIN <= sc < SCORE_THRESHOLD:
-                    # نحسب المسافة عن EMA50 بمقياس ATR للتأكد أننا قريبين من منطقة القيمة
                     data = get_ohlcv_cached(base, LTF_TIMEFRAME, 80)
                     if data:
                         df_ltf = _ensure_ltf_indicators(_df(data))
@@ -2060,7 +2059,7 @@ def execute_buy(symbol: str, sig: dict | None = None):
                                 dist_atr = abs(px - float(ema50)) / float(atr_abs)
                                 if dist_atr <= float(EARLY_SCOUT_MAX_ATR_DIST):
                                     is_early_scout = True
-            # تطبيق التحجيم إذا Early Scout
+
             if is_early_scout:
                 trade_usdt *= float(EARLY_SCOUT_SIZE_MULT)
                 sig.setdefault("messages", {})
@@ -2068,8 +2067,13 @@ def execute_buy(symbol: str, sig: dict | None = None):
                     f"🟢 Early Scout: size×{EARLY_SCOUT_SIZE_MULT:.2f}"
                 )
         except Exception:
-            # في حال خطأ لا نعطل الصفقة الأساسية، فقط نتجاهل الدخول المبكر
-            is_early_scout = False
+            is_early_scout = False  # أي خطأ → نكمّل كدخول عادي بدون تعطيل الصفقة
+    else:
+        mode = str(sig.get("mode", "")).lower()
+
+    # إذا لم نكن داخل بلوك EARLY_SCOUT_ENABLE نحتاج ضمان وجود mode قبل استخدامه لاحقاً
+    if 'mode' not in locals():
+        mode = str(sig.get("mode", "")).lower()
 
     # ===== حدود الحجم (بعد كل السكيلات) =====
     if TRADE_USDT_MAX > 0:
@@ -2089,10 +2093,10 @@ def execute_buy(symbol: str, sig: dict | None = None):
 
     # ===== قيود الرمز من البورصة =====
     f = fetch_symbol_filters(base)
-    step        = float(f.get("stepSize", 0.000001)) or 0.000001
-    min_qty     = float(f.get("minQty", 0.0)) or 0.0
-    min_notional= float(f.get("minNotional", MIN_NOTIONAL_USDT)) or MIN_NOTIONAL_USDT
-    tick        = float(f.get("tickSize", 0.00000001)) or 0.00000001
+    step         = float(f.get("stepSize", 0.000001)) or 0.000001
+    min_qty      = float(f.get("minQty", 0.0)) or 0.0
+    min_notional = float(f.get("minNotional", MIN_NOTIONAL_USDT)) or MIN_NOTIONAL_USDT
+    tick         = float(f.get("tickSize", 0.00000001)) or 0.00000001
 
     price = float(fetch_price(base) or 0.0)
     if not (price > 0):
@@ -2175,7 +2179,7 @@ def execute_buy(symbol: str, sig: dict | None = None):
     # ===== SL منطقي تحت الدخول =====
     sl_raw = float(sig["sl"])
     if sl_raw >= fill_px:
-        sl_raw = fill_px * 0.985  # خفض بسيط للحماية
+        sl_raw = fill_px * 0.985
     sl_final = _round_to_tick(sl_raw, tick)
 
     # ===== حفظ الصفقة =====
@@ -2197,6 +2201,7 @@ def execute_buy(symbol: str, sig: dict | None = None):
         "reason": sig.get("reasons"),
         "max_hold_hours": _mgmt(variant).get("TIME_HRS"),
         "is_early_scout": bool(is_early_scout),
+        "mode": mode,
     }
 
     # حفظ ATR عند الدخول (للتشخيص)
@@ -2214,8 +2219,9 @@ def execute_buy(symbol: str, sig: dict | None = None):
     # ===== تنبيه تيليجرام =====
     try:
         if STRAT_TG_SEND:
+            label = "Early Scout" if is_early_scout else "Entry"
             msg = (
-                f"✅ دخول {symbol}\n"
+                f"✅ {label} {symbol}\n"
                 f"🎯 <b>Mode</b>: {sig.get('mode','-')} • "
                 f"<b>Score</b>: {sig.get('score','-')} • "
                 f"<b>Pattern</b>: {sig.get('pattern','-')}\n"
@@ -2224,8 +2230,6 @@ def execute_buy(symbol: str, sig: dict | None = None):
                 f"🎯 <b>TPs</b>: {', '.join(str(round(t, 6)) for t in pos['targets'])}\n"
                 f"💰 <b>الحجم</b>: {trade_usdt_final:.2f}$"
             )
-            if pos["is_early_scout"]:
-                msg += "\n🟢 <b>Early Scout Position</b> (حجم مبكر مخفّض)"
             if pos["messages"].get("breadth_soft"):
                 msg += f"\n{pos['messages']['breadth_soft']}"
             if pos["messages"].get("early_scout"):
@@ -2240,6 +2244,7 @@ def execute_buy(symbol: str, sig: dict | None = None):
         f" | 💰 {trade_usdt_final:.2f}$"
         f"{' | Early Scout' if is_early_scout else ''}"
     )
+
 
 
 
