@@ -133,6 +133,7 @@ DRY_RUN          = _env_bool("DRY_RUN", False)
 # Feature flags
 USE_EMA200_TREND_FILTER   = _env_bool("USE_EMA200_TREND_FILTER", True)
 ENABLE_GOLDEN_CROSS_ENTRY = _env_bool("ENABLE_GOLDEN_CROSS_ENTRY", True)
+USE_EMA100_LTF_FILTER = _env_bool("USE_EMA100_LTF_FILTER", True)
 GOLDEN_CROSS_RVOL_BOOST   = _env_float("GOLDEN_CROSS_RVOL_BOOST", 1.10)
 
 # Scoring
