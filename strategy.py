@@ -1292,7 +1292,7 @@ def _mark_signal_now(base: str | None = None) -> None:
         pass
 
 
-# ================== منطق الإشارة (نسخة مُحَدَّثة برفول هجين) ==================
+# ================== منطق الإشارة (نسخة مُحَدَّثة برفول هجين + فلتر EMA50 LTF) ==================
 def check_signal(symbol: str):
     global _CURRENT_SYMKEY
     base, variant = _split_symbol_variant(symbol)
@@ -1342,7 +1342,7 @@ def check_signal(symbol: str):
                 minbar30 = float(df1h["volume"].iloc[-30:].min())
                 avg_notional_30_h1 = vol30 * px1h
                 min_notional_30_h1 = minbar30 * px1h
-                # UPDATED: نأخذ الأسوأ حفاظًا على التحفّظ
+                # نأخذ الأسوأ حفاظًا على التحفّظ
                 sym_ctx["notional_avg_30"] = float(min(sym_ctx["notional_avg_30"], avg_notional_30_h1))
                 sym_ctx["notional_min_30"] = float(min(sym_ctx["notional_min_30"], min_notional_30_h1))
         except Exception:
@@ -1398,7 +1398,7 @@ def check_signal(symbol: str):
             rvol_eff = rvol_blend * (RVOL_NR_GAIN if nr_recent else 1.0)
             rvol_mode = "blend" if not nr_recent else "blend+nr"
 
-        # ===== EMA200 trend =====
+        # ===== EMA200 trend (سياق عام قوي/ضعيف) =====
         try:
             ema200_val = float(closed.get("ema200"))
             if float(closed["close"]) > ema200_val:
@@ -1410,7 +1410,7 @@ def check_signal(symbol: str):
         except Exception:
             ema200_trend = "flat_up"
 
-        # ===== pullback_ok =====
+        # ===== pullback_ok (ملامسة VWAP/EMA21) =====
         try:
             ema21_val = _finite_or(None, closed.get("ema21"))
             vwap_val  = _finite_or(None, closed.get("vwap"))
@@ -1440,7 +1440,7 @@ def check_signal(symbol: str):
         thr = regime_thresholds(br, atrp)
         need_rvol_base = float(thr["RVOL_NEED_BASE"])
 
-        # اتجاه HTF
+        # اتجاه HTF (EMA50 على الفريم العالي)
         trend = "neutral"
         try:
             if float(htf_ctx["close"]) > float(htf_ctx["ema50_now"]):
@@ -1458,6 +1458,7 @@ def check_signal(symbol: str):
             is_breakout and ltf_ctx.get("ema200_trend") == "up" and rvol_eff >= need_rvol_base * 1.10
         )
 
+        # فلتر ترند HTF:
         if trend == "down":
             if not ((br is not None and br >= max(0.58, eff_min + 0.04)) or strong_breakout):
                 return _rej("htf_trend", trend=trend)
@@ -1465,11 +1466,12 @@ def check_signal(symbol: str):
             if not (weak_market or strong_breakout):
                 return _rej("htf_trend", trend=trend)
 
+        # ===== فلتر ATR النسبي حسب نوع الرمز =====
         need_atrp = _atrp_min_for_symbol(sym_ctx, thr)
         if float(atrp) < float(need_atrp):
             return _rej("atr_low", atrp=atrp, need=need_atrp)
 
-        # فحص RVOL باستخدام rvol_eff (نسخة محلية لضبط الحاجة)
+        # ===== فلتر RVOL باستخدام rvol_eff =====
         def _rvol_ok_with_eff(ltf_ctx, sym_ctx, thr, rvol_value):
             rvol_need = float(thr["RVOL_NEED_BASE"])
             if float(sym_ctx.get("price",1.0)) < 0.1 or bool(sym_ctx.get("is_meme")):
@@ -1482,10 +1484,27 @@ def check_signal(symbol: str):
         if not r_ok:
             return _rej("rvol_low", rvol=rvol_val, need=need_rvol)
 
+        # ===== فلتر السيولة (نوتشنال) =====
         n_ok, avg_not, minbar = _notional_ok(sym_ctx, thr)
         if not n_ok:
             return _rej("notional_low", avg=avg_not, minbar=minbar)
 
+        # ===== فلتر EMA50 على فريم الدخول (LTF) =====
+        USE_LTF_EMA50_FILTER = _env_bool("USE_LTF_EMA50_FILTER", True)
+        if USE_LTF_EMA50_FILTER:
+            try:
+                ema50_ltf = float(closed.get("ema50"))
+                close_ltf = float(closed["close"])
+                # نطلب أن يكون السعر فوق EMA50 على LTF
+                if not (close_ltf > ema50_ltf):
+                    # استثناء وحيد: اختراق قوي جدًا (strong_breakout)
+                    if not strong_breakout:
+                        return _rej("ema50_ltf", close=close_ltf, ema50=ema50_ltf)
+            except Exception:
+                # إذا تعذر الحساب لا نوقف المنظومة
+                pass
+
+        # ===== اختيار نمط الدخول حسب إعدادات النسخة =====
         cfg = get_cfg(variant)
         chosen_mode = None
         if cfg.get("ENTRY_MODE") == "alpha":
@@ -1503,12 +1522,13 @@ def check_signal(symbol: str):
         if not chosen_mode:
             return _rej("entry_mode", mode=cfg.get("ENTRY_MODE", "hybrid"))
 
+        # ===== نظام السكور =====
         score, why_str, pattern = _opportunity_score(df, prev, closed)
         if SCORE_THRESHOLD and int(score) < int(SCORE_THRESHOLD):
             return _rej("score_low", score=score, need=SCORE_THRESHOLD)
 
         _pass("buy", mode=chosen_mode, score=int(score))
-        _mark_signal_now(base)  # UPDATED: يمرر base
+        _mark_signal_now(base)
 
         return {
             "decision": "buy",
@@ -1532,7 +1552,6 @@ def check_signal(symbol: str):
         return _rej("error", err=str(e))
     finally:
         _CURRENT_SYMKEY = None
-
 
 # ================== Entry plan builder ==================
 def _atr_latest(symbol_base: str, tf: str, bars: int = 180) -> tuple[float, float, float]:
