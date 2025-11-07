@@ -1055,70 +1055,272 @@ def _entry_alpha_logic(df, closed, prev, atr_ltf, htf_ctx, cfg, thr, sym_ctx):
         return False
 
 def _entry_pullback_logic(df, closed, prev, atr_ltf, htf_ctx, cfg):
+    """
+    منطق بولباك متوازن:
+    - الاتجاه العام مفلتر خارجياً (EMA100 / HTF).
+    - الدخول حوالين منطقة قيمة (افتراضيًا EMA50) مع سماحية واقعية.
+    - فلتر MACD/RSI إلزامي.
+    - أنماط تأكيد اختيارية (engulf / BOS / sweep_reclaim).
+    - في حال عدم تحقق النمط بالكامل لكن الشروط البنيوية قوية → يسمح بدخول مبكر محافظ.
+    """
     try:
-        if cfg.get("PULLBACK_VALUE_REF") == "ema21":
-            ref_val = _finite_or(None, closed.get("ema21"))
-        else:
-            ref_val = _finite_or(None, closed.get("vwap"))
-            if ref_val is None:
-                ref_val = _finite_or(None, closed.get("ema21"))
-        ref_val = _finite_or(float(closed.get("close", 0.0)), ref_val, closed.get("ema50"), closed.get("close"))
-
         close_v = _finite_or(None, closed.get("close"))
         low_v   = _finite_or(None, closed.get("low"))
         if close_v is None or low_v is None:
             return False
 
-        near_val = (close_v >= ref_val) and (low_v <= ref_val)
+        # -------- مرجع منطقة البولباك --------
+        # أولوية:
+        # 1) إعداد PULLBACK_VALUE_REF إن وُجد
+        # 2) EMA50 (دخول حول 50 كما اتفقنا)
+        # 3) VWAP
+        # 4) EMA21
+        ref_cfg = (cfg.get("PULLBACK_VALUE_REF") or "").lower()
+        if ref_cfg == "ema21":
+            ref_val = _finite_or(None, closed.get("ema21"))
+        elif ref_cfg == "vwap":
+            ref_val = _finite_or(None, closed.get("vwap"))
+        elif ref_cfg == "ema50":
+            ref_val = _finite_or(None, closed.get("ema50"))
+        else:
+            ref_val = _finite_or(
+                None,
+                closed.get("ema50"),
+                closed.get("vwap"),
+                closed.get("ema21"),
+            )
+
+        ref_val = _finite_or(close_v, ref_val, closed.get("close"))
+        if ref_val is None or ref_val <= 0:
+            return False
+
+        # -------- سماحية الديناميكية (لا نفوّت الحركة بسبب نقطة واحدة) --------
+        base_tol = float(cfg.get("PULLBACK_TOL_PCT", 0.003))  # 0.3% افتراضي
+        try:
+            atrp = float(atr_ltf) / max(close_v, 1e-9)
+        except Exception:
+            atrp = 0.0
+
+        # جزء من ATR كنطاق إضافي (حد أعلى ~0.6%)
+        atr_tol = min(0.35 * atrp, 0.006)
+        tol = base_tol + atr_tol
+
+        zone_low  = ref_val * (1.0 - tol)
+        zone_high = ref_val * (1.0 + tol)
+
+        # قريب من المنطقة = اللو ينزل للمنطقة أو تحتها قليلاً، والإغلاق داخلها أو فوق حدها السفلي
+        near_val = (low_v <= zone_high) and (close_v >= zone_low)
         if not near_val:
             return False
 
+        # -------- بوابة MACD/RSI (لا دخول عشوائي) --------
         if not macd_rsi_gate(prev, closed, cfg.get("RSI_GATE_POLICY")):
             return False
 
+        # -------- منطق التأكيد الكلاسيكي --------
         confirm = (cfg.get("PULLBACK_CONFIRM") or "").lower()
+
+        # 1) ابتلاع شرائي
         if confirm == "bullish_engulf":
-            return _bullish_engulf(prev, closed)
-        if confirm == "bos":
+            if _bullish_engulf(prev, closed):
+                return True
+            # إذا ما تحقق بشكل مثالي → ننتقل لمنطق الدخول المبكر أدناه
+
+        # 2) كسر هيكل (BOS) أعلى آخر قمة سوينغ
+        elif confirm == "bos":
             swing_high, _ = _swing_points(df)
             sh = _finite_or(None, swing_high)
-            return bool(sh is not None and close_v > sh)
-        if confirm == "sweep_reclaim":
-            return _sweep_then_reclaim(df, prev, closed, ref_val, lookback=20, tol=0.0012)
-        return True
+            if sh is not None and close_v > sh:
+                return True
+            # غير ذلك ندرس تخفيف الشروط في الجزء المبكر
+
+        # 3) Sweep + Reclaim (كسر كاذب ثم استعادة)
+        elif confirm == "sweep_reclaim":
+            if _sweep_then_reclaim(df, prev, closed, ref_val, lookback=20, tol=tol * 1.2):
+                return True
+            # إن لم يتحقق بالكامل → نكمل للأسفل
+
+        else:
+            # بدون شرط تأكيد صريح → بولباك منطقي حول المنطقة + فلتر الزخم كافي
+            return True
+
+        # -------- منطق الدخول المبكر (Fail-soft) --------
+        # يصلح لحالات:
+        # - الاتجاه العام متوافق (HTF صاعد/ليس هابطًا).
+        # - السعر ما زال فوق EMA100 المحلي (أو لا يوجد تعارض).
+        # - الإغلاق في النصف العلوي من منطقة البولباك → يفهم كشراء نشط لا ضعف.
+        htf_ok = True
+        try:
+            htf_close = float(htf_ctx.get("close", 0.0))
+            htf_ema50 = float(htf_ctx.get("ema50_now", htf_close))
+            # لو HTF إغلاقه تحت EMA50 بشكل واضح → نلغي التخفيف
+            if htf_close < htf_ema50:
+                htf_ok = False
+        except Exception:
+            htf_ok = True  # إذا تعذّر الحساب، لا نعاقب الصفقة هنا
+
+        try:
+            ema100_val = _finite_or(None, closed.get("ema100"))
+        except Exception:
+            ema100_val = None
+
+        mid_zone = (zone_low + zone_high) * 0.5
+
+        if (
+            htf_ok and
+            (ema100_val is None or close_v > ema100_val) and  # لا نسمح بدخول مبكر لو الشمعة تحت 100 بوضوح
+            close_v >= mid_zone                               # إغلاق بنصف علوي من المنطقة = طلب حقيقي
+        ):
+            return True
+
+        return False
+
     except Exception:
         return False
 
+
 def _entry_breakout_logic(df, closed, prev, atr_ltf, htf_ctx, cfg):
+    """
+    منطق اختراق متوازن:
+    - يفضّل الاختراق الحقيقي فوق قمم النطاق مع RVOL كافٍ.
+    - يسمح بدخول مبكر محسوب إذا:
+        * فوق القمم بقليل،
+        * مع RVOL قوي،
+        * والاتجاه العام داعم (HTF + EMA100).
+    - يتجنب مطاردة الشموع المبالغ فيها بعيدًا عن مناطق القيمة (EMA50/VWAP).
+    """
     try:
-        n   = int(cfg.get("SWING_LOOKBACK", 60))
-        buf = float(cfg.get("BREAKOUT_BUFFER_LTF", 0.0015))
+        # -------- متطلبات بيانات --------
+        n = int(cfg.get("SWING_LOOKBACK", 60))
         if len(df) < max(40, n + 3):
             return False
 
-        hi       = float(df["high"].iloc[-n-2:-2].max())
-        close_v  = float(closed["close"])
-        open_v   = float(closed["open"])
-        vwap_v   = _finite_or(None, closed.get("vwap"), closed.get("ema21"))
-        bo       = (close_v > hi * (1.0 + buf)) and (close_v > open_v)
-        rvol_v   = float(_finite_or(1.0, closed.get("rvol"), 1.0))
-        need_rvol= float(cfg.get("RVOL_MIN", 1.2))
+        close_v = _finite_or(None, closed.get("close"))
+        open_v  = _finite_or(None, closed.get("open"))
+        if close_v is None or open_v is None or close_v <= 0:
+            return False
 
-        if bo and (rvol_v >= max(need_rvol, 1.1)):
+        # -------- قمة مرجعية للاختراق --------
+        hi_slice = df["high"].iloc[-n-2:-2]
+        if hi_slice.isna().all():
+            return False
+        hi = float(hi_slice.max())
+        if not math.isfinite(hi) or hi <= 0:
+            return False
+
+        # -------- سياق ATR لعمل Buffer ديناميكي --------
+        try:
+            atrp = float(atr_ltf) / max(close_v, 1e-9)
+        except Exception:
+            atrp = 0.0
+
+        base_buf = float(cfg.get("BREAKOUT_BUFFER_LTF", 0.0015))  # 0.15% افتراضي
+        # نضيف جزء بسيط من ATR (حتى 0.8%) لتكييف الحساسية مع تذبذب الرمز
+        atr_buf = min(0.5 * atrp, 0.008)
+        buf = base_buf + atr_buf
+
+        breakout_level = hi * (1.0 + buf)
+
+        # -------- RVOL --------
+        rvol_v    = float(_finite_or(1.0, closed.get("rvol"), 1.0))
+        need_rvol = float(cfg.get("RVOL_MIN", 1.2))
+
+        # -------- مراجع القيمة --------
+        ema50_v = _finite_or(None, closed.get("ema50"))
+        ema21_v = _finite_or(None, closed.get("ema21"))
+        vwap_v  = _finite_or(None, closed.get("vwap"), ema21_v)
+
+        try:
+            ema100_v = _finite_or(None, closed.get("ema100"))
+        except Exception:
+            ema100_v = None
+
+        # -------- سياق HTF لتأكيد الاختراق --------
+        htf_ok = True
+        try:
+            htf_close = float(htf_ctx.get("close", 0.0))
+            htf_ema50 = float(htf_ctx.get("ema50_now", htf_close))
+            if htf_close < htf_ema50:
+                htf_ok = False
+        except Exception:
+            htf_ok = True
+
+        # ================== 1) اختراق قوي كلاسيكي ==================
+        strong_bo = (
+            (close_v > breakout_level) and
+            (close_v > open_v) and
+            (rvol_v >= max(need_rvol, 1.15)) and
+            (ema100_v is None or close_v > ema100_v)
+        )
+        if strong_bo and htf_ok:
             return True
 
-        nr_recent = bool(df["is_nr"].iloc[-3:-1].all())
-        if nr_recent and (close_v > hi):
+        # ================== 2) NR Breakout (توسع بعد انكماش) ==================
+        nr_recent = False
+        try:
+            nr_recent = bool(df["is_nr"].iloc[-3:-1].all())
+        except Exception:
+            nr_recent = False
+
+        if (
+            nr_recent and
+            close_v > hi and
+            rvol_v >= max(1.0, need_rvol - 0.15) and
+            (ema100_v is None or close_v >= ema100_v * 0.995) and
+            htf_ok
+        ):
+            # السماح باختراق أخف بشرط وجود NR + عدم كسر الاتجاه
             return True
 
-        if bo and vwap_v is not None:
-            rng14 = (df["high"] - df["low"]).rolling(14, min_periods=5).mean().iloc[-2]  # UPDATED
-            if rng14 and abs(close_v - vwap_v) <= 0.6 * float(rng14):
+        # ================== 3) اختراق مدعوم بـ VWAP/EMA50 ==================
+        # إذا الاختراق فوق المستوى مع حجم كافٍ لكن قريب من مناطق القيمة → صحي، مسموح.
+        bo_basic = (
+            (close_v > breakout_level) and
+            (close_v > open_v) and
+            (rvol_v >= need_rvol)
+        )
+
+        if bo_basic:
+            # عدم البعد الشديد عن منطقة القيمة
+            ref_val = _finite_or(None, vwap_v, ema50_v, ema21_v)
+            if ref_val:
+                dist_ref = abs(close_v - ref_val) / close_v
+                # لو السعر ضمن 0.6% - 1% من الـ VWAP/EMA50 → اختراق منظم
+                if dist_ref <= 0.01 and htf_ok and (ema100_v is None or close_v > ema100_v):
+                    return True
+
+        # ================== 4) دخول مبكر فوق القمة (Fail-soft) ==================
+        # حالة: السعر فوق القمة القديمة مباشرة، RVOL قوي، اتجاه داعم،
+        # لكن لم يبتعد كثيرًا ليتحقق strong_bo → ندخل مبكر بدل ما ننتظر شمعة 3% زيادة.
+        early_bo = (
+            (close_v > hi) and
+            (close_v <= breakout_level) and  # بين القمة والـ buffer الديناميكي
+            (close_v > open_v) and
+            (rvol_v >= max(need_rvol, 1.25)) and  # نطلب قوة حجم أعلى للمبكر
+            htf_ok and
+            (ema100_v is None or close_v > ema100_v)
+        )
+
+        if early_bo:
+            # نتأكد أيضًا أن الشمعة ليست ظل علوي طويل جدًا (أي ليس رفض قوي)
+            try:
+                high_v = float(closed.get("high", close_v))
+                low_v  = float(closed.get("low", close_v))
+                rng = max(high_v - low_v, 1e-9)
+                body = abs(close_v - open_v)
+                # جسم لا يقل عن 55% من المدى → اختراق مقنع
+                if body / rng >= 0.55:
+                    return True
+            except Exception:
+                # لو فشل الحساب، لا نمنع الصفقة إذا باقي الشروط قوية
                 return True
 
+        # إذا لم يتحقق أي من السيناريوهات أعلاه → لا دخول اختراق
         return False
+
     except Exception:
         return False
+
 
 # ================== Thresholds ديناميكية ==================
 def regime_thresholds(breadth_ratio: float | None, atrp_now: float) -> dict:
