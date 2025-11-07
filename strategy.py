@@ -105,98 +105,124 @@ STRAT_TG_SEND = _env_bool("STRAT_TG_SEND", False)
 HTF_TIMEFRAME = STRAT_HTF_TIMEFRAME
 LTF_TIMEFRAME = STRAT_LTF_TIMEFRAME
 
-# Indicator windows
-EMA_FAST, EMA_SLOW, EMA_TREND, EMA_LONG = 9, 21, 50, 200
-VOL_MA, SR_WINDOW = 20, 50
+# ===== Indicator windows =====
+EMA_FAST, EMA_SLOW = 9, 21
+EMA_TREND, EMA_LONG = 50, 200
+VOL_MA = 20
+SR_WINDOW = 50
 ATR_PERIOD = 14
+
 RVOL_WINDOW_FAST = _env_int("RVOL_WINDOW_FAST", 24)
 RVOL_WINDOW_SLOW = _env_int("RVOL_WINDOW_SLOW", 30)
 RVOL_BLEND       = _env_float("RVOL_BLEND", 0.55)
+
 NR_WINDOW = 10
 NR_FACTOR = 0.75
+
 HTF_EMA_TREND_PERIOD = 50
 HTF_SR_WINDOW = 50
 
-# Trade mgmt & generic limits
+# ===== Trade mgmt & risk limits =====
 TP1_FRACTION = 0.5
 TRAIL_MIN_STEP_RATIO = 0.001
 
-MAX_TRADES_PER_DAY       = _env_int("MAX_TRADES_PER_DAY", 20)
-MAX_CONSEC_LOSSES        = _env_int("MAX_CONSEC_LOSSES", 3)
-DAILY_LOSS_LIMIT_USDT    = _env_float("DAILY_LOSS_LIMIT_USDT", 200.0)
+MAX_TRADES_PER_DAY    = _env_int("MAX_TRADES_PER_DAY", 20)
+MAX_CONSEC_LOSSES     = _env_int("MAX_CONSEC_LOSSES", 3)
+DAILY_LOSS_LIMIT_USDT = _env_float("DAILY_LOSS_LIMIT_USDT", 200.0)
+MAX_OPEN_POSITIONS    = _env_int("MAX_OPEN_POSITIONS", 10)
 
-# Base sizing & DRY RUN
-TRADE_BASE_USDT  = _env_float("TRADE_BASE_USDT", TRADE_AMOUNT_USDT)
-MIN_TRADE_USDT   = _env_float("MIN_TRADE_USDT", 10.0)
-DRY_RUN          = _env_bool("DRY_RUN", False)
+# ===== ENV / RISK CONFIG (حجم أساسي + حدود دنيا) =====
+TRADE_BASE_USDT    = _env_float("TRADE_BASE_USDT", 25.0)
+MIN_TRADE_USDT     = _env_float("MIN_TRADE_USDT", 10.0)
+MIN_NOTIONAL_USDT  = _env_float("MIN_NOTIONAL_USDT", 5.0)
+DRY_RUN            = _env_bool("DRY_RUN", False)
 
-# Feature flags
+# ===== Early Scout (دخول مبكر مخفّض) =====
+EARLY_SCOUT_ENABLE       = _env_bool("EARLY_SCOUT_ENABLE", True)
+EARLY_SCOUT_SIZE_MULT    = _env_float("EARLY_SCOUT_SIZE_MULT", 0.35)   # 35% من TRADE_BASE_USDT
+EARLY_SCOUT_SCORE_MIN    = _env_int("EARLY_SCOUT_SCORE_MIN", 25)
+EARLY_SCOUT_MAX_ATR_DIST = _env_float("EARLY_SCOUT_MAX_ATR_DIST", 0.6) # أقصى بعد (ATR) عن EMA50/منطقة القيمة
+
+# ===== Market leadership sizing =====
+LEADER_SIZE_MULT      = _env_float("LEADER_SIZE_MULT", 0.80)
+LEADER_DONT_DOWNSCALE = _env_bool("LEADER_DONT_DOWNSCALE", False)
+
+# ===== Feature flags =====
 USE_EMA200_TREND_FILTER   = _env_bool("USE_EMA200_TREND_FILTER", True)
 ENABLE_GOLDEN_CROSS_ENTRY = _env_bool("ENABLE_GOLDEN_CROSS_ENTRY", True)
-USE_EMA100_LTF_FILTER = _env_bool("USE_EMA50_LTF_FILTER", True)
+
+# فلتر اتجاه LTF حول EMA100 (بدل 50 القديم)
+USE_EMA100_LTF_FILTER     = _env_bool("USE_EMA100_LTF_FILTER", True)
+
 GOLDEN_CROSS_RVOL_BOOST   = _env_float("GOLDEN_CROSS_RVOL_BOOST", 1.10)
 
-# Scoring
+# ===== Scoring =====
 SCORE_THRESHOLD = _env_int("SCORE_THRESHOLD", 35)
 
-# ======= Auto-Relax =======
-AUTO_RELAX_AFTER_HRS_1 = _env_float("AUTO_RELAX_AFTER_HRS_1", 6)
-AUTO_RELAX_AFTER_HRS_2 = _env_float("AUTO_RELAX_AFTER_HRS_2", 12)
-RELAX_RVOL_DELTA_1 = _env_float("RELAX_RVOL_DELTA_1", 0.05)
-RELAX_RVOL_DELTA_2 = _env_float("RELAX_RVOL_DELTA_2", 0.10)
-RELAX_ATR_MIN_SCALE_1 = _env_float("RELAX_ATR_MIN_SCALE_1", 0.9)
-RELAX_ATR_MIN_SCALE_2 = _env_float("RELAX_ATR_MIN_SCALE_2", 0.85)
-RELAX_RESET_SUCCESS_TRADES = _env_int("RELAX_RESET_SUCCESS_TRADES", 2)
+# ===== Auto-Relax =====
+AUTO_RELAX_AFTER_HRS_1      = _env_float("AUTO_RELAX_AFTER_HRS_1", 6)
+AUTO_RELAX_AFTER_HRS_2      = _env_float("AUTO_RELAX_AFTER_HRS_2", 12)
+RELAX_RVOL_DELTA_1          = _env_float("RELAX_RVOL_DELTA_1", 0.05)
+RELAX_RVOL_DELTA_2          = _env_float("RELAX_RVOL_DELTA_2", 0.10)
+RELAX_ATR_MIN_SCALE_1       = _env_float("RELAX_ATR_MIN_SCALE_1", 0.9)
+RELAX_ATR_MIN_SCALE_2       = _env_float("RELAX_ATR_MIN_SCALE_2", 0.85)
+RELAX_RESET_SUCCESS_TRADES  = _env_int("RELAX_RESET_SUCCESS_TRADES", 2)
 
-# ======= Market Breadth =======
-BREADTH_MIN_RATIO = _env_float("BREADTH_MIN_RATIO", 0.60)
-BREADTH_TF = os.getenv("BREADTH_TF", "1h")
-BREADTH_TTL_SEC = _env_int("BREADTH_TTL_SEC", 180)
+# ===== Market Breadth =====
+BREADTH_MIN_RATIO  = _env_float("BREADTH_MIN_RATIO", 0.60)
+BREADTH_TF         = os.getenv("BREADTH_TF", "1h")
+BREADTH_TTL_SEC    = _env_int("BREADTH_TTL_SEC", 180)
 BREADTH_SYMBOLS_ENV = os.getenv("BREADTH_SYMBOLS", "")
 
-# ======= Soft schedule & messages =======
-SOFT_SCHEDULE_ENABLE      = _env_bool("SOFT_SCHEDULE_ENABLE", False)
-SOFT_SCHEDULE_HRS         = _env_str("SOFT_SCHEDULE_HRS", "09:30-16:00")
-SOFT_SCHEDULE_WEEKDAYS    = _env_str("SOFT_SCHEDULE_WEEKDAYS", "")   # مثال: "0-4" للأحد-الخميس (حسب احتياجك)
-SOFT_SCALE_TIME_ONLY      = _env_float("SOFT_SCALE_TIME_ONLY", 0.80)
-SOFT_SCALE_MARKET_WEAK    = _env_float("SOFT_SCALE_MARKET_WEAK", 0.85)
-SOFT_SEVERITY_STEP        = _env_float("SOFT_SEVERITY_STEP", 0.10)
-SOFT_MSG_ENABLE           = _env_bool("SOFT_MSG_ENABLE", True)
+# ===== Soft schedule & messages =====
+SOFT_SCHEDULE_ENABLE    = _env_bool("SOFT_SCHEDULE_ENABLE", False)
+SOFT_SCHEDULE_HRS       = _env_str("SOFT_SCHEDULE_HRS", "09:30-16:00")
+SOFT_SCHEDULE_WEEKDAYS  = _env_str("SOFT_SCHEDULE_WEEKDAYS", "")
+SOFT_SCALE_TIME_ONLY    = _env_float("SOFT_SCALE_TIME_ONLY", 0.80)
+SOFT_SCALE_MARKET_WEAK  = _env_float("SOFT_SCALE_MARKET_WEAK", 0.85)
+SOFT_SEVERITY_STEP      = _env_float("SOFT_SEVERITY_STEP", 0.10)
+SOFT_MSG_ENABLE         = _env_bool("SOFT_MSG_ENABLE", True)
 
 # Soft breadth sizing
-SOFT_BREADTH_ENABLE = _env_bool("SOFT_BREADTH_ENABLE", True)
+SOFT_BREADTH_ENABLE     = _env_bool("SOFT_BREADTH_ENABLE", True)
 SOFT_BREADTH_SIZE_SCALE = _env_float("SOFT_BREADTH_SIZE_SCALE", 0.5)
 
-# Exhaustion
-EXH_RSI_MAX = _env_float("EXH_RSI_MAX", 76)
-EXH_EMA50_DIST_ATR = _env_float("EXH_EMA50_DIST_ATR", 2.8)
+# ===== Exhaustion =====
+EXH_RSI_MAX          = _env_float("EXH_RSI_MAX", 76)
+EXH_EMA50_DIST_ATR   = _env_float("EXH_EMA50_DIST_ATR", 2.8)
 
-# Multi-targets
+# ===== Multi-targets =====
 ENABLE_MULTI_TARGETS = _env_bool("ENABLE_MULTI_TARGETS", True)
-MAX_TP_COUNT = _env_int("MAX_TP_COUNT", 5)
-TP_ATR_MULTS_TREND = tuple(float(x) for x in os.getenv("TP_ATR_MULTS_TREND", "1.2,2.2,3.5,4.5,6.0").split(","))
-TP_ATR_MULTS_VBR   = tuple(float(x) for x in os.getenv("TP_ATR_MULTS_VBR",   "0.6,1.2,1.8,2.4").split(","))
+MAX_TP_COUNT         = _env_int("MAX_TP_COUNT", 5)
+TP_ATR_MULTS_TREND   = tuple(float(x) for x in os.getenv("TP_ATR_MULTS_TREND", "1.2,2.2,3.5,4.5,6.0").split(","))
+TP_ATR_MULTS_VBR     = tuple(float(x) for x in os.getenv("TP_ATR_MULTS_VBR",   "0.6,1.2,1.8,2.4").split(","))
 
-# Dynamic Max Bars to TP1
+# ===== Dynamic Max Bars to TP1 =====
 USE_DYNAMIC_MAX_BARS = _env_bool("USE_DYNAMIC_MAX_BARS", True)
-MAX_BARS_BASE = _env_int("MAX_BARS_TO_TP1_BASE", 12)
+MAX_BARS_BASE        = _env_int("MAX_BARS_TO_TP1_BASE", 12)
 
-# Tunables via ENV (relax ATR/RVOL/Notional rejections)
+# ===== Tunables via ENV (relax ATR/RVOL/Notional rejections) =====
 MIN_BAR_NOTIONAL_USD = _env_float("MIN_BAR_NOTIONAL_USD", 25000)
-ATR_MIN_BASE = _env_float("ATR_MIN_FOR_TREND_BASE", 0.0020)
-ATR_MIN_NEW  = _env_float("ATR_MIN_FOR_TREND_NEW",  0.0026)
-ATR_MIN_BRT  = _env_float("ATR_MIN_FOR_TREND_BRT",  0.0022)
-RVOL_MIN_NEW = _env_float("RVOL_MIN_NEW", 1.25)
-RVOL_MIN_BRT = _env_float("RVOL_MIN_BRT", 1.30)
+ATR_MIN_BASE         = _env_float("ATR_MIN_FOR_TREND_BASE", 0.0020)
+ATR_MIN_NEW          = _env_float("ATR_MIN_FOR_TREND_NEW",  0.0026)
+ATR_MIN_BRT          = _env_float("ATR_MIN_FOR_TREND_BRT",  0.0022)
+RVOL_MIN_NEW         = _env_float("RVOL_MIN_NEW", 1.25)
+RVOL_MIN_BRT         = _env_float("RVOL_MIN_BRT", 1.30)
 
-# ======= HTF/OHLCV caches + metrics =======
+# ===== HTF/OHLCV caches + metrics =====
 _HTF_CACHE: Dict[str, Dict[str, Any]] = {}
 _HTF_TTL_SEC = _env_int("HTF_CACHE_TTL_SEC", 150)
 
 _OHLCV_CACHE: Dict[tuple, list] = {}
-_METRICS = {"ohlcv_api_calls": 0, "ohlcv_cache_hits": 0, "ohlcv_cache_misses": 0, "htf_cache_hits": 0, "htf_cache_misses": 0}
+_METRICS = {
+    "ohlcv_api_calls": 0,
+    "ohlcv_cache_hits": 0,
+    "ohlcv_cache_misses": 0,
+    "htf_cache_hits": 0,
+    "htf_cache_misses": 0,
+}
 
-# ======= Rejection counters + summary =======
+# ===== Rejection counters + summary =====
 _REJ_COUNTS = {"atr_low": 0, "rvol_low": 0, "notional_low": 0}
 _REJ_SUMMARY: Dict[str, int] = {}
 
