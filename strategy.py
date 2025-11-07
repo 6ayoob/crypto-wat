@@ -386,10 +386,10 @@ def add_indicators(df: pd.DataFrame) -> pd.DataFrame:
     df["ema9"]   = ema(df["close"], EMA_FAST)
     df["ema21"]  = ema(df["close"], EMA_SLOW)
     df["ema50"]  = ema(df["close"], EMA_TREND)
+    df["ema100"] = ema(df["close"], 100)      # ⭐ جديد: ترند رئيسي
     df["ema200"] = ema(df["close"], EMA_LONG)
-    df["ema100"] = ema(df["close"], 50)
     df["rsi"] = rsi(df["close"], 14)
-    df["vol_ma20"] = df["volume"].rolling(VOL_MA, min_periods=1).mean()  # UPDATED: min_periods=1
+    df["vol_ma20"] = df["volume"].rolling(VOL_MA, min_periods=1).mean()
     df = macd_cols(df)
     return df
 
