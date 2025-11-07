@@ -1520,7 +1520,7 @@ def _mark_signal_now(base: str | None = None) -> None:
         pass
 
 
-# ================== منطق الإشارة (نسخة متوازنة: اتجاه EMA100 + دخول حول EMA50) ==================
+# ================== منطق الإشارة (نسخة متوازنة + Early Scout) ==================
 def check_signal(symbol: str):
     global _CURRENT_SYMKEY
     base, variant = _split_symbol_variant(symbol)
@@ -1531,7 +1531,7 @@ def check_signal(symbol: str):
         return _rej("cooldown", left_min=round(left, 1), reason=_cooldown_reason(base))
 
     try:
-        # HTF context (ما زال يعتمد على EMA50 على الإطار الأعلى)
+        # HTF context (يعتمد على EMA50 على الإطار الأعلى)
         htf_ctx = _get_htf_context(symbol)
         if not htf_ctx:
             return _rej("data_unavailable")
@@ -1543,13 +1543,14 @@ def check_signal(symbol: str):
             _cooldown_set(base, max(5, min(cd_min, 20)), reason="no_ltf")
             return _rej("no_ltf")
 
-        # ضمان وجود EMA100 (لأن add_indicators لا يضيفه افتراضيًا)
+        # ضمان وجود EMA100
         if "ema100" not in df:
             df["ema100"] = ema(df["close"], 100)
 
         closed = df.iloc[-2]
         prev   = df.iloc[-3]
 
+        # ATR%
         atr_val = _finite_or(None, _atr_from_df(df))
         price   = _finite_or(None, closed.get("close"))
         if atr_val is None or price is None or price <= 0:
@@ -1576,20 +1577,21 @@ def check_signal(symbol: str):
                 minbar30 = float(df1h["volume"].iloc[-30:].min())
                 avg_notional_30_h1 = vol30 * px1h
                 min_notional_30_h1 = minbar30 * px1h
+                # نأخذ الأسوأ (تحفظ)
                 sym_ctx["notional_avg_30"] = float(min(sym_ctx["notional_avg_30"], avg_notional_30_h1))
                 sym_ctx["notional_min_30"] = float(min(sym_ctx["notional_min_30"], min_notional_30_h1))
         except Exception:
             pass
 
         # -------- RVOL هجين (24/30) + وعي بالاختراق --------
-        RVOL_WINDOW_FAST = _env_int("RVOL_WINDOW_FAST", 24)
-        RVOL_WINDOW_SLOW = _env_int("RVOL_WINDOW_SLOW", 30)
-        RVOL_BLEND_ALPHA = _env_float("RVOL_BLEND_ALPHA", 0.60)
-        RVOL_BREAKOUT_BOOST = _env_float("RVOL_BREAKOUT_BOOST", 0.05)
-        RVOL_NR_GAIN = _env_float("RVOL_NR_GAIN", 1.03)
+        RVOL_WINDOW_FAST   = _env_int("RVOL_WINDOW_FAST", 24)
+        RVOL_WINDOW_SLOW   = _env_int("RVOL_WINDOW_SLOW", 30)
+        RVOL_BLEND_ALPHA   = _env_float("RVOL_BLEND_ALPHA", 0.60)
+        RVOL_BREAKOUT_BOOST= _env_float("RVOL_BREAKOUT_BOOST", 0.05)
+        RVOL_NR_GAIN       = _env_float("RVOL_NR_GAIN", 1.03)
 
         nr_recent = bool(df["is_nr"].iloc[-3:-1].all())
-        hi_slice = df["high"].iloc[-NR_WINDOW-2:-2]
+        hi_slice  = df["high"].iloc[-NR_WINDOW-2:-2]
         if len(hi_slice) < 3 or hi_slice.isna().all():
             return _rej("no_ltf")
         hi_range = float(hi_slice.max())
@@ -1598,7 +1600,11 @@ def check_signal(symbol: str):
 
         is_breakout = bool(
             (float(closed["close"]) > hi_range) and
-            (nr_recent or float(closed["close"]) > _finite_or(float(closed["close"]), closed.get("vwap"), closed.get("ema50")))
+            (
+                nr_recent or
+                float(closed["close"]) >
+                _finite_or(float(closed["close"]), closed.get("vwap"), closed.get("ema50"))
+            )
         )
 
         def _safe_div(a, b, eps=1e-9):
@@ -1609,22 +1615,28 @@ def check_signal(symbol: str):
                 return 1.0
 
         try:
-            vol_fast_ma = float(df["volume"].rolling(RVOL_WINDOW_FAST, min_periods=max(3, RVOL_WINDOW_FAST//3)).mean().iloc[-2])
-            vol_slow_ma = float(df["volume"].rolling(RVOL_WINDOW_SLOW, min_periods=max(5, RVOL_WINDOW_SLOW//3)).mean().iloc[-2])
+            vol_fast_ma = float(
+                df["volume"].rolling(RVOL_WINDOW_FAST,
+                                     min_periods=max(3, RVOL_WINDOW_FAST//3)).mean().iloc[-2]
+            )
+            vol_slow_ma = float(
+                df["volume"].rolling(RVOL_WINDOW_SLOW,
+                                     min_periods=max(5, RVOL_WINDOW_SLOW//3)).mean().iloc[-2]
+            )
         except Exception:
             vol_fast_ma = float(df["volume"].rolling(24, min_periods=6).mean().iloc[-2])
             vol_slow_ma = float(df["volume"].rolling(30, min_periods=8).mean().iloc[-2])
 
-        vol_now = float(_finite_or(df["volume"].iloc[-2], closed.get("volume"), df["volume"].iloc[-2]))
+        vol_now   = float(_finite_or(df["volume"].iloc[-2], closed.get("volume"), df["volume"].iloc[-2]))
         rvol_fast = _safe_div(vol_now, vol_fast_ma)
         rvol_slow = _safe_div(vol_now, vol_slow_ma)
-        rvol_blend = float(RVOL_BLEND_ALPHA * rvol_fast + (1.0 - RVOL_BLEND_ALPHA) * rvol_slow)
+        rvol_blend= float(RVOL_BLEND_ALPHA * rvol_fast + (1.0 - RVOL_BLEND_ALPHA) * rvol_slow)
 
         if is_breakout:
-            rvol_eff = max(rvol_fast, rvol_blend) + RVOL_BREAKOUT_BOOST
+            rvol_eff  = max(rvol_fast, rvol_blend) + RVOL_BREAKOUT_BOOST
             rvol_mode = "fast+boost"
         else:
-            rvol_eff = rvol_blend * (RVOL_NR_GAIN if nr_recent else 1.0)
+            rvol_eff  = rvol_blend * (RVOL_NR_GAIN if nr_recent else 1.0)
             rvol_mode = "blend" if not nr_recent else "blend+nr"
 
         # -------- فلتر الاتجاه الرئيسي EMA100 --------
@@ -1645,7 +1657,7 @@ def check_signal(symbol: str):
             vwap_val  = _finite_or(None, closed.get("vwap"))
             close_v, low_v = float(closed["close"]), float(closed["low"])
             pb_ok = False
-            for ref in [ema50_val, vwap_val]:
+            for ref in (ema50_val, vwap_val):
                 if ref is None:
                     continue
                 if (close_v >= ref) and (low_v <= ref):
@@ -1698,7 +1710,11 @@ def check_signal(symbol: str):
 
         # فلتر الاتجاه على EMA100
         if ema100_trend == "down" and not strong_breakout:
-            return _rej("ema100_trend", price=float(price), ema100=float(closed.get("ema100") or 0.0))
+            return _rej(
+                "ema100_trend",
+                price=float(price),
+                ema100=float(closed.get("ema100") or 0.0),
+            )
 
         # ATR كفاية
         need_atrp = _atrp_min_for_symbol(sym_ctx, thr)
@@ -1708,13 +1724,15 @@ def check_signal(symbol: str):
         # RVOL باستخدام rvol_eff
         def _rvol_ok_with_eff(ltf_ctx, sym_ctx, thr, rvol_value):
             rvol_need = float(thr["RVOL_NEED_BASE"])
-            if float(sym_ctx.get("price",1.0)) < 0.1 or bool(sym_ctx.get("is_meme")):
+            if float(sym_ctx.get("price", 1.0)) < 0.1 or bool(sym_ctx.get("is_meme")):
                 rvol_need -= 0.08
             if bool(ltf_ctx.get("is_breakout")):
                 rvol_need -= 0.05
             return rvol_value >= rvol_need, rvol_value, rvol_need
 
-        r_ok, rvol_val, need_rvol = _rvol_ok_with_eff(ltf_ctx, sym_ctx, thr, float(ltf_ctx["rvol"]))
+        r_ok, rvol_val, need_rvol = _rvol_ok_with_eff(
+            ltf_ctx, sym_ctx, thr, float(ltf_ctx["rvol"])
+        )
         if not r_ok:
             return _rej("rvol_low", rvol=rvol_val, need=need_rvol)
 
@@ -1723,7 +1741,7 @@ def check_signal(symbol: str):
         if not n_ok:
             return _rej("notional_low", avg=avg_not, minbar=minbar)
 
-        # -------- اختيار نمط الدخول --------
+        # -------- اختيار نمط الدخول (Pullback / Breakout / Alpha) --------
         cfg = get_cfg(variant)
         chosen_mode = None
 
@@ -1732,9 +1750,13 @@ def check_signal(symbol: str):
                 chosen_mode = "alpha"
         else:
             mode_pref = cfg.get("ENTRY_MODE", "hybrid")
-            order = cfg.get("HYBRID_ORDER", ["pullback","breakout"]) if mode_pref == "hybrid" else [mode_pref]
+            order = (
+                cfg.get("HYBRID_ORDER", ["pullback", "breakout"])
+                if mode_pref == "hybrid" else
+                [mode_pref]
+            )
 
-            for m in (order + [x for x in ["pullback","breakout"] if x not in order]):
+            for m in (order + [x for x in ["pullback", "breakout"] if x not in order]):
                 if m == "pullback" and _entry_pullback_logic(df, closed, prev, atr_val, htf_ctx, cfg):
                     chosen_mode = "pullback"
                     break
@@ -1745,20 +1767,39 @@ def check_signal(symbol: str):
         if not chosen_mode:
             return _rej("entry_mode", mode=cfg.get("ENTRY_MODE", "hybrid"))
 
-        # -------- السكور --------
+        # -------- السكور + Early Scout --------
         score, why_str, pattern = _opportunity_score(df, prev, closed)
-        if SCORE_THRESHOLD and int(score) < int(SCORE_THRESHOLD):
-            return _rej("score_low", score=score, need=SCORE_THRESHOLD)
+        score_i = int(score)
 
-        _pass("buy", mode=chosen_mode, score=int(score))
+        is_early_scout = False
+
+        if SCORE_THRESHOLD and score_i < int(SCORE_THRESHOLD):
+            # محاولة تحويلها إلى دخول مبكر إن متاح
+            if EARLY_SCOUT_ENABLE and score_i >= int(EARLY_SCOUT_SCORE_MIN):
+                try:
+                    ema50_val = _finite_or(None, closed.get("ema50"))
+                    if ema50_val is not None and atr_val and float(atr_val) > 0:
+                        dist_atr = abs(float(price) - float(ema50_val)) / float(atr_val)
+                        if dist_atr <= float(EARLY_SCOUT_MAX_ATR_DIST):
+                            is_early_scout = True
+                except Exception:
+                    is_early_scout = False
+
+            if not is_early_scout:
+                # لا هو دخول كامل ولا يستوفي شروط Early Scout
+                return _rej("score_low", score=score_i, need=SCORE_THRESHOLD)
+
+        # -------- تمرير الإشارة --------
+        _pass("buy", mode=chosen_mode, score=score_i)
         _mark_signal_now(base)
 
         return {
             "decision": "buy",
             "mode": chosen_mode,
-            "score": int(score),
+            "score": score_i,
             "reasons": why_str,
             "pattern": pattern,
+            "is_early_scout": bool(is_early_scout),
             "features": {
                 "atrp": float(atrp),
                 "rvol": float(rvol_val),
@@ -1766,16 +1807,17 @@ def check_signal(symbol: str):
                 "rvol_slow": float(ltf_ctx["rvol_slow"]),
                 "rvol_mode": str(ltf_ctx["rvol_mode"]),
                 "breadth_ratio": (None if br is None else float(br)),
-                "htf_ok": bool(trend in ("up","neutral")),
+                "htf_ok": bool(trend in ("up", "neutral")),
                 "ema100_trend": ema100_trend,
                 "notional_avg_30": float(avg_not),
                 "notional_min_30": float(minbar),
-            }
+            },
         }
     except Exception as e:
         return _rej("error", err=str(e))
     finally:
         _CURRENT_SYMKEY = None
+
 
 # ================== Entry plan builder ==================
 def _atr_latest(symbol_base: str, tf: str, bars: int = 180) -> tuple[float, float, float]:
