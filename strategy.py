@@ -840,7 +840,7 @@ def _round_relax_factors() -> Tuple[float, float, float]:
 BASE_CFG = {
     "ENTRY_MODE": "hybrid",
     "HYBRID_ORDER": ["pullback","breakout"],
-    "PULLBACK_VALUE_REF": "ema21",
+    "PULLBACK_VALUE_REF": "ema50",
     "PULLBACK_CONFIRM": "bullish_engulf",
     "RVOL_MIN": 1.2,
     "ATR_MIN_FOR_TREND": ATR_MIN_BASE,
