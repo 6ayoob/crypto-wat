@@ -1292,7 +1292,7 @@ def _mark_signal_now(base: str | None = None) -> None:
         pass
 
 
-# ================== منطق الإشارة (نسخة مُحَدَّثة برفول هجين + فلتر EMA50 LTF) ==================
+# ================== منطق الإشارة (نسخة متوازنة: اتجاه EMA100 + دخول حول EMA50) ==================
 def check_signal(symbol: str):
     global _CURRENT_SYMKEY
     base, variant = _split_symbol_variant(symbol)
@@ -1303,10 +1303,12 @@ def check_signal(symbol: str):
         return _rej("cooldown", left_min=round(left, 1), reason=_cooldown_reason(base))
 
     try:
+        # HTF context (ما زال يعتمد على EMA50 على الإطار الأعلى)
         htf_ctx = _get_htf_context(symbol)
         if not htf_ctx:
             return _rej("data_unavailable")
 
+        # LTF data + indicators
         df = _get_ltf_df_with_fallback(symbol, STRAT_LTF_TIMEFRAME)
         if df is None or len(df) < 60:
             cd_min = _cooldown_minutes_for_variant(variant)
@@ -1324,7 +1326,7 @@ def check_signal(symbol: str):
 
         bucket = "maj" if base.split("/")[0] in ("BTC","ETH","BNB","SOL") else "alt"
 
-        # UPDATED: حسابات السيولة/النوتشنال بحماية
+        # -------- سيولة / نوتشنال --------
         sym_ctx = {
             "bucket": bucket,
             "atrp_q35_lookback": float(df["close"].pct_change().rolling(35).std().iloc[-1] or 0.0),
@@ -1342,33 +1344,29 @@ def check_signal(symbol: str):
                 minbar30 = float(df1h["volume"].iloc[-30:].min())
                 avg_notional_30_h1 = vol30 * px1h
                 min_notional_30_h1 = minbar30 * px1h
-                # نأخذ الأسوأ حفاظًا على التحفّظ
                 sym_ctx["notional_avg_30"] = float(min(sym_ctx["notional_avg_30"], avg_notional_30_h1))
                 sym_ctx["notional_min_30"] = float(min(sym_ctx["notional_min_30"], min_notional_30_h1))
         except Exception:
             pass
 
-        # ==== RVOL (Hybrid 24/30) + Breakout-aware ====
+        # -------- RVOL هجين (24/30) + وعي بالاختراق --------
         RVOL_WINDOW_FAST = _env_int("RVOL_WINDOW_FAST", 24)
         RVOL_WINDOW_SLOW = _env_int("RVOL_WINDOW_SLOW", 30)
         RVOL_BLEND_ALPHA = _env_float("RVOL_BLEND_ALPHA", 0.60)
         RVOL_BREAKOUT_BOOST = _env_float("RVOL_BREAKOUT_BOOST", 0.05)
         RVOL_NR_GAIN = _env_float("RVOL_NR_GAIN", 1.03)
 
-        # NR + أعلى قمة قريبة
         nr_recent = bool(df["is_nr"].iloc[-3:-1].all())
         hi_slice = df["high"].iloc[-NR_WINDOW-2:-2]
         if len(hi_slice) < 3 or hi_slice.isna().all():
             return _rej("no_ltf")
-
         hi_range = float(hi_slice.max())
         if not math.isfinite(hi_range):
             return _rej("no_ltf")
 
-        # تعريف الاختراق
         is_breakout = bool(
             (float(closed["close"]) > hi_range) and
-            (nr_recent or float(closed["close"]) > _finite_or(float(closed["close"]), closed.get("vwap"), closed.get("ema21")))
+            (nr_recent or float(closed["close"]) > _finite_or(float(closed["close"]), closed.get("vwap"), closed.get("ema50")))
         )
 
         def _safe_div(a, b, eps=1e-9):
@@ -1390,7 +1388,6 @@ def check_signal(symbol: str):
         rvol_slow = _safe_div(vol_now, vol_slow_ma)
         rvol_blend = float(RVOL_BLEND_ALPHA * rvol_fast + (1.0 - RVOL_BLEND_ALPHA) * rvol_slow)
 
-        # اختيار RVOL الفعّال حسب السياق (اختراق/عادي)
         if is_breakout:
             rvol_eff = max(rvol_fast, rvol_blend) + RVOL_BREAKOUT_BOOST
             rvol_mode = "fast+boost"
@@ -1398,25 +1395,25 @@ def check_signal(symbol: str):
             rvol_eff = rvol_blend * (RVOL_NR_GAIN if nr_recent else 1.0)
             rvol_mode = "blend" if not nr_recent else "blend+nr"
 
-        # ===== EMA200 trend (سياق عام قوي/ضعيف) =====
+        # -------- فلتر الاتجاه الرئيسي EMA100 --------
         try:
-            ema200_val = float(closed.get("ema200"))
-            if float(closed["close"]) > ema200_val:
-                ema200_trend = "up"
-            elif float(closed["close"]) < ema200_val:
-                ema200_trend = "down"
+            ema100_val = float(closed.get("ema100"))
+            if float(price) > ema100_val:
+                ema100_trend = "up"
+            elif float(price) < ema100_val:
+                ema100_trend = "down"
             else:
-                ema200_trend = "flat_up"
+                ema100_trend = "flat_up"
         except Exception:
-            ema200_trend = "flat_up"
+            ema100_trend = "flat_up"
 
-        # ===== pullback_ok (ملامسة VWAP/EMA21) =====
+        # -------- صلاحية البولاك حول EMA50 --------
         try:
-            ema21_val = _finite_or(None, closed.get("ema21"))
+            ema50_val = _finite_or(None, closed.get("ema50"))
             vwap_val  = _finite_or(None, closed.get("vwap"))
             close_v, low_v = float(closed["close"]), float(closed["low"])
             pb_ok = False
-            for ref in [vwap_val, ema21_val]:
+            for ref in [ema50_val, vwap_val]:
                 if ref is None:
                     continue
                 if (close_v >= ref) and (low_v <= ref):
@@ -1431,16 +1428,16 @@ def check_signal(symbol: str):
             "rvol_slow": float(rvol_slow),
             "rvol_mode": rvol_mode,
             "is_breakout": bool(is_breakout),
-            "ema200_trend": ema200_trend,
+            "ema100_trend": ema100_trend,
             "pullback_ok": bool(pb_ok),
         }
 
-        # ===== الأعتاب الديناميكية =====
+        # -------- أعتاب ديناميكية --------
         br  = _get_breadth_ratio_cached()
         thr = regime_thresholds(br, atrp)
         need_rvol_base = float(thr["RVOL_NEED_BASE"])
 
-        # اتجاه HTF (EMA50 على الفريم العالي)
+        # اتجاه HTF (EMA50 HTF)
         trend = "neutral"
         try:
             if float(htf_ctx["close"]) > float(htf_ctx["ema50_now"]):
@@ -1454,11 +1451,12 @@ def check_signal(symbol: str):
         eff_min     = _breadth_min_auto()
         weak_market = (br is not None) and (br < eff_min)
 
+        # اختراق قوي يسمح ببعض التليين
         strong_breakout = bool(
-            is_breakout and ltf_ctx.get("ema200_trend") == "up" and rvol_eff >= need_rvol_base * 1.10
+            is_breakout and ema100_trend == "up" and rvol_eff >= need_rvol_base * 1.10
         )
 
-        # فلتر ترند HTF:
+        # فلتر HTF
         if trend == "down":
             if not ((br is not None and br >= max(0.58, eff_min + 0.04)) or strong_breakout):
                 return _rej("htf_trend", trend=trend)
@@ -1466,12 +1464,16 @@ def check_signal(symbol: str):
             if not (weak_market or strong_breakout):
                 return _rej("htf_trend", trend=trend)
 
-        # ===== فلتر ATR النسبي حسب نوع الرمز =====
+        # فلتر الاتجاه على EMA100
+        if ema100_trend == "down" and not strong_breakout:
+            return _rej("ema100_trend", price=float(price), ema100=float(closed.get("ema100") or 0.0))
+
+        # ATR كفاية
         need_atrp = _atrp_min_for_symbol(sym_ctx, thr)
         if float(atrp) < float(need_atrp):
             return _rej("atr_low", atrp=atrp, need=need_atrp)
 
-        # ===== فلتر RVOL باستخدام rvol_eff =====
+        # RVOL باستخدام rvol_eff
         def _rvol_ok_with_eff(ltf_ctx, sym_ctx, thr, rvol_value):
             rvol_need = float(thr["RVOL_NEED_BASE"])
             if float(sym_ctx.get("price",1.0)) < 0.1 or bool(sym_ctx.get("is_meme")):
@@ -1484,45 +1486,34 @@ def check_signal(symbol: str):
         if not r_ok:
             return _rej("rvol_low", rvol=rvol_val, need=need_rvol)
 
-        # ===== فلتر السيولة (نوتشنال) =====
+        # سيولة كفاية
         n_ok, avg_not, minbar = _notional_ok(sym_ctx, thr)
         if not n_ok:
             return _rej("notional_low", avg=avg_not, minbar=minbar)
 
-        # ===== فلتر EMA50 على فريم الدخول (LTF) =====
-        USE_LTF_EMA50_FILTER = _env_bool("USE_LTF_EMA50_FILTER", True)
-        if USE_LTF_EMA50_FILTER:
-            try:
-                ema50_ltf = float(closed.get("ema50"))
-                close_ltf = float(closed["close"])
-                # نطلب أن يكون السعر فوق EMA50 على LTF
-                if not (close_ltf > ema50_ltf):
-                    # استثناء وحيد: اختراق قوي جدًا (strong_breakout)
-                    if not strong_breakout:
-                        return _rej("ema50_ltf", close=close_ltf, ema50=ema50_ltf)
-            except Exception:
-                # إذا تعذر الحساب لا نوقف المنظومة
-                pass
-
-        # ===== اختيار نمط الدخول حسب إعدادات النسخة =====
+        # -------- اختيار نمط الدخول --------
         cfg = get_cfg(variant)
         chosen_mode = None
+
         if cfg.get("ENTRY_MODE") == "alpha":
             if _entry_alpha_logic(df, closed, prev, atr_val, htf_ctx, cfg, thr, sym_ctx):
                 chosen_mode = "alpha"
         else:
             mode_pref = cfg.get("ENTRY_MODE", "hybrid")
             order = cfg.get("HYBRID_ORDER", ["pullback","breakout"]) if mode_pref == "hybrid" else [mode_pref]
+
             for m in (order + [x for x in ["pullback","breakout"] if x not in order]):
                 if m == "pullback" and _entry_pullback_logic(df, closed, prev, atr_val, htf_ctx, cfg):
-                    chosen_mode = "pullback"; break
+                    chosen_mode = "pullback"
+                    break
                 if m == "breakout" and _entry_breakout_logic(df, closed, prev, atr_val, htf_ctx, cfg):
-                    chosen_mode = "breakout"; break
+                    chosen_mode = "breakout"
+                    break
 
         if not chosen_mode:
             return _rej("entry_mode", mode=cfg.get("ENTRY_MODE", "hybrid"))
 
-        # ===== نظام السكور =====
+        # -------- السكور --------
         score, why_str, pattern = _opportunity_score(df, prev, closed)
         if SCORE_THRESHOLD and int(score) < int(SCORE_THRESHOLD):
             return _rej("score_low", score=score, need=SCORE_THRESHOLD)
@@ -1544,6 +1535,7 @@ def check_signal(symbol: str):
                 "rvol_mode": str(ltf_ctx["rvol_mode"]),
                 "breadth_ratio": (None if br is None else float(br)),
                 "htf_ok": bool(trend in ("up","neutral")),
+                "ema100_trend": ema100_trend,
                 "notional_avg_30": float(avg_not),
                 "notional_min_30": float(minbar),
             }
