@@ -136,12 +136,6 @@ TRADE_BASE_USDT    = _env_float("TRADE_BASE_USDT", 25.0)
 MIN_TRADE_USDT     = _env_float("MIN_TRADE_USDT", 10.0)
 MIN_NOTIONAL_USDT  = _env_float("MIN_NOTIONAL_USDT", 5.0)
 DRY_RUN            = _env_bool("DRY_RUN", False)
-# ======= Aggressive Clean Mode =======
-AGGR_MODE_ENABLE       = _env_bool("AGGR_MODE_ENABLE", True)
-AGGR_SCORE_MIN         = _env_int("AGGR_SCORE_MIN", 60)     # أقل سكور لتفعيل الهجومي
-AGGR_SCORE_STRONG      = _env_int("AGGR_SCORE_STRONG", 70)  # سكور أعلى = دفع أكبر
-AGGR_MAX_RISK_MULT     = _env_float("AGGR_MAX_RISK_MULT", 1.8)  # أقصى تضخيم للحجم الكلي
-AGGR_BREAKOUT_ONLY     = _env_bool("AGGR_BREAKOUT_ONLY", True)  # هجومي فقط في إشارات اختراق
 
 # ===== Early Scout (دخول مبكر مخفّض) =====
 EARLY_SCOUT_ENABLE       = _env_bool("EARLY_SCOUT_ENABLE", True)
@@ -165,6 +159,16 @@ GOLDEN_CROSS_RVOL_BOOST   = _env_float("GOLDEN_CROSS_RVOL_BOOST", 1.10)
 # ===== Scoring =====
 SCORE_THRESHOLD = _env_int("SCORE_THRESHOLD", 35)
 
+# ===== Aggressive Clean Mode (هجومي نظيف، أعلى جودة فقط) =====
+AGGR_MODE_ENABLE          = _env_bool("AGGR_MODE_ENABLE", True)
+AGGR_SCORE_MIN            = _env_int("AGGR_SCORE_MIN", 60)      # أقل سكور لتفعيل الهجومي
+AGGR_SCORE_STRONG         = _env_int("AGGR_SCORE_STRONG", 70)   # سكور أعلى = دفع أكبر
+AGGR_MAX_RISK_MULT        = _env_float("AGGR_MAX_RISK_MULT", 1.8)  # أقصى تضخيم للحجم الكلي
+AGGR_BREAKOUT_ONLY        = _env_bool("AGGR_BREAKOUT_ONLY", True)  # هجومي فقط في إشارات اختراق
+MAX_SYMBOL_EXPOSURE_MULT  = _env_float("MAX_SYMBOL_EXPOSURE_MULT", 1.6)  # سقف إجمالي على الرمز
+SCOUT_TO_FULL_MIN_SCORE   = _env_int("SCOUT_TO_FULL_MIN_SCORE", SCORE_THRESHOLD)  # ترقية Scout إلى كامل
+ADDON_BREAKOUT_MULT       = _env_float("ADDON_BREAKOUT_MULT", 0.30)  # حجم إضافة عند اختراق قوي
+
 # ===== Auto-Relax =====
 AUTO_RELAX_AFTER_HRS_1      = _env_float("AUTO_RELAX_AFTER_HRS_1", 6)
 AUTO_RELAX_AFTER_HRS_2      = _env_float("AUTO_RELAX_AFTER_HRS_2", 12)
@@ -175,9 +179,9 @@ RELAX_ATR_MIN_SCALE_2       = _env_float("RELAX_ATR_MIN_SCALE_2", 0.85)
 RELAX_RESET_SUCCESS_TRADES  = _env_int("RELAX_RESET_SUCCESS_TRADES", 2)
 
 # ===== Market Breadth =====
-BREADTH_MIN_RATIO  = _env_float("BREADTH_MIN_RATIO", 0.60)
-BREADTH_TF         = os.getenv("BREADTH_TF", "1h")
-BREADTH_TTL_SEC    = _env_int("BREADTH_TTL_SEC", 180)
+BREADTH_MIN_RATIO   = _env_float("BREADTH_MIN_RATIO", 0.60)
+BREADTH_TF          = os.getenv("BREADTH_TF", "1h")
+BREADTH_TTL_SEC     = _env_int("BREADTH_TTL_SEC", 180)
 BREADTH_SYMBOLS_ENV = os.getenv("BREADTH_SYMBOLS", "")
 
 # ===== Soft schedule & messages =====
@@ -194,14 +198,18 @@ SOFT_BREADTH_ENABLE     = _env_bool("SOFT_BREADTH_ENABLE", True)
 SOFT_BREADTH_SIZE_SCALE = _env_float("SOFT_BREADTH_SIZE_SCALE", 0.5)
 
 # ===== Exhaustion =====
-EXH_RSI_MAX          = _env_float("EXH_RSI_MAX", 76)
-EXH_EMA50_DIST_ATR   = _env_float("EXH_EMA50_DIST_ATR", 2.8)
+EXH_RSI_MAX        = _env_float("EXH_RSI_MAX", 76)
+EXH_EMA50_DIST_ATR = _env_float("EXH_EMA50_DIST_ATR", 2.8)
 
 # ===== Multi-targets =====
 ENABLE_MULTI_TARGETS = _env_bool("ENABLE_MULTI_TARGETS", True)
 MAX_TP_COUNT         = _env_int("MAX_TP_COUNT", 5)
-TP_ATR_MULTS_TREND   = tuple(float(x) for x in os.getenv("TP_ATR_MULTS_TREND", "1.2,2.2,3.5,4.5,6.0").split(","))
-TP_ATR_MULTS_VBR     = tuple(float(x) for x in os.getenv("TP_ATR_MULTS_VBR",   "0.6,1.2,1.8,2.4").split(","))
+TP_ATR_MULTS_TREND   = tuple(float(x) for x in os.getenv(
+    "TP_ATR_MULTS_TREND", "1.2,2.2,3.5,4.5,6.0"
+).split(","))
+TP_ATR_MULTS_VBR     = tuple(float(x) for x in os.getenv(
+    "TP_ATR_MULTS_VBR", "0.6,1.2,1.8,2.4"
+).split(","))
 
 # ===== Dynamic Max Bars to TP1 =====
 USE_DYNAMIC_MAX_BARS = _env_bool("USE_DYNAMIC_MAX_BARS", True)
