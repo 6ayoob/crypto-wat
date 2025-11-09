@@ -1737,7 +1737,7 @@ def check_signal(symbol: str):
         if not n_ok:
             return _rej("notional_low", avg=avg_not, minbar=minbar)
 
-        # -------- السكور مرة واحدة --------
+        # -------- السكور --------
         score, why_str, pattern = _opportunity_score(df, prev, closed)
 
         # -------- اختيار نمط الدخول الأساسي --------
@@ -1759,7 +1759,7 @@ def check_signal(symbol: str):
                     chosen_mode = "breakout"
                     break
 
-        # -------- حالة الدخول الكامل (عادي) --------
+        # -------- حالة الدخول الكامل --------
         if chosen_mode:
             if SCORE_THRESHOLD and int(score) < int(SCORE_THRESHOLD):
                 return _rej("score_low", score=score, need=SCORE_THRESHOLD)
@@ -1773,6 +1773,7 @@ def check_signal(symbol: str):
                 "score": int(score),
                 "reasons": why_str,
                 "pattern": pattern,
+                "is_early_scout": False,
                 "features": {
                     "atrp": float(atrp),
                     "rvol": float(rvol_val),
@@ -1801,7 +1802,7 @@ def check_signal(symbol: str):
                         (dist_atr <= float(EARLY_SCOUT_MAX_ATR_DIST)) and
                         (int(score) >= int(EARLY_SCOUT_SCORE_MIN)) and
                         rvol_val >= max(0.85 * need_rvol_base, 0.9) and
-                        n_ok  # نفس فحص السيولة السابق
+                        n_ok
                     )
 
                     if early_ok:
@@ -1813,7 +1814,7 @@ def check_signal(symbol: str):
                             "score": int(score),
                             "reasons": (why_str + " | early_scout"),
                             "pattern": pattern,
-                            "early_scout": True,
+                            "is_early_scout": True,
                             "features": {
                                 "atrp": float(atrp),
                                 "rvol": float(rvol_val),
@@ -1832,14 +1833,13 @@ def check_signal(symbol: str):
             except Exception:
                 pass
 
-        # إن لم يتحقق لا دخول ولا Early Scout
+        # لا دخول
         return _rej("entry_mode", mode=cfg.get("ENTRY_MODE", "hybrid"))
 
     except Exception as e:
         return _rej("error", err=str(e))
     finally:
         _CURRENT_SYMKEY = None
-
 
 
 # ================== Entry plan builder ==================
@@ -1929,7 +1929,7 @@ def _build_entry_plan(symbol: str, sig: dict | None) -> dict:
     sig.setdefault("messages", {})
     return sig
 
-# ================== execute_buy (نسخة محدثة) ==================
+# ================== execute_buy (نسخة محدثة بعد التعديل) ==================
 
 # مانع تكرار تنبيهات تلغرام البسيط
 _TG_ONCE_CACHE = {}
@@ -2033,13 +2033,11 @@ def execute_buy(symbol: str, sig: dict | None = None):
         sc       = int(sig.get("score", SCORE_THRESHOLD))
         atrp_sig = float(sig.get("atrp", 0.0))
 
-        # boost بسيط للسكور الأعلى
         if sc >= 55:
             trade_usdt *= 1.25
         elif sc >= 45:
             trade_usdt *= 1.10
 
-        # ضبط بالحركة النسبية (ATR%)
         if atrp_sig >= 0.008:
             trade_usdt *= 1.10
         elif atrp_sig <= 0.0035:
@@ -2047,7 +2045,7 @@ def execute_buy(symbol: str, sig: dict | None = None):
     except Exception:
         pass
 
-    # تحجيم خاص للرموز القائدة (BTC / ETH ... الخ)
+    # تحجيم خاص للرموز القائدة
     if is_leader and not LEADER_DONT_DOWNSCALE:
         trade_usdt *= LEADER_SIZE_MULT_ENV
 
@@ -2082,33 +2080,28 @@ def execute_buy(symbol: str, sig: dict | None = None):
                 )
         except Exception:
             is_early_scout = False  # لا نكسر الصفقة لو حصل خطأ
+
     # ===== Aggressive Clean Mode =====
     # يعمل فقط إذا:
     # - مفعّل
     # - لسنا في Early Scout
     # - السكور عالي جدًا
     # - (اختياري) الإشارة من نوع breakout
-    if (
-        AGGR_MODE_ENABLE
-        and not is_early_scout
-    ):
+    if AGGR_MODE_ENABLE and not is_early_scout:
         try:
             sc_aggr = int(sig.get("score", 0))
             mode = str(sig.get("mode", "")).lower()
 
-            strong_score = sc_aggr >= int(AGGR_SCORE_MIN)
+            strong_score   = sc_aggr >= int(AGGR_SCORE_MIN)
             stronger_score = sc_aggr >= int(AGGR_SCORE_STRONG)
-
-            breakout_ok = (not AGGR_BREAKOUT_ONLY) or (mode == "breakout")
+            breakout_ok    = (not AGGR_BREAKOUT_ONLY) or (mode == "breakout")
 
             if strong_score and breakout_ok:
-                # أساس هجومي نظيف: تضخيم ضمن سقف منضبط
                 if stronger_score:
                     aggr_mult = 1.60
                 else:
                     aggr_mult = 1.35
 
-                # لا نتجاوز AGGR_MAX_RISK_MULT نسبةً إلى TRADE_BASE_USDT
                 max_allowed = TRADE_BASE_USDT * float(AGGR_MAX_RISK_MULT)
                 trade_usdt = min(trade_usdt * aggr_mult, max_allowed)
 
@@ -2117,7 +2110,7 @@ def execute_buy(symbol: str, sig: dict | None = None):
                     f"🔥 Aggressive Clean: strong signal (score={sc_aggr}) → size<=x{AGGR_MAX_RISK_MULT:.2f}"
                 )
         except Exception:
-            # لو حصل خطأ في منطق الهجومي، نتجاهله ونبقى على المتوازن
+            # نتجاهل أي خطأ في الهجومي بدون كسر الدخول
             pass
 
     # ===== حدود الحجم (بعد كل السكيلات) =====
@@ -2292,10 +2285,11 @@ def execute_buy(symbol: str, sig: dict | None = None):
         f"{' | Early Scout' if is_early_scout else ''}"
     )
 
+
 # ================== بيع آمن ==================
 def _safe_sell(base_symbol: str, want_qty: float):
     """
-    يبيع الكمية المتاحة فقط مع احترام step/minQty/minNotional لمنع أخطاء OKX 51008.
+    يبيع الكمية المتاحة فقط مع احترام step/minQty/minNotional لمنع أخطاء 51008.
     يُستدعى من manage_position.
     """
     try:
@@ -2308,9 +2302,9 @@ def _safe_sell(base_symbol: str, want_qty: float):
         return None, None, 0.0
 
     f = fetch_symbol_filters(base_symbol)
-    step = float(f.get("stepSize", 0.000001)) or 0.000001
-    min_qty = float(f.get("minQty", 0.0)) or 0.0
-    min_notional = float(f.get("minNotional", MIN_NOTIONAL_USDT)) or MIN_NOTIONAL_USDT
+    step        = float(f.get("stepSize", 0.000001)) or 0.000001
+    min_qty     = float(f.get("minQty", 0.0)) or 0.0
+    min_notional= float(f.get("minNotional", MIN_NOTIONAL_USDT)) or MIN_NOTIONAL_USDT
 
     try:
         price_now = float(fetch_price(base_symbol) or 0.0)
@@ -2369,57 +2363,89 @@ def _safe_sell(base_symbol: str, want_qty: float):
     return order, exit_px, qty
 
 
-# ================== دوال المخاطر/البلوك (محلي) ==================
+# ================== دوال المخاطر/البلوك ==================
 def _default_risk_state():
-    return {"date": _today_str(), "daily_pnl": 0.0, "consecutive_losses": 0, "trades_today": 0,
-            "blocked_until": None, "hourly_pnl": {}, "last_signal_ts": None, "relax_success_count": 0}
+    return {
+        "date": _today_str(),
+        "daily_pnl": 0.0,
+        "consecutive_losses": 0,
+        "trades_today": 0,
+        "blocked_until": None,
+        "hourly_pnl": {},
+        "last_signal_ts": None,
+        "relax_success_count": 0
+    }
 
 def load_risk_state():
     s = _read_json(RISK_STATE_FILE, _default_risk_state())
     if s.get("date") != _today_str():
-        s = _default_risk_state(); save_risk_state(s)
-    if "hourly_pnl" not in s or not isinstance(s["hourly_pnl"], dict): s["hourly_pnl"] = {}
-    if "last_signal_ts" not in s: s["last_signal_ts"] = None
-    if "relax_success_count" not in s: s["relax_success_count"] = 0
+        s = _default_risk_state()
+        save_risk_state(s)
+    if "hourly_pnl" not in s or not isinstance(s["hourly_pnl"], dict):
+        s["hourly_pnl"] = {}
+    if "last_signal_ts" not in s:
+        s["last_signal_ts"] = None
+    if "relax_success_count" not in s:
+        s["relax_success_count"] = 0
     return s
 
-def save_risk_state(s): _atomic_write(RISK_STATE_FILE, s)
+def save_risk_state(s):
+    _atomic_write(RISK_STATE_FILE, s)
 
-# نعيد تعريف هذه لتعمل محليًا حتى لو لم تتوفر risk_and_notify
 def register_trade_opened():
-    s = load_risk_state(); s["trades_today"] = int(s.get("trades_today", 0)) + 1; save_risk_state(s)
+    s = load_risk_state()
+    s["trades_today"] = int(s.get("trades_today", 0)) + 1
+    save_risk_state(s)
 
 def _set_block(minutes, reason="risk"):
-    s = load_risk_state(); until = now_riyadh() + timedelta(minutes=minutes)
-    s["blocked_until"] = until.isoformat(timespec="seconds"); save_risk_state(s)
+    s = load_risk_state()
+    until = now_riyadh() + timedelta(minutes=minutes)
+    s["blocked_until"] = until.isoformat(timespec="seconds")
+    save_risk_state(s)
     _tg(f"⛔️ <b>حظر مؤقت</b> ({reason}) حتى <code>{until.strftime('%H:%M')}</code>.")
 
 def _is_blocked():
-    s = load_risk_state(); bu = s.get("blocked_until")
-    if not bu: return False
-    try: t = datetime.fromisoformat(bu)
-    except Exception: return False
+    s = load_risk_state()
+    bu = s.get("blocked_until")
+    if not bu:
+        return False
+    try:
+        t = datetime.fromisoformat(bu)
+    except Exception:
+        return False
     return now_riyadh() < t
 
-def _mark_signal_now():
-    s = load_risk_state(); s["last_signal_ts"] = now_riyadh().isoformat(timespec="seconds"); save_risk_state(s)
+def _mark_signal_now(_sym: str = None):
+    """
+    تسجيل آخر وقت إشارة (اختياريًا نستقبل الرمز للتوافق مع النداءات القديمة).
+    """
+    s = load_risk_state()
+    s["last_signal_ts"] = now_riyadh().isoformat(timespec="seconds")
+    save_risk_state(s)
 
 def _hours_since_last_signal() -> Optional[float]:
-    s = load_risk_state(); ts = s.get("last_signal_ts")
-    if not ts: return None
-    try: dt = datetime.fromisoformat(ts)
-    except Exception: return None
+    s = load_risk_state()
+    ts = s.get("last_signal_ts")
+    if not ts:
+        return None
+    try:
+        dt = datetime.fromisoformat(ts)
+    except Exception:
+        return None
     return max(0.0, (now_riyadh() - dt).total_seconds() / 3600.0)
 
 def _relax_level_current() -> int:
     s = load_risk_state()
-    if int(s.get("relax_success_count", 0)) >= RELAX_RESET_SUCCESS_TRADES: return 0
+    if int(s.get("relax_success_count", 0)) >= RELAX_RESET_SUCCESS_TRADES:
+        return 0
     hrs = _hours_since_last_signal()
-    if hrs is None: return 0
-    if hrs >= AUTO_RELAX_AFTER_HRS_2: return 2
-    if hrs >= AUTO_RELAX_AFTER_HRS_1: return 1
+    if hrs is None:
+        return 0
+    if hrs >= AUTO_RELAX_AFTER_HRS_2:
+        return 2
+    if hrs >= AUTO_RELAX_AFTER_HRS_1:
+        return 1
     return 0
-
 
 # ================== إدارة الصفقة ==================
 def close_trend(symbol: str):
