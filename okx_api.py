@@ -1,6 +1,11 @@
 # -*- coding: utf-8 -*-
-# okx_api.py — متوافق مع strategy.py (Spot فقط) + كاش أسعار جماعي + أدوات مساعدة
-# المتطلبات: pip install ccxt requests
+# okx_api.py — متوافق مع strategy.py (Spot فقط)
+# - كاش أسعار جماعي لتخفيف الطلبات
+# - احترام حدود OKX والـ Rate Limit
+# - دوال fetch_* و place_market_order متوافقة مع الاستراتيجية
+#
+# المتطلبات:
+#   pip install ccxt requests
 
 import os
 import time
@@ -11,8 +16,8 @@ from typing import Optional, Tuple, Dict, Any, List
 import requests
 import ccxt
 
-# ================= مفاتيح OKX (اسم موحّد عبر المشروع) =================
-# نحاول أولاً من config.py (بنفس الأسماء)، وإن لم تتوفر نقرأ من متغيرات البيئة
+# ================= مفاتيح OKX =================
+# نحاول أولاً من config.py، وإن لم تتوفر نقرأ من الـ ENV
 try:
     from config import OKX_API_KEY, OKX_API_SECRET, OKX_PASSPHRASE
 except Exception:
@@ -28,7 +33,6 @@ exchange = ccxt.okx({
     "enableRateLimit": True,
     "options": {
         "defaultType": "spot",
-        # بعض البورصات تتطلب price مع أوامر Market Buy — OKX لا يتطلب عادةً، نخليه False
         "createMarketBuyOrderRequiresPrice": False,
     },
     "timeout": 15000,  # 15s
@@ -46,7 +50,7 @@ if os.getenv("OKX_TESTNET", "false").lower() in ("1", "true", "yes"):
 try:
     exchange.load_markets()
 except Exception as e:
-    print(f"⚠️ تعذّر تحميل الأسواق: {e}")
+    print(f"⚠️ تعذّر تحميل الأسواق: {e}", flush=True)
 
 OKX_BASE = "https://www.okx.com"
 OKX_TICKERS_URL = f"{OKX_BASE}/api/v5/market/tickers?instType=SPOT"
@@ -54,8 +58,8 @@ OKX_TICKERS_URL = f"{OKX_BASE}/api/v5/market/tickers?instType=SPOT"
 # ================ أدوات مساعدة عامة ================
 def _fmt_symbol(symbol: str) -> str:
     """
-    يطبع رموز مثل BTC-USDT, BTC_USDT, BTC/USDT#new → BTC/USDT
-    (يزيل لاحقة الاستراتيجية مثل #old/#new إن وُجدت).
+    توحيد تنسيق الرمز:
+    BTC-USDT, BTC_USDT, BTC/USDT#old → BTC/USDT
     """
     s = (symbol or "").strip()
     if "#" in s:
@@ -73,14 +77,14 @@ def _okx_error_hint(e: Exception) -> str:
     return ""
 
 def _log(send_message, text: str):
-    print(text)
+    print(text, flush=True)
     if send_message:
         try:
             send_message(text)
         except Exception:
             pass
 
-# ================ Backoff + Jitter ================
+# ================ Backoff + Jitter (للبعض فقط) ================
 def _retry(times=3, base_delay=0.6, max_delay=5.0):
     def deco(fn):
         def wrapper(*args, **kwargs):
@@ -92,7 +96,7 @@ def _retry(times=3, base_delay=0.6, max_delay=5.0):
                     last_exc = e
                     hint = _okx_error_hint(e)
                     if hint:
-                        print(hint)
+                        print(hint, flush=True)
                     sleep_s = min(max_delay, base_delay * (1.8 ** i)) + random.uniform(0, 0.25)
                     time.sleep(sleep_s)
             raise last_exc
@@ -102,8 +106,10 @@ def _retry(times=3, base_delay=0.6, max_delay=5.0):
 # ================ كاش بسيط ================
 _BAL_CACHE: Dict[str, Tuple[float, float]] = {}                 # {asset: (ts, balance)}
 _TICKER_CACHE: Dict[str, Tuple[float, Dict[str, Any]]] = {}     # {sym: (ts, ticker-like)}
+
 CACHE_TTL_SEC_BAL = 3.0
-CACHE_TTL_SEC_TICKER = 2.0
+# مهم: يتماشى مع period تبع start_tickers_cache لتفادي طلبات لا داعي لها
+CACHE_TTL_SEC_TICKER = 6.0
 
 def _get_cached_bal(asset: str) -> Optional[float]:
     t = _BAL_CACHE.get(asset)
@@ -125,46 +131,58 @@ def _get_cached_ticker(sym: str) -> Optional[Dict[str, Any]]:
 def _set_cached_ticker(sym: str, data: Dict[str, Any]):
     _TICKER_CACHE[sym] = (time.time(), data)
 
-# ================ كاش أسعار جماعي (اختياري) ================
+# ================ كاش أسعار جماعي ================
 _cache_thread: Optional[threading.Thread] = None
 _cache_stop = False
 
-def _refresh_tickers_loop(period=3, usdt_only=True):
+def _refresh_tickers_loop(period=6, usdt_only=True):
     global _cache_stop
     while not _cache_stop:
         try:
             r = requests.get(OKX_TICKERS_URL, timeout=10)
             if r.status_code == 429:
-                time.sleep(period + random.random()); continue
+                # Rate limit على الـ endpoint الجماعي
+                time.sleep(period + random.random())
+                continue
             j = r.json()
             for it in j.get("data", []):
                 inst = str(it.get("instId", "")).upper()  # BTC-USDT
                 if usdt_only and not inst.endswith("-USDT"):
                     continue
                 sym = inst.replace("-", "/")
-                last = it.get("last") or it.get("close") or it.get("ask") or it.get("bid")
+                last = (
+                    it.get("last")
+                    or it.get("close")
+                    or it.get("ask")
+                    or it.get("bid")
+                )
                 try:
                     last_f = float(last or 0.0)
                 except Exception:
                     last_f = 0.0
-                # نبني شكل يشبه fetch_ticker حتى تتوافق الدوال
                 _set_cached_ticker(sym, {"symbol": sym, "last": last_f})
         except Exception:
+            # لا نكسر اللووب، فقط نتجاهل الدورة الحالية
             pass
+
         time.sleep(max(1, int(period)))
 
-def start_tickers_cache(period: int = 3, usdt_only: bool = True):
-    """ابدأ تحديث الأسعار جماعياً كل period ثوانٍ (طلب واحد لكل الدورة)."""
+def start_tickers_cache(period: int = 6, usdt_only: bool = True):
+    """بدء تحديث أسعار SPOT/USDT جماعياً بطلب واحد كل period ثانية."""
     global _cache_thread, _cache_stop
     if _cache_thread and _cache_thread.is_alive():
         return
     _cache_stop = False
-    _cache_thread = threading.Thread(target=_refresh_tickers_loop, args=(period, usdt_only), daemon=True)
+    _cache_thread = threading.Thread(
+        target=_refresh_tickers_loop,
+        args=(period, usdt_only),
+        daemon=True,
+    )
     _cache_thread.start()
-    print(f"✓ OKX tickers cache started (period={period}s, usdt_only={usdt_only})")
+    print(f"✓ OKX tickers cache started (period={period}s, usdt_only={usdt_only})", flush=True)
 
 def stop_tickers_cache():
-    """أوقف مؤقّت الأسعار الجماعي."""
+    """إيقاف كاش الأسعار الجماعي."""
     global _cache_stop
     _cache_stop = True
 
@@ -186,6 +204,7 @@ def _amount_to_precision(symbol_ccxt: str, amount: float) -> float:
     except Exception:
         market = None
 
+    # دقة الكمية
     try:
         amt = float(exchange.amount_to_precision(symbol_ccxt, amount))
     except Exception:
@@ -193,7 +212,9 @@ def _amount_to_precision(symbol_ccxt: str, amount: float) -> float:
 
     # حد أدنى للكمية
     try:
-        min_amt = float(market.get("limits", {}).get("amount", {}).get("min") or 0.0) if market else 0.0
+        min_amt = float(
+            market.get("limits", {}).get("amount", {}).get("min") or 0.0
+        ) if market else 0.0
         if min_amt and amt < min_amt:
             amt = float(exchange.amount_to_precision(symbol_ccxt, min_amt))
     except Exception:
@@ -201,7 +222,9 @@ def _amount_to_precision(symbol_ccxt: str, amount: float) -> float:
 
     # حد أدنى للتكلفة
     try:
-        min_cost = float(market.get("limits", {}).get("cost", {}).get("min") or 0.0) if market else 0.0
+        min_cost = float(
+            market.get("limits", {}).get("cost", {}).get("min") or 0.0
+        ) if market else 0.0
         if min_cost > 0:
             tkr = _get_cached_ticker(symbol_ccxt)
             if not tkr:
@@ -212,7 +235,13 @@ def _amount_to_precision(symbol_ccxt: str, amount: float) -> float:
                     tkr = None
             last = 0.0
             if tkr:
-                last = float(tkr.get("last") or tkr.get("close") or tkr.get("ask") or tkr.get("bid") or 0.0)
+                last = float(
+                    tkr.get("last")
+                    or tkr.get("close")
+                    or tkr.get("ask")
+                    or tkr.get("bid")
+                    or 0.0
+                )
             if last > 0 and amt * last < min_cost:
                 needed = min_cost / last
                 try:
@@ -225,9 +254,13 @@ def _amount_to_precision(symbol_ccxt: str, amount: float) -> float:
     return max(0.0, amt)
 
 # ================ واجهات مطلوبة من strategy.py ================
+
 @_retry()
 def fetch_balance(asset: str = "USDT") -> float:
-    """يعيد الرصيد (Free) للعملة المطلوبة. يستخدم كاش قصير لتخفيف الضغط."""
+    """
+    يعيد الرصيد (Free) للعملة المطلوبة.
+    يستخدم كاش قصير لتخفيف الضغط.
+    """
     asset = (asset or "USDT").upper()
     cached = _get_cached_bal(asset)
     if cached is not None:
@@ -239,34 +272,56 @@ def fetch_balance(asset: str = "USDT") -> float:
         _set_cached_bal(asset, val)
         return val
     except Exception as e:
-        print(f"❌ خطأ في جلب الرصيد لـ {asset}: {e}")
+        print(f"❌ خطأ في جلب الرصيد لـ {asset}: {e}", flush=True)
         return 0.0
 
-@_retry()
 def fetch_price(symbol: str) -> float:
-    """يعيد آخر سعر (يحاول من الكاش الجماعي ثم CCXT)."""
+    """
+    يعيد آخر سعر:
+    - أولاً من الكاش الجماعي (start_tickers_cache)
+    - ثم طلب منفرد كـ fallback عند الحاجة فقط.
+    يتجنب Retry حتى لا نضرب Rate Limit.
+    """
     sym = _fmt_symbol(symbol)
+
+    # 1) من الكاش
     cached = _get_cached_ticker(sym)
     if cached:
-        price = cached.get("last") or cached.get("close") or cached.get("ask") or cached.get("bid")
+        price = (
+            cached.get("last")
+            or cached.get("close")
+            or cached.get("ask")
+            or cached.get("bid")
+        )
         try:
             return float(price or 0.0)
         except Exception:
             pass
+
+    # 2) طلب منفرد خفيف
     try:
         t = exchange.fetch_ticker(sym)
         _set_cached_ticker(sym, t)
-        price = t.get("last") or t.get("close") or t.get("ask") or t.get("bid")
+        price = (
+            t.get("last")
+            or t.get("close")
+            or t.get("ask")
+            or t.get("bid")
+        )
         return float(price or 0.0)
     except Exception as e:
-        print(f"❌ خطأ في جلب السعر الحالي لـ {sym}: {e}")
+        msg = str(e)
+        if "Too Many Requests" in msg or "50011" in msg:
+            # لا نكرر ولا نكسر؛ نرجع 0 فيُلغى الدخول بأمان من الاستراتيجية
+            print(f"❌ fetch_price rate-limit for {sym}: {e}", flush=True)
+            return 0.0
+        print(f"❌ خطأ في جلب السعر الحالي لـ {sym}: {e}", flush=True)
         return 0.0
 
 @_retry()
 def fetch_ohlcv(symbol: str, timeframe: str = "5m", limit: int = 100):
     """
     يعيد بيانات الشموع بصيغة CCXT: [[ts, open, high, low, close, volume], ...]
-    NOTE: OKX يدعم حدودًا مختلفة حسب الإطار؛ 200–300 آمن عادةً.
     """
     sym = _fmt_symbol(symbol)
     limit = max(10, min(int(limit or 100), 500))
@@ -274,14 +329,15 @@ def fetch_ohlcv(symbol: str, timeframe: str = "5m", limit: int = 100):
         data = exchange.fetch_ohlcv(sym, timeframe=timeframe, limit=limit)
         return data or []
     except Exception as e:
-        print(f"❌ خطأ في جلب بيانات الشموع لـ {sym}({timeframe}, {limit}): {e}")
+        print(f"❌ خطأ في جلب بيانات الشموع لـ {sym}({timeframe}, {limit}): {e}", flush=True)
         return []
 
 @_retry()
 def place_market_order(symbol: str, side: str, amount: float, send_message=None):
     """
-    ينفّذ أمر سوق (شراء/بيع) مع تسوية الكمية وفق حدود السوق.
-    يعيد أمر CCXT عند النجاح أو None عند الفشل.
+    تنفيذ أمر سوق (شراء/بيع) مع احترام حدود السوق:
+    - تصحيح الكمية حسب precision + minQty + minCost
+    - لوج واضح في حال الفشل
     """
     sym = _fmt_symbol(symbol)
     side = (side or "").lower().strip()
@@ -299,9 +355,8 @@ def place_market_order(symbol: str, side: str, amount: float, send_message=None)
         return None
 
     try:
-        # params إضافية اختيارية لـ OKX: {"tgtCcy": "base_ccy"} عند الحاجة
         order = exchange.create_order(sym, type="market", side=side, amount=adj_amount)
-        _log(send_message, f"✅ تم تنفيذ أمر {side.UPPER()} لـ {symbol} (كمية: {adj_amount})")
+        _log(send_message, f"✅ تم تنفيذ أمر {side.upper()} لـ {symbol} (كمية: {adj_amount})")
         return order
     except Exception as e:
         hint = _okx_error_hint(e)
@@ -310,44 +365,47 @@ def place_market_order(symbol: str, side: str, amount: float, send_message=None)
         _log(send_message, f"❌ فشل تنفيذ أمر السوق ({side}) لـ {symbol}: {str(e)}")
         return None
 
-# ================ أدوات إضافية مفيدة ================
+# ================ أدوات إضافية ================
 @_retry()
 def list_okx_usdt_spot_symbols() -> List[str]:
     """
-    يرجع قائمة كل أزواج SPOT/USDT المدعومة على OKX بصيغة BTC/USDT.
-    مفيد لفلترة/توسيع SYMBOLS خارج هذا الملف.
+    يرجع قائمة أزواج SPOT/USDT بصيغة BTC/USDT.
+    مفيد لبناء/تحديث SYMBOLS.
     """
     try:
         r = requests.get(OKX_TICKERS_URL, timeout=12)
         r.raise_for_status()
         j = r.json()
-        out = []
+        out: List[str] = []
         for it in j.get("data", []):
-            inst = str(it.get("instId", "")).upper()  # BTC-USDT
+            inst = str(it.get("instId", "")).upper()
             if inst.endswith("-USDT"):
                 out.append(inst.replace("-", "/"))
-        # إزالة التكرار مع الحفاظ على الترتيب
         seen, uniq = set(), []
         for s in out:
             if s not in seen:
-                uniq.append(s); seen.add(s)
+                uniq.append(s)
+                seen.add(s)
         return uniq
     except Exception as e:
-        print(f"⚠️ فشل جلب قائمة USDT/Spot: {e}")
+        print(f"⚠️ فشل جلب قائمة USDT/Spot: {e}", flush=True)
         return []
 
-# ================== fetch_symbol_filters (مصَحَّحة) ==================
+# ================== fetch_symbol_filters ==================
 def fetch_symbol_filters(symbol: str) -> Dict[str, float]:
     """
-    إرجاع فلاتر الرمز (minQty, minNotional, stepSize, tickSize)
-    لضمان تنفيذ صحيح في أوامر الشراء/البيع.
-    نعتمد أولاً على ccxt.market(...) ثم نوفّر بدائل آمنة.
+    إرجاع فلاتر الرمز:
+    - minQty
+    - minNotional
+    - stepSize
+    - tickSize
+    لاستخدامها في حساب الكمية والتحقق من الحد الأدنى.
     """
     sym = _fmt_symbol(symbol)
     try:
-        m = exchange.market(sym)  # يقرأ من الأسواق المحمّلة
+        m = exchange.market(sym)
     except Exception as e:
-        print(f"[fetch_symbol_filters] market() error {sym}: {e}")
+        print(f"[fetch_symbol_filters] market() error {sym}: {e}", flush=True)
         m = None
 
     # قيم افتراضية آمنة
@@ -357,7 +415,7 @@ def fetch_symbol_filters(symbol: str) -> Dict[str, float]:
     min_notional = 0.0
 
     if m:
-        # stepSize: من lotSz إن توفرت، وإلا من precision.amount (عدد الخانات)
+        # stepSize
         try:
             lot_sz = float(m.get("info", {}).get("lotSz", 0) or 0)
             if lot_sz and lot_sz > 0:
@@ -370,7 +428,7 @@ def fetch_symbol_filters(symbol: str) -> Dict[str, float]:
         except Exception:
             pass
 
-        # tickSize: من tickSz أو من precision.price
+        # tickSize
         try:
             tick_sz = float(m.get("info", {}).get("tickSz", 0) or 0)
             if tick_sz and tick_sz > 0:
@@ -383,7 +441,7 @@ def fetch_symbol_filters(symbol: str) -> Dict[str, float]:
         except Exception:
             pass
 
-        # minQty: من limits.amount.min أو minSz
+        # minQty
         try:
             min_qty = float(
                 m.get("limits", {}).get("amount", {}).get("min")
@@ -393,7 +451,7 @@ def fetch_symbol_filters(symbol: str) -> Dict[str, float]:
         except Exception:
             min_qty = 0.0
 
-        # minNotional (min cost): من limits.cost.min؛ وإلا تقدير = minQty * last
+        # minNotional
         try:
             min_cost = m.get("limits", {}).get("cost", {}).get("min")
             if min_cost is not None:
