@@ -382,7 +382,7 @@ if __name__ == "__main__":
     # بدء كاش الأسعار الجماعي (طلب واحد كل عدة ثوانٍ) إن توفر
     if _HAS_CACHE:
         try:
-            start_tickers_cache(period=int(os.getenv("OKX_CACHE_PERIOD", "3")), usdt_only=True)
+            start_tickers_cache(period=int(os.getenv("OKX_CACHE_PERIOD", "6")), usdt_only=True)
         except Exception:
             pass
 
