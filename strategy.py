@@ -1980,7 +1980,6 @@ def execute_buy(symbol: str, sig: dict | None = None):
     sig = _build_entry_plan(symbol, sig)
 
     # ===== قيود المخاطر العامة =====
-    # حد الصفقات اليومية
     try:
         s = load_risk_state()
         if int(s.get("trades_today", 0)) >= int(MAX_TRADES_PER_DAY):
@@ -1988,28 +1987,27 @@ def execute_buy(symbol: str, sig: dict | None = None):
     except Exception:
         pass
 
-    # حد أقصى للمراكز المفتوحة
     if count_open_positions() >= MAX_OPEN_POSITIONS:
         return None, "🚫 تم بلوغ الحد الأقصى للمراكز المفتوحة."
 
-    # حظر النظام (مثلاً بعد سلسلة خسائر)
     if _is_blocked():
         return None, "⏸️ النظام في حالة حظر مؤقت (إدارة مخاطر)."
 
     # ===== إعدادات التنفيذ من ENV =====
-    EXEC_USDT_RESERVE     = _env_float("EXEC_USDT_RESERVE", 10.0)
-    EXEC_MIN_FREE_USDT    = _env_float("EXEC_MIN_FREE_USDT", 15.0)
-    SLIPPAGE_MAX_PCT      = _env_float("SLIPPAGE_MAX_PCT", 0.012)
-    TRADE_USDT_MIN        = _env_float("TRADE_USDT_MIN", MIN_TRADE_USDT)
-    TRADE_USDT_MAX        = _env_float("MAX_TRADE_USDT", 0.0)   # 0 = غير مقيّد
-    LEADER_SIZE_MULT_ENV  = _env_float("LEADER_SIZE_MULT", LEADER_SIZE_MULT)
-    LEADER_DONT_DOWNSCALE = _env_bool("LEADER_DONT_DOWNSCALE", LEADER_DONT_DOWNSCALE)
+    EXEC_USDT_RESERVE        = _env_float("EXEC_USDT_RESERVE", 10.0)
+    EXEC_MIN_FREE_USDT       = _env_float("EXEC_MIN_FREE_USDT", 15.0)
+    SLIPPAGE_MAX_PCT         = _env_float("SLIPPAGE_MAX_PCT", 0.012)
+    TRADE_USDT_MIN           = _env_float("TRADE_USDT_MIN", MIN_TRADE_USDT)
+    TRADE_USDT_MAX           = _env_float("MAX_TRADE_USDT", 0.0)   # 0 = غير مقيّد
+    LEADER_SIZE_MULT_ENV     = _env_float("LEADER_SIZE_MULT", LEADER_SIZE_MULT)
+    # 👇 إصلاح البق: اسم مختلف للمتغيّر المحلي
+    LEADER_DONT_DOWNSCALE_ENV = _env_bool("LEADER_DONT_DOWNSCALE", LEADER_DONT_DOWNSCALE)
 
     # ===== تحجيم أساسي =====
     trade_usdt = float(TRADE_BASE_USDT)
-    br        = _get_breadth_ratio_cached()
-    eff_min   = _breadth_min_auto()
-    is_leader = _is_relative_leader_vs_btc(base)
+    br         = _get_breadth_ratio_cached()
+    eff_min    = _breadth_min_auto()
+    is_leader  = _is_relative_leader_vs_btc(base)
 
     # تأثير الـ Breadth
     if br is not None:
@@ -2018,7 +2016,7 @@ def execute_buy(symbol: str, sig: dict | None = None):
         elif br < 0.55:
             trade_usdt *= 0.88
 
-    # Soft Breadth (سوق ضعيف)
+    # Soft Breadth
     if SOFT_BREADTH_ENABLE and (br is not None) and (br < eff_min) and (not is_leader):
         scale, note = _soft_scale_by_time_and_market(br, eff_min)
         trade_usdt *= scale
@@ -2028,7 +2026,7 @@ def execute_buy(symbol: str, sig: dict | None = None):
                 f"⚠️ Soft breadth: ratio={br:.2f} < min={eff_min:.2f} → size×{scale:.2f}"
             )
 
-    # ===== تحجيم حسب Score و ATR% (أساسي متوازن) =====
+    # ===== تحجيم حسب Score و ATR% =====
     try:
         sc       = int(sig.get("score", SCORE_THRESHOLD))
         atrp_sig = float(sig.get("atrp", 0.0))
@@ -2045,15 +2043,14 @@ def execute_buy(symbol: str, sig: dict | None = None):
     except Exception:
         pass
 
-    # تحجيم خاص للرموز القائدة
-    if is_leader and not LEADER_DONT_DOWNSCALE:
+    # ===== تحجيم خاص للرموز القائدة =====
+    if is_leader and not LEADER_DONT_DOWNSCALE_ENV:
         trade_usdt *= LEADER_SIZE_MULT_ENV
 
     # ===== Early Scout Mode =====
     is_early_scout = False
     if EARLY_SCOUT_ENABLE:
         try:
-            # لو check_signal علّم الإشارة بنفسها
             if bool(sig.get("is_early_scout", False)):
                 is_early_scout = True
             else:
@@ -2079,14 +2076,9 @@ def execute_buy(symbol: str, sig: dict | None = None):
                     f"🟢 Early Scout: size×{EARLY_SCOUT_SIZE_MULT:.2f}"
                 )
         except Exception:
-            is_early_scout = False  # لا نكسر الصفقة لو حصل خطأ
+            is_early_scout = False
 
     # ===== Aggressive Clean Mode =====
-    # يعمل فقط إذا:
-    # - مفعّل
-    # - لسنا في Early Scout
-    # - السكور عالي جدًا
-    # - (اختياري) الإشارة من نوع breakout
     if AGGR_MODE_ENABLE and not is_early_scout:
         try:
             sc_aggr = int(sig.get("score", 0))
@@ -2110,10 +2102,9 @@ def execute_buy(symbol: str, sig: dict | None = None):
                     f"🔥 Aggressive Clean: strong signal (score={sc_aggr}) → size<=x{AGGR_MAX_RISK_MULT:.2f}"
                 )
         except Exception:
-            # نتجاهل أي خطأ في الهجومي بدون كسر الدخول
             pass
 
-    # ===== حدود الحجم (بعد كل السكيلات) =====
+    # ===== حدود الحجم =====
     if TRADE_USDT_MAX > 0:
         trade_usdt = min(trade_usdt, TRADE_USDT_MAX)
     trade_usdt = max(trade_usdt, TRADE_USDT_MIN)
@@ -2144,14 +2135,12 @@ def execute_buy(symbol: str, sig: dict | None = None):
     raw_amount = trade_usdt / price
     amount = math.floor(raw_amount / step) * step
 
-    # احترام minQty
     if min_qty and amount < min_qty:
         amount = min_qty
         trade_usdt = amount * price
         if trade_usdt > max_affordable:
             return None, "🚫 لا يمكن بلوغ الحد الأدنى للكمية ضمن الرصيد."
 
-    # احترام minNotional مع محاولة الرفع إن أمكن
     if amount * price < min_notional:
         need_amt  = math.ceil((min_notional / price) / step) * step
         need_usdt = need_amt * price
@@ -2172,7 +2161,6 @@ def execute_buy(symbol: str, sig: dict | None = None):
             )
             return None, "🚫 قيمة الصفقة أقل من الحد الأدنى ضمن رصيدك وحدودك."
 
-    # فحص الحد الأدنى النهائي
     if trade_usdt < TRADE_USDT_MIN:
         return None, f"🚫 حجم الصفقة أقل من الحد الأدنى المسموح ({TRADE_USDT_MIN:.2f}$)."
 
@@ -2192,7 +2180,6 @@ def execute_buy(symbol: str, sig: dict | None = None):
         if not order:
             return None, "⚠️ فشل تنفيذ الصفقة."
 
-    # قراءة بيانات التنفيذ
     fill_px    = float(order.get("average") or order.get("price") or price)
     filled_amt = float(order.get("filled") or amount)
     if filled_amt <= 0:
@@ -2214,13 +2201,12 @@ def execute_buy(symbol: str, sig: dict | None = None):
             f"({slippage:.2%} > {SLIPPAGE_MAX_PCT:.2%})."
         )
 
-    # ===== SL منطقي تحت الدخول =====
+    # ===== SL منطقي =====
     sl_raw = float(sig["sl"])
     if sl_raw >= fill_px:
         sl_raw = fill_px * 0.985
     sl_final = _round_to_tick(sl_raw, tick)
 
-    # ===== حفظ الصفقة =====
     pos = {
         "symbol": symbol,
         "amount": float(amount),
@@ -2241,7 +2227,6 @@ def execute_buy(symbol: str, sig: dict | None = None):
         "is_early_scout": bool(is_early_scout),
     }
 
-    # حفظ ATR عند الدخول (اختياري)
     try:
         df_ltf = _df(get_ohlcv_cached(base, LTF_TIMEFRAME, 120))
         if len(df_ltf) >= 40:
@@ -2284,6 +2269,7 @@ def execute_buy(symbol: str, sig: dict | None = None):
         f" | 💰 {trade_usdt_final:.2f}$"
         f"{' | Early Scout' if is_early_scout else ''}"
     )
+
 
 
 # ================== بيع آمن ==================
