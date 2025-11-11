@@ -8,13 +8,26 @@ from typing import Optional, Tuple, Dict, Any, List
 import pandas as pd
 import numpy as np
 
-from okx_api import fetch_ohlcv, fetch_price, place_market_order, fetch_balance
-from config import (
-    TRADE_AMOUNT_USDT, MAX_OPEN_POSITIONS, SYMBOLS, FEE_BPS_ROUNDTRIP,
-    TELEGRAM_TOKEN, TELEGRAM_CHAT_ID,
-    STRAT_LTF_TIMEFRAME, STRAT_HTF_TIMEFRAME,
-    MIN_NOTIONAL_USDT
+from okx_api import (
+    fetch_ohlcv,
+    fetch_price,
+    place_market_order,
+    fetch_balance,
+    fetch_symbol_filters,  # 👈 ضروري لـ execute_buy / minQty / minNotional / tickSize
 )
+
+from config import (
+    TRADE_AMOUNT_USDT,  # إذا ما تستخدمه تحت، احذفه
+    MAX_OPEN_POSITIONS,
+    SYMBOLS,
+    FEE_BPS_ROUNDTRIP,
+    TELEGRAM_TOKEN,
+    TELEGRAM_CHAT_ID,
+    STRAT_LTF_TIMEFRAME,
+    STRAT_HTF_TIMEFRAME,
+    MIN_NOTIONAL_USDT,
+)
+
 
 # ===================== ENV helpers =====================
 def _env_bool(name: str, default: bool = False) -> bool:
