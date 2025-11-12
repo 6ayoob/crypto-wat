@@ -1598,10 +1598,10 @@ def _rs_window_decider(br: float | None, is_breakout: bool) -> int:
     allow_72     = _rs_env_bool("RS_ALLOW_72H", True)
     allow_24_bo  = _rs_env_bool("RS_ALLOW_24H_ON_BO", True)
 
-    now_ts = time.time()
-    last_h = _RS_LAST_CHOICE.get("hours")
-    last_ts= float(_RS_LAST_CHOICE.get("ts") or 0.0)
-    hold_ok= (now_ts - last_ts) >= (hold_min * 60)
+    now_ts = _t.time()
+    last_h  = _RS_LAST_CHOICE.get("hours")
+    last_ts = float(_RS_LAST_CHOICE.get("ts") or 0.0)
+    hold_ok = (now_ts - last_ts) >= (hold_min * 60)
 
     # افتراض عام لو ما عندنا breadth
     if br is None:
@@ -1627,6 +1627,7 @@ def _rs_window_decider(br: float | None, is_breakout: bool) -> int:
     _RS_LAST_CHOICE["ts"]    = now_ts
     return int(choice)
 
+
 def _is_relative_leader_vs_btc(base: str, lookback: int | None = None, tf: str = "1h") -> bool:
     """
     قياس تفوق نسبي مقابل BTC خلال نافذة ديناميكية (24/48/72h).
@@ -1638,12 +1639,9 @@ def _is_relative_leader_vs_btc(base: str, lookback: int | None = None, tf: str =
         is_bo = False
 
         br = _get_breadth_ratio_cached()
-        if lookback is None:
-            hours = _rs_window_decider(br, is_bo)
-        else:
-            hours = int(lookback)
+        hours = int(lookback) if (lookback is not None) else _rs_window_decider(br, is_bo)
 
-        bars = int(max(10, min(500, hours)))  # لساعتين 1h → 48 bars مثلاً
+        bars = int(max(10, min(500, hours)))  # لـ 1h TF → bars = hours
 
         if base in ("BTC/USDT", "BTC/USDC"):
             return True
@@ -1658,6 +1656,19 @@ def _is_relative_leader_vs_btc(base: str, lookback: int | None = None, tf: str =
         return rb >= rt
     except Exception:
         return False
+
+
+# =============== تحديث سريع: وسم آخر دخول لمنع التباس زمني ===============
+def _mark_signal_now(base: str | None = None) -> None:
+    import time as _t
+    try:
+        ts_ms = int(_t.time() * 1000)
+        if base:
+            _LAST_ENTRY_BAR_TS[base] = ts_ms
+        elif _CURRENT_SYMKEY:
+            _LAST_ENTRY_BAR_TS[_CURRENT_SYMKEY] = ts_ms
+    except Exception:
+        pass
 
 
 def check_signal(symbol: str):
@@ -1678,14 +1689,10 @@ def check_signal(symbol: str):
 
     def _is_leader_symbol(base_symbol: str) -> bool:
         coin = (base_symbol or "").split("/")[0].strip().upper()
-        # قائمة ثابتة من env (قابلة للتعديل دون كود)
         leaders_env = os.getenv("LEADERS", "BTC,ETH,SOL,BNB,LINK")
-        leaders_set = set(s.strip().upper() for s in leaders_env.split(",") if s.strip())
-
+        leaders_set = {s.strip().upper() for s in leaders_env.split(",") if s.strip()}
         if coin in leaders_set:
             return True
-
-        # قياس تفوق على BTC خلال 48 ساعة (عدّل lookback من env إن شئت)
         lookback = int(os.getenv("RS_LOOKBACK_HOURS", "48"))
         try:
             return bool(_is_relative_leader_vs_btc(base_symbol, lookback=lookback))
@@ -1693,42 +1700,26 @@ def check_signal(symbol: str):
             return False
 
     def _atr_need_dynamic(br: float | None, eff_min: float | None) -> float:
-        """
-        حاجة ATR% الدنيا ديناميكيًا حسب breadth:
-          - سوق ضعيف ⇒ حاجة أعلى (أشد صرامة)
-          - سوق قوي ⇒ حاجة أقل (مرونة)
-        """
         ATR_NEED_BASE   = float(os.getenv("ATR_NEED_BASE", 0.0022))
         ATR_BR_WEAK     = float(os.getenv("ATR_BR_WEAK",   0.45))
         ATR_BR_STRONG   = float(os.getenv("ATR_BR_STRONG", 0.65))
         ATR_NEED_WEAK   = float(os.getenv("ATR_NEED_WEAK", 0.0028))
         ATR_NEED_STRONG = float(os.getenv("ATR_NEED_STRONG", 0.0018))
-
         if br is None:
             return ATR_NEED_BASE
         br_weak   = min(float(ATR_BR_WEAK), float(eff_min or ATR_BR_WEAK))
         br_base   = 0.50
         br_strong = float(ATR_BR_STRONG)
-
-        need_w = float(ATR_NEED_WEAK)
-        need_b = float(ATR_NEED_BASE)
-        need_s = float(ATR_NEED_STRONG)
-
+        need_w, need_b, need_s = float(ATR_NEED_WEAK), float(ATR_NEED_BASE), float(ATR_NEED_STRONG)
         if br <= br_weak:   return need_w
         if br >= br_strong: return need_s
         if br <= br_base:   return _lerp(br, br_weak, br_base, need_w, need_b)
         return                 _lerp(br, br_base, br_strong, need_b, need_s)
 
     def _rvol_need_dynamic(br: float | None, base_symbol: str) -> float:
-        """
-        حاجة RVOL الأساسية ديناميكيًا:
-          - أساس: RVOL_BASE
-          - إذا breadth جيد والرمز قيادي ⇒ تخفيف.
-        """
         RVOL_BASE              = float(os.getenv("RVOL_BASE", 1.15))
         RVOL_RELAX_FOR_LEADERS = float(os.getenv("RVOL_RELAX_FOR_LEADERS", 0.90))  # 0.90 = تخفيف 10%
         RVOL_RELAX_BR_MIN      = float(os.getenv("RVOL_RELAX_BR_MIN", 0.55))
-
         need = RVOL_BASE
         try:
             if (br is not None) and (br >= RVOL_RELAX_BR_MIN) and _is_leader_symbol(base_symbol):
@@ -1831,10 +1822,10 @@ def check_signal(symbol: str):
             vol_fast_ma = float(df["volume"].rolling(24, min_periods=6).mean().iloc[-2])
             vol_slow_ma = float(df["volume"].rolling(30, min_periods=8).mean().iloc[-2])
 
-        vol_now = float(_finite_or(df["volume"].iloc[-2], closed.get("volume"), df["volume"].iloc[-2]))
+        vol_now   = float(_finite_or(df["volume"].iloc[-2], closed.get("volume"), df["volume"].iloc[-2]))
         rvol_fast = _safe_div(vol_now, vol_fast_ma)
         rvol_slow = _safe_div(vol_now, vol_slow_ma)
-        rvol_blend = float(RVOL_BLEND_ALPHA * rvol_fast + (1.0 - RVOL_BLEND_ALPHA) * rvol_slow)
+        rvol_blend= float(RVOL_BLEND_ALPHA * rvol_fast + (1.0 - RVOL_BLEND_ALPHA) * rvol_slow)
 
         if is_breakout:
             rvol_eff = max(rvol_fast, rvol_blend) + RVOL_BREAKOUT_BOOST
@@ -1861,7 +1852,7 @@ def check_signal(symbol: str):
             vwap_val  = _finite_or(None, closed.get("vwap"))
             close_v, low_v = float(closed["close"]), float(closed["low"])
             pb_ok = False
-            for ref in [ema50_val, vwap_val]:
+            for ref in (ema50_val, vwap_val):
                 if ref is None:
                     continue
                 if (close_v >= ref) and (low_v <= ref):
@@ -1882,7 +1873,7 @@ def check_signal(symbol: str):
 
         # -------- أعتاب ديناميكية --------
         br  = _get_breadth_ratio_cached()
-        thr = regime_thresholds(br, atrp)  # تُبقي منطقك الداخلي (قد يضبط أمورًا أخرى)
+        thr = regime_thresholds(br, atrp)
         eff_min = _breadth_min_auto()
 
         # اتجاه HTF (EMA50 HTF)
@@ -1918,15 +1909,14 @@ def check_signal(symbol: str):
 
         # ===== ATR كفاية (ديناميكي + ثابت، نأخذ الأشد) =====
         need_atrp_dyn    = _atr_need_dynamic(br, eff_min)
-        need_atrp_static = _atrp_min_for_symbol(sym_ctx, thr)   # من منطقك الحالي
+        need_atrp_static = _atrp_min_for_symbol(sym_ctx, thr)
         need_atrp        = max(float(need_atrp_dyn), float(need_atrp_static))
         if float(atrp) < float(need_atrp):
             return _rej("atr_low", atrp=atrp, need=need_atrp)
 
         # ===== RVOL كفاية (ديناميكي كبداية + نفس تخفيضاتك) =====
         def _rvol_ok_with_eff(ltf_ctx, sym_ctx, thr, rvol_value, base_symbol: str):
-            rvol_need = _rvol_need_dynamic(br, base_symbol)  # ديناميكي
-            # نفس التخفيضات السابقة لديك:
+            rvol_need = _rvol_need_dynamic(br, base_symbol)
             if float(sym_ctx.get("price",1.0)) < 0.1 or bool(sym_ctx.get("is_meme")):
                 rvol_need -= 0.08
             if bool(ltf_ctx.get("is_breakout")):
@@ -1955,14 +1945,11 @@ def check_signal(symbol: str):
         else:
             mode_pref = cfg.get("ENTRY_MODE", "hybrid")
             order = cfg.get("HYBRID_ORDER", ["pullback","breakout"]) if mode_pref == "hybrid" else [mode_pref]
-
             for m in (order + [x for x in ["pullback","breakout"] if x not in order]):
                 if m == "pullback" and _entry_pullback_logic(df, closed, prev, atr_val, htf_ctx, cfg):
-                    chosen_mode = "pullback"
-                    break
+                    chosen_mode = "pullback"; break
                 if m == "breakout" and _entry_breakout_logic(df, closed, prev, atr_val, htf_ctx, cfg):
-                    chosen_mode = "breakout"
-                    break
+                    chosen_mode = "breakout"; break
 
         # -------- دخول كامل --------
         if chosen_mode:
@@ -2001,14 +1988,20 @@ def check_signal(symbol: str):
                     dist_atr = abs(float(price) - float(ema50_val)) / float(atr_val)
 
                     need_rvol_base = float(thr.get("RVOL_NEED_BASE", 1.15))
-                    early_rvol_ok = (float(rvol_val) >= max(0.85 * need_rvol_base, 0.9))
+                    # تشديد رﭬول Early Scout (قابل للتهيئة)
+                    EARLY_RVOL_MULT = _env_float("EARLY_SCOUT_RVOL_MULT", 1.02)
+                    EARLY_RVOL_MIN  = _env_float("EARLY_SCOUT_RVOL_MIN", 0.95)
+                    early_rvol_ok = (float(rvol_val) >= max(EARLY_RVOL_MULT * need_rvol_base, EARLY_RVOL_MIN))
+
+                    # حد أدنى للسكور (قابل للتهيئة أو من config)
+                    EARLY_SCOUT_SCORE_MIN_LOCAL = int(os.getenv("EARLY_SCOUT_SCORE_MIN", 40))
 
                     early_ok = (
                         ema100_trend == "up" and
                         trend in ("up", "neutral") and
                         bool(ltf_ctx["pullback_ok"]) and
                         (dist_atr <= float(EARLY_SCOUT_MAX_ATR_DIST)) and
-                        (int(score) >= int(EARLY_SCOUT_SCORE_MIN)) and
+                        (int(score) >= int(EARLY_SCOUT_SCORE_MIN_LOCAL)) and
                         early_rvol_ok and
                         n_ok
                     )
@@ -2082,9 +2075,14 @@ def _build_entry_plan(symbol: str, sig: dict | None) -> dict:
     price, atr_abs, atrp = _atr_latest(base, LTF_TIMEFRAME)
     mgmt = _mgmt_for_variant(variant)
 
-    # UPDATED: SL آمن حسب نوع الإدارة
+    # UPDATED: SL آمن + توسيع للماجورز من ENV
     if mgmt.get("SL") in ("atr","atr_below_sweep","atr_below_retest"):
         sl_mult = float(mgmt.get("SL_MULT", 1.0))
+        majors_env = os.getenv("MAJORS", "BTC,ETH,BNB,SOL")
+        majors = {s.strip().upper() for s in majors_env.split(",") if s.strip()}
+        is_major = base.split("/")[0].upper() in majors
+        if is_major:
+            sl_mult *= float(os.getenv("SL_MULT_MAJORS", 1.25))  # توسيع 25% للماجورز
         sl = float(price - sl_mult * atr_abs)
     elif mgmt.get("SL") == "pct":
         sl = float(price * (1.0 - float(mgmt.get("SL_PCT", 0.02))))
@@ -2106,11 +2104,13 @@ def _build_entry_plan(symbol: str, sig: dict | None) -> dict:
         tps.append(float(price + float(mgmt.get("TP1_ATR", 1.2)) * atr_abs))
         tps.append(float(price + float(mgmt.get("TP2_ATR", 2.2)) * atr_abs))
 
+    # NEW: ترتيب الأهداف لعرض/إدارة أوضح
+    tps = sorted(tps)
+
     # UPDATED: جزئيات متسقة مع عدد الأهداف
     score_for_partials = int(sig.get("score", SCORE_THRESHOLD))
     partials = _partials_for(score_for_partials, len(tps), atrp)
     if len(partials) != len(tps):
-        # قص/مدّ بسيط لضمان الاتساق
         if len(partials) > len(tps):
             partials = partials[:len(tps)]
         else:
@@ -2193,7 +2193,6 @@ def execute_buy(symbol: str, sig: dict | None = None):
     TRADE_USDT_MIN            = _env_float("TRADE_USDT_MIN", MIN_TRADE_USDT)
     TRADE_USDT_MAX            = _env_float("MAX_TRADE_USDT", 0.0)   # 0 = غير مقيّد
     LEADER_SIZE_MULT_ENV      = _env_float("LEADER_SIZE_MULT", LEADER_SIZE_MULT)
-    # 👇 إصلاح البق: اسم مختلف للمتغيّر المحلي
     LEADER_DONT_DOWNSCALE_ENV = _env_bool("LEADER_DONT_DOWNSCALE", LEADER_DONT_DOWNSCALE)
 
     # ===== تحجيم أساسي =====
@@ -2265,9 +2264,7 @@ def execute_buy(symbol: str, sig: dict | None = None):
             if is_early_scout:
                 trade_usdt *= float(EARLY_SCOUT_SIZE_MULT)
                 sig.setdefault("messages", {})
-                sig["messages"]["early_scout"] = (
-                    f"🟢 Early Scout: size×{EARLY_SCOUT_SIZE_MULT:.2f}"
-                )
+                sig["messages"]["early_scout"] = f"🟢 Early Scout: size×{EARLY_SCOUT_SIZE_MULT:.2f}"
         except Exception:
             is_early_scout = False
 
@@ -2282,14 +2279,9 @@ def execute_buy(symbol: str, sig: dict | None = None):
             breakout_ok    = (not AGGR_BREAKOUT_ONLY) or (mode == "breakout")
 
             if strong_score and breakout_ok:
-                if stronger_score:
-                    aggr_mult = 1.60
-                else:
-                    aggr_mult = 1.35
-
+                aggr_mult = 1.60 if stronger_score else 1.35
                 max_allowed = TRADE_BASE_USDT * float(AGGR_MAX_RISK_MULT)
                 trade_usdt = min(trade_usdt * aggr_mult, max_allowed)
-
                 sig.setdefault("messages", {})
                 sig["messages"]["aggressive_clean"] = (
                     f"🔥 Aggressive Clean: strong signal (score={sc_aggr}) → size<=x{AGGR_MAX_RISK_MULT:.2f}"
@@ -2345,11 +2337,9 @@ def execute_buy(symbol: str, sig: dict | None = None):
         else:
             _tg_once(
                 f"warn_min_notional:{base}",
-                (
-                    "⚠️ <b>قيمة الصفقة أقل من الحد الأدنى</b>\n"
-                    f"القيمة: <code>{amount*price:.2f}$</code> • "
-                    f"الحد الأدنى: <code>{min_notional:.2f}$</code>."
-                ),
+                ("⚠️ <b>قيمة الصفقة أقل من الحد الأدنى</b>\n"
+                 f"القيمة: <code>{amount*price:.2f}$</code> • "
+                 f"الحد الأدنى: <code>{min_notional:.2f}$</code>."),
                 ttl_sec=900
             )
             return None, "🚫 قيمة الصفقة أقل من الحد الأدنى ضمن رصيدك وحدودك."
@@ -2359,11 +2349,7 @@ def execute_buy(symbol: str, sig: dict | None = None):
 
     # ===== تنفيذ أمر السوق =====
     if DRY_RUN:
-        order = {
-            "id": f"dry_{int(time.time())}",
-            "average": price,
-            "filled": float(amount),
-        }
+        order = {"id": f"dry_{int(time.time())}", "average": price, "filled": float(amount)}
     else:
         try:
             order = place_market_order(base, "buy", amount)
@@ -2389,10 +2375,7 @@ def execute_buy(symbol: str, sig: dict | None = None):
                 place_market_order(base, "sell", amount)
         except Exception:
             pass
-        return None, (
-            f"🚫 انزلاق مرتفع وتم التراجع "
-            f"({slippage:.2%} > {SLIPPAGE_MAX_PCT:.2%})."
-        )
+        return None, (f"🚫 انزلاق مرتفع وتم التراجع ({slippage:.2%} > {SLIPPAGE_MAX_PCT:.2%}).")
 
     # ===== SL منطقي =====
     sl_raw = float(sig["sl"])
@@ -2484,10 +2467,25 @@ def _safe_sell(base_symbol: str, want_qty: float):
     min_qty     = float(f.get("minQty", 0.0)) or 0.0
     min_notional= float(f.get("minNotional", MIN_NOTIONAL_USDT)) or MIN_NOTIONAL_USDT
 
+    # سعر حالي + fallback
     try:
         price_now = float(fetch_price(base_symbol) or 0.0)
     except Exception:
         price_now = 0.0
+    if price_now <= 0.0:
+        try:
+            tkr = _get_cached_ticker(base_symbol)
+            if not tkr and 'exchange' in globals():
+                tkr = exchange.fetch_ticker(base_symbol)
+            price_now = float(
+                (tkr.get("last") if tkr else 0.0) or
+                (tkr.get("close") if tkr else 0.0) or
+                (tkr.get("ask") if tkr else 0.0) or
+                (tkr.get("bid") if tkr else 0.0) or
+                0.0
+            )
+        except Exception:
+            price_now = 0.0
 
     raw = max(0.0, min(float(want_qty or 0.0), avail))
     qty = math.floor(raw / step) * step
@@ -2507,7 +2505,7 @@ def _safe_sell(base_symbol: str, want_qty: float):
             return None, None, 0.0
 
     if DRY_RUN:
-        px = float(fetch_price(base_symbol) or 0.0)
+        px = float(price_now or fetch_price(base_symbol) or 0.0)
         return {"id": f"dry_sell_{int(time.time())}", "average": px}, px, qty
 
     try:
@@ -2524,8 +2522,7 @@ def _safe_sell(base_symbol: str, want_qty: float):
                 _tg_once(f"sell_fail_{base_symbol}", f"❌ بيع متعذّر بعد 51008 — كمية غير كافية/أقل من الحد.", ttl_sec=600)
                 return None, None, 0.0
             try:
-                order = place_market_order(base_symbol, "sell", qty2)
-                qty = qty2
+                order = place_market_order(base_symbol, "sell", qty2); qty = qty2
             except Exception:
                 _tg_once(f"sell_fail_{base_symbol}", f"❌ فشل بيع {base_symbol} بعد إعادة المحاولة (51008).", ttl_sec=600)
                 return None, None, 0.0
