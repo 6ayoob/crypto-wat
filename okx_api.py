@@ -195,9 +195,11 @@ def _decimals_to_step(decimals: Optional[int]) -> Optional[float]:
     except Exception:
         return None
 
-def _amount_to_precision(symbol_ccxt: str, amount: float) -> float:
+def _amount_to_precision(symbol_ccxt: str, amount: float, *, enforce_min_cost: bool = True) -> float:
     """
-    يضبط الكمية حسب دقة السوق وحدوده (min amount/min cost).
+    يضبط الكمية حسب دقة السوق وحدوده.
+    - min amount: يطبَّق دائماً (شراء/بيع)
+    - min cost (minNotional): يطبَّق فقط إذا enforce_min_cost=True (عادةً للشراء)
     """
     try:
         market = exchange.market(symbol_ccxt)
@@ -210,44 +212,35 @@ def _amount_to_precision(symbol_ccxt: str, amount: float) -> float:
     except Exception:
         amt = float(amount)
 
-    # حد أدنى للكمية
+    # حد أدنى للكمية (للشراء والبيع)
     try:
-        min_amt = float(
-            market.get("limits", {}).get("amount", {}).get("min") or 0.0
-        ) if market else 0.0
+        min_amt = float(market.get("limits", {}).get("amount", {}).get("min") or 0.0) if market else 0.0
         if min_amt and amt < min_amt:
             amt = float(exchange.amount_to_precision(symbol_ccxt, min_amt))
     except Exception:
         pass
 
-    # حد أدنى للتكلفة
+    # حد أدنى للتكلفة — للشراء فقط
     try:
-        min_cost = float(
-            market.get("limits", {}).get("cost", {}).get("min") or 0.0
-        ) if market else 0.0
-        if min_cost > 0:
-            tkr = _get_cached_ticker(symbol_ccxt)
-            if not tkr:
-                try:
-                    tkr = exchange.fetch_ticker(symbol_ccxt)
-                    _set_cached_ticker(symbol_ccxt, tkr)
-                except Exception:
-                    tkr = None
-            last = 0.0
-            if tkr:
-                last = float(
-                    tkr.get("last")
-                    or tkr.get("close")
-                    or tkr.get("ask")
-                    or tkr.get("bid")
-                    or 0.0
-                )
-            if last > 0 and amt * last < min_cost:
-                needed = min_cost / last
-                try:
-                    amt = float(exchange.amount_to_precision(symbol_ccxt, needed))
-                except Exception:
-                    amt = float(needed)
+        if enforce_min_cost:
+            min_cost = float(market.get("limits", {}).get("cost", {}).get("min") or 0.0) if market else 0.0
+            if min_cost > 0:
+                tkr = _get_cached_ticker(symbol_ccxt)
+                if not tkr:
+                    try:
+                        tkr = exchange.fetch_ticker(symbol_ccxt)
+                        _set_cached_ticker(symbol_ccxt, tkr)
+                    except Exception:
+                        tkr = None
+                last = 0.0
+                if tkr:
+                    last = float(tkr.get("last") or tkr.get("close") or tkr.get("ask") or tkr.get("bid") or 0.0)
+                if last > 0 and amt * last < min_cost:
+                    needed = min_cost / last
+                    try:
+                        amt = float(exchange.amount_to_precision(symbol_ccxt, needed))
+                    except Exception:
+                        amt = float(needed)
     except Exception:
         pass
 
@@ -349,7 +342,7 @@ def place_market_order(symbol: str, side: str, amount: float, send_message=None)
         _log(send_message, f"⚠️ كمية غير صالحة لأمر {side} على {symbol}")
         return None
 
-    adj_amount = _amount_to_precision(sym, float(amount))
+    adj_amount = _amount_to_precision(sym, float(amount), enforce_min_cost=(side == "buy"))
     if adj_amount <= 0:
         _log(send_message, f"⚠️ الكمية بعد التسوية أصبحت صفر لـ {symbol} — تحقق من الحد الأدنى للسوق.")
         return None
