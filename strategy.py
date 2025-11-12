@@ -28,6 +28,22 @@ from config import (
     MIN_NOTIONAL_USDT,
 )
 
+# ==== ATR & RVOL dynamic defaults (modifiable via ENV) ====
+ATR_NEED_BASE   = float(os.getenv("ATR_NEED_BASE", 0.0022))   # الأساس
+# نقاط انحناء الـbreadth
+ATR_BR_WEAK     = float(os.getenv("ATR_BR_WEAK",   0.45))
+ATR_BR_STRONG   = float(os.getenv("ATR_BR_STRONG", 0.65))
+ATR_NEED_WEAK   = float(os.getenv("ATR_NEED_WEAK", 0.0028))
+ATR_NEED_STRONG = float(os.getenv("ATR_NEED_STRONG", 0.0018))
+
+# RVOL
+RVOL_BASE             = float(os.getenv("RVOL_BASE", 1.15))
+RVOL_RELAX_FOR_LEADERS= float(os.getenv("RVOL_RELAX_FOR_LEADERS", 0.90))  # 0.90 = تخفيف 10%
+RVOL_RELAX_BR_MIN     = float(os.getenv("RVOL_RELAX_BR_MIN", 0.55))
+
+# قائمة “قياديين” (للـRVOL). تُستخدم فقط إذا ما قدرنا نفرّق قيادي عبر دالة موجودة.
+LEADERS_ENV = os.getenv("LEADERS", "BTC,ETH,SOL,BNB,LINK")
+LEADERS_SET = set(s.strip().upper() for s in LEADERS_ENV.split(",") if s.strip())
 
 # ===================== ENV helpers =====================
 def _env_bool(name: str, default: bool = False) -> bool:
