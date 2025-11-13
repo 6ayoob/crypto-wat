@@ -2446,95 +2446,147 @@ def execute_buy(symbol: str, sig: dict | None = None):
         f"{' | Early Scout' if is_early_scout else ''}"
     )
 
+# ====== SELL helpers (price/minNotional/dust) ======
+def _price_now_safe(sym: str) -> float:
+    """سعر آمن: نحاول fetch_price، وإن فشل نأخذ آخر close من كاش الـOHLCV."""
+    try:
+        px = float(fetch_price(sym) or 0.0)
+    except Exception:
+        px = 0.0
+    if px <= 0.0:
+        try:
+            d = _df(get_ohlcv_cached(sym, LTF_TIMEFRAME, 5))
+            if d is not None and len(d) >= 3:
+                px = float(d["close"].iloc[-2])
+        except Exception:
+            pass
+    return float(px or 0.0)
 
-# ================== بيع آمن ==================
+def _min_notional_for(sym: str, price_now: float) -> float:
+    """
+    أقل قيمة مسموحة للأمر:
+    - نقرأ minNotional/quoteMin/notionalMin إن وجدت.
+    - كاحتياط نُقدّرها من minQty*السعر ونأخذ الأكبر مع MIN_NOTIONAL_USDT.
+    """
+    base_default = float(MIN_NOTIONAL_USDT)
+    try:
+        f = fetch_symbol_filters(sym) or {}
+        for k in ("minNotional", "quoteMin", "notionalMin"):
+            v = f.get(k)
+            if v is not None:
+                v = float(v)
+                if v > 0:
+                    return v
+        min_qty = float(f.get("minQty", 0.0) or 0.0)
+        est = min_qty * max(price_now, 0.0)
+        return max(base_default, est) if est > 0 else base_default
+    except Exception:
+        return base_default
+
+
 def _safe_sell(base_symbol: str, want_qty: float):
     """
-    يبيع الكمية المتاحة فقط مع احترام step/minQty/minNotional لمنع أخطاء 51008.
-    يُستدعى من manage_position.
+    يبيع الكمية المتاحة فقط مع احترام step/minQty/minNotional مع:
+    - fallback للسعر من OHLCV
+    - بوابة dust لتجنب السبام
     """
+    SELL_DUST_MIN_USDT = float(os.getenv("SELL_DUST_MIN_USDT", 5.0))  # تجاهل بيع بقيمة أقل من هذا
+    SELL_WARN_TTL      = int(os.getenv("SELL_WARN_TTL", 1800))        # 30 دقيقة منع تكرار الرسالة
+
+    # الكمية المتاحة
     try:
         avail = float(fetch_balance(base_symbol.split("/")[0]) or 0.0)
     except Exception:
         avail = 0.0
 
     if avail <= 0.0:
-        _tg_once(f"warn_insuff_{base_symbol}", f"⚠️ لا توجد كمية متاحة للبيع لـ {base_symbol}.", ttl_sec=600)
+        _tg_once(f"warn_insuff_{base_symbol}",
+                 f"⚠️ لا توجد كمية متاحة للبيع لـ {base_symbol}.",
+                 ttl_sec=SELL_WARN_TTL)
         return None, None, 0.0
 
-    f = fetch_symbol_filters(base_symbol)
-    step        = float(f.get("stepSize", 0.000001)) or 0.000001
-    min_qty     = float(f.get("minQty", 0.0)) or 0.0
-    min_notional= float(f.get("minNotional", MIN_NOTIONAL_USDT)) or MIN_NOTIONAL_USDT
+    # فلاتر الرمز
+    f = fetch_symbol_filters(base_symbol) or {}
+    step    = float(f.get("stepSize", 0.000001) or 0.000001)
+    min_qty = float(f.get("minQty", 0.0) or 0.0)
 
-    # سعر حالي + fallback
-    try:
-        price_now = float(fetch_price(base_symbol) or 0.0)
-    except Exception:
-        price_now = 0.0
+    # سعر آمن + minNotional موثوق
+    price_now    = _price_now_safe(base_symbol)
     if price_now <= 0.0:
-        try:
-            tkr = _get_cached_ticker(base_symbol)
-            if not tkr and 'exchange' in globals():
-                tkr = exchange.fetch_ticker(base_symbol)
-            price_now = float(
-                (tkr.get("last") if tkr else 0.0) or
-                (tkr.get("close") if tkr else 0.0) or
-                (tkr.get("ask") if tkr else 0.0) or
-                (tkr.get("bid") if tkr else 0.0) or
-                0.0
-            )
-        except Exception:
-            price_now = 0.0
+        _tg_once(f"sell_skip_noprice_{base_symbol}",
+                 f"⚠️ تخطّي البيع {base_symbol}: السعر غير متاح حاليًا.",
+                 ttl_sec=SELL_WARN_TTL)
+        return None, None, 0.0
 
+    min_notional = _min_notional_for(base_symbol, price_now)
+
+    # تحديد الكمية الفعلية
     raw = max(0.0, min(float(want_qty or 0.0), avail))
     qty = math.floor(raw / step) * step
 
+    # احترم minQty
     if min_qty and qty < min_qty:
         qty = math.floor(min(avail, min_qty) / step) * step
 
-    if price_now <= 0 or (qty * price_now) < min_notional:
-        qty = math.floor(avail / step) * step
-        if price_now <= 0 or (qty * price_now) < min_notional or qty <= 0:
+    # بوابة الغبار: إن كانت القيمة صغيرة جدًا، تجاهل بدون سبام
+    if qty <= 0.0 or (qty * price_now) < SELL_DUST_MIN_USDT:
+        _tg_once(f"sell_dust_{base_symbol}",
+                 (f"⚠️ تخطّي بيع غبار {base_symbol}: القيمة ≈ {qty*price_now:.2f}$ "
+                  f"< SELL_DUST_MIN_USDT={SELL_DUST_MIN_USDT:.2f}$."),
+                 ttl_sec=SELL_WARN_TTL)
+        return None, None, 0.0
+
+    # ارفع الكمية حتى حدّ المنصة إن أمكن
+    if (qty * price_now) < min_notional:
+        need_amt = math.ceil((min_notional / price_now) / step) * step
+        if need_amt <= avail:
+            qty = need_amt
+        else:
             _tg_once(
                 f"sell_skip_small_{base_symbol}",
                 (f"⚠️ تخطّي البيع {base_symbol}: القيمة {qty*price_now:.2f}$ أقل من الحد الأدنى "
-                 f"{min_notional:.2f}$ أو السعر غير متاح."),
-                ttl_sec=600
+                 f"{min_notional:.2f}$ ولا توجد كمية كافية للوصول إليه."),
+                ttl_sec=SELL_WARN_TTL
             )
             return None, None, 0.0
 
     if DRY_RUN:
-        px = float(price_now or fetch_price(base_symbol) or 0.0)
+        px = price_now
         return {"id": f"dry_sell_{int(time.time())}", "average": px}, px, qty
 
+    # تنفيذ
     try:
         order = place_market_order(base_symbol, "sell", qty)
     except Exception as e:
         msg = str(e)
         if "51008" in msg or "insufficient" in msg.lower():
-            try:
-                avail2 = float(fetch_balance(base_symbol.split("/")[0]) or 0.0)
-            except Exception:
-                avail2 = qty * 0.95
-            qty2 = math.floor(max(0.0, min(qty * 0.98, avail2)) / step) * step
-            if qty2 <= 0 or (price_now > 0 and qty2 * price_now < min_notional):
-                _tg_once(f"sell_fail_{base_symbol}", f"❌ بيع متعذّر بعد 51008 — كمية غير كافية/أقل من الحد.", ttl_sec=600)
+            qty2 = math.floor(max(0.0, min(qty * 0.98, avail)) / step) * step
+            if qty2 <= 0.0 or (qty2 * price_now) < min_notional:
+                _tg_once(f"sell_fail_{base_symbol}",
+                         f"❌ بيع متعذّر بعد 51008 — كمية غير كافية/أقل من الحد.",
+                         ttl_sec=SELL_WARN_TTL)
                 return None, None, 0.0
             try:
-                order = place_market_order(base_symbol, "sell", qty2); qty = qty2
+                order = place_market_order(base_symbol, "sell", qty2)
+                qty = qty2
             except Exception:
-                _tg_once(f"sell_fail_{base_symbol}", f"❌ فشل بيع {base_symbol} بعد إعادة المحاولة (51008).", ttl_sec=600)
+                _tg_once(f"sell_fail_{base_symbol}",
+                         f"❌ فشل بيع {base_symbol} بعد إعادة المحاولة (51008).",
+                         ttl_sec=SELL_WARN_TTL)
                 return None, None, 0.0
         else:
-            _tg_once(f"sell_fail_{base_symbol}", f"❌ فشل بيع {base_symbol} (استثناء): {e}", ttl_sec=600)
+            _tg_once(f"sell_fail_{base_symbol}",
+                     f"❌ فشل بيع {base_symbol} (استثناء): {e}",
+                     ttl_sec=SELL_WARN_TTL)
             return None, None, 0.0
 
     if not order:
-        _tg_once(f"sell_fail_{base_symbol}", f"❌ فشل بيع {base_symbol} (أمر السوق).", ttl_sec=600)
+        _tg_once(f"sell_fail_{base_symbol}",
+                 f"❌ فشل بيع {base_symbol} (أمر السوق).",
+                 ttl_sec=SELL_WARN_TTL)
         return None, None, 0.0
 
-    exit_px = float(order.get("average") or order.get("price") or fetch_price(base_symbol) or 0.0)
+    exit_px = float(order.get("average") or order.get("price") or price_now)
     return order, exit_px, qty
 
 
