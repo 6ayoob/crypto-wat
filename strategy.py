@@ -1272,14 +1272,14 @@ def check_signal(symbol: str):
 
         # ── [NEW] فلتر الاستنزاف الحراري ──
         _exh, _exh_reason = _is_exhausted(closed, atr_val)
-if _exh:
-    return _rej(
-        f"exhaustion_{_exh_reason}",
-        rsi=float(closed.get("rsi", 50)),
-        ema50_dist_pct=round(
-            abs(float(price) - float(closed.get("ema50", price))) / float(price), 4
-        )
-    )
+        if _exh:
+            return _rej(
+                f"exhaustion_{_exh_reason}",
+                rsi=float(closed.get("rsi", 50)),
+                ema50_dist_pct=round(
+                    abs(float(price) - float(closed.get("ema50", price))) / float(price), 4
+                )
+            )
         bucket = "maj" if base.split("/")[0] in ("BTC","ETH","BNB","SOL") else "alt"
         sym_ctx = {
             "bucket": bucket,
