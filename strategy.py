@@ -429,33 +429,33 @@ def _swing_points(df, left=2, right=2):
     return sh, sl
 
 # ================== [NEW] Exhaustion filter ==================
-def _is_exhausted(closed, atr_val=None) -> bool:
+def _is_exhausted(closed, atr_val=None):
     """
-    يرفض الدخول عند استنزاف حراري واضح:
-    - RSI > 75 (مبالغ في الشراء)
-    - السعر بعيد > 8% عن EMA50
-    يمنع الدخول في ذروة الشمعات الكبيرة بعد حركة طويلة.
+    يرجع (True, سبب) أو (False, None)
+    الأسباب:
+    - rsi_high  : RSI > 75 (استنزاف حقيقي بعد صعود)
+    - ema50_far : السعر بعيد عن EMA50 (هبوط أو ابتعاد)
+    - atr_far   : بعيد جداً بمقياس ATR
     """
     try:
         rsi_v = float(closed.get("rsi", 50))
         if rsi_v > EXH_RSI_MAX:
-            return True
+            return True, "rsi_high"
 
-        close_v  = float(closed["close"])
-        ema50_v  = closed.get("ema50")
+        close_v = float(closed["close"])
+        ema50_v = closed.get("ema50")
         if ema50_v is not None and math.isfinite(float(ema50_v)) and float(ema50_v) > 0:
             dist_pct = abs(close_v - float(ema50_v)) / close_v
             if dist_pct > EXH_EMA50_DIST_PCT:
-                return True
+                return True, "ema50_far"
 
-            # فلتر ATR الأصلي كطبقة ثانية
             if atr_val is not None and atr_val > 0:
                 dist_atr = abs(close_v - float(ema50_v)) / atr_val
                 if dist_atr > EXH_EMA50_DIST_ATR:
-                    return True
+                    return True, "atr_far"
     except:
         pass
-    return False
+    return False, None
 
 # ================== [IMPROVED] Opportunity Score ==================
 def _opportunity_score(df, prev, closed):
@@ -1271,11 +1271,15 @@ def check_signal(symbol: str):
         atrp = float(atr_val)/float(price)
 
         # ── [NEW] فلتر الاستنزاف الحراري ──
-        if _is_exhausted(closed, atr_val):
-            return _rej("exhaustion",
-                        rsi=float(closed.get("rsi",50)),
-                        ema50_dist_pct=round(abs(float(price)-float(closed.get("ema50",price)))/float(price),4))
-
+        _exh, _exh_reason = _is_exhausted(closed, atr_val)
+        if _exh:
+            return _rej(,
+                       f"exhaustion_{_exh_reason}",
+                        rsi=float(closed.get("rsi", 50)),
+                        ema50_dist_pct=round(
+                             abs(float(price) - float(closed.get("ema50", price))) / float(price), 4
+        )
+    )
         bucket = "maj" if base.split("/")[0] in ("BTC","ETH","BNB","SOL") else "alt"
         sym_ctx = {
             "bucket": bucket,
