@@ -1280,6 +1280,7 @@ def check_signal(symbol: str):
                     abs(float(price) - float(closed.get("ema50", price))) / float(price), 4
                 )
             )
+
         bucket = "maj" if base.split("/")[0] in ("BTC","ETH","BNB","SOL") else "alt"
         sym_ctx = {
             "bucket": bucket,
