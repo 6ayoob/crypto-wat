@@ -150,9 +150,9 @@ GOLDEN_CROSS_RVOL_BOOST   = _env_float("GOLDEN_CROSS_RVOL_BOOST",  1.10)
 SCORE_THRESHOLD = _env_int("SCORE_THRESHOLD", 50)
 
 # ===== Exhaustion filter =====
-EXH_RSI_MAX        = _env_float("EXH_RSI_MAX",        75.0)
+EXH_RSI_MAX        = _env_float("EXH_RSI_MAX",        78.0)  # [FIX v4.2] رُفع من 75
 EXH_EMA50_DIST_PCT = _env_float("EXH_EMA50_DIST_PCT",  0.08)
-EXH_EMA50_DIST_ATR = _env_float("EXH_EMA50_DIST_ATR",  2.8)
+EXH_EMA50_DIST_ATR = _env_float("EXH_EMA50_DIST_ATR",  3.5)  # [FIX v4.2] رُفع من 2.8
 
 # ===== Break-even =====
 BREAKEVEN_ENABLE      = _env_bool("BREAKEVEN_ENABLE", True)
@@ -428,20 +428,37 @@ def _swing_points(df, left=2, right=2):
 
 # ================== Exhaustion filter ==================
 def _is_exhausted(closed, atr_val=None):
+    """
+    [FIX v4.2] فلتر الاستنزاف يعمل فقط عند الصعود (السعر فوق EMA50).
+    إذا السعر تحت EMA50 → السوق هابط وليس مستنزفاً صعوداً → لا نرفضه هنا.
+    """
     try:
         rsi_v = float(closed.get("rsi", 50))
-        if rsi_v > EXH_RSI_MAX:
-            return True, "rsi_high"
         close_v = float(closed["close"])
         ema50_v = closed.get("ema50")
-        if ema50_v is not None and math.isfinite(float(ema50_v)) and float(ema50_v) > 0:
-            dist_pct = abs(close_v - float(ema50_v)) / close_v
+
+        # تحقق من الاتجاه أولاً
+        above_ema50 = (
+            ema50_v is not None and
+            math.isfinite(float(ema50_v)) and
+            float(ema50_v) > 0 and
+            close_v > float(ema50_v)
+        )
+
+        # RSI مرتفع جداً → استنزاف صعودي (يُطبَّق دائماً)
+        if rsi_v > EXH_RSI_MAX and above_ema50:
+            return True, "rsi_high"
+
+        # فلاتر المسافة → فقط إذا كان السعر فوق EMA50 (صعود مفرط)
+        if above_ema50 and ema50_v is not None:
+            dist_pct = (close_v - float(ema50_v)) / close_v  # موجب فقط
             if dist_pct > EXH_EMA50_DIST_PCT:
                 return True, "ema50_far"
             if atr_val is not None and atr_val > 0:
-                dist_atr = abs(close_v - float(ema50_v)) / atr_val
+                dist_atr = (close_v - float(ema50_v)) / atr_val  # موجب فقط
                 if dist_atr > EXH_EMA50_DIST_ATR:
                     return True, "atr_far"
+
     except:
         pass
     return False, None
@@ -1241,6 +1258,14 @@ def check_signal(symbol: str):
         if atr_val is None or price is None or price <= 0:
             return _rej("atr_calc")
         atrp = float(atr_val)/float(price)
+
+        # [NEW v4.2] فلتر RSI منخفض جداً: سوق في هبوط حر → لا دخول
+        RSI_OVERSOLD_BLOCK = _env_float("RSI_OVERSOLD_BLOCK", 28.0)
+        try:
+            rsi_now = float(closed.get("rsi", 50))
+            if rsi_now < RSI_OVERSOLD_BLOCK:
+                return _rej("rsi_oversold_block", rsi=round(rsi_now, 1), threshold=RSI_OVERSOLD_BLOCK)
+        except: pass
 
         _exh, _exh_reason = _is_exhausted(closed, atr_val)
         if _exh:
