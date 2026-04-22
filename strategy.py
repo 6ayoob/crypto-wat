@@ -1,5 +1,5 @@
 # -*- coding: utf-8 -*-
-# strategy.py - Spot-only (v4.1 — نسخة مُصلَحة)
+# strategy.py - Spot-only (v4.2 — إصلاح الغبار النهائي + تطوير الأداء)
 # الإصلاحات في هذه النسخة:
 # 1. [FIX] _safe_sell: لوج تشخيصي كامل + تحقق دقيق من avail
 # 2. [FIX] حساب الكمية مع stepSize (منع التقريب لصفر)
@@ -93,6 +93,7 @@ RIYADH_TZ          = timezone(timedelta(hours=3))
 POSITIONS_DIR       = "positions"
 CLOSED_POSITIONS_FILE = "closed_positions.json"
 RISK_STATE_FILE     = "risk_state.json"
+DUST_LOG_FILE       = "dust_cleaned.json"
 
 try:    os.makedirs(POSITIONS_DIR, exist_ok=True)
 except: pass
@@ -1183,6 +1184,9 @@ def check_signal(symbol: str):
     base, variant = _split_symbol_variant(symbol)
     _CURRENT_SYMKEY = base
 
+    # [NEW v4.2] تنظيف دوري
+    _maybe_cleanup_dust()
+
     left = _cooldown_left_min(base)
     if left > 0.0:
         return _rej("cooldown", left_min=round(left,1), reason=_cooldown_reason(base))
@@ -1513,6 +1517,98 @@ def _build_entry_plan(symbol, sig=None):
     sig.setdefault("messages",{})
     return sig
 
+
+# ================== [NEW v4.2] تنظيف الغبار التلقائي ==================
+def _is_dust_position(symbol: str, pos: dict):
+    """يتحقق إذا كان المركز غباراً لا يمكن بيعه"""
+    try:
+        base = symbol.split("#")[0]
+        amount = float(pos.get("amount", pos.get("qty", 0)) or 0)
+        if amount <= 0:
+            return True, "amount=0"
+        try:
+            f = fetch_symbol_filters(base) or {}
+            min_qty = float(f.get("minQty", 0) or 0)
+            min_notional = float(f.get("minNotional", MIN_NOTIONAL_USDT) or MIN_NOTIONAL_USDT)
+        except:
+            return False, ""
+        if min_qty > 0 and amount < min_qty * 0.5:
+            return True, f"amount={amount:.8f} < min_qty/2={min_qty/2:.8f}"
+        try:
+            price = float(fetch_price(base) or 0)
+            if price > 0:
+                value = amount * price
+                if value < float(os.getenv("SELL_DUST_MIN_USDT", "0.5")):
+                    return True, f"value={value:.4f}$ < dust_min"
+                if value < min_notional * 0.5:
+                    return True, f"value={value:.4f}$ < min_notional/2"
+        except:
+            pass
+    except Exception as e:
+        logger.warning(f"[dust_check] {symbol}: error={e}")
+    return False, ""
+
+
+def cleanup_dust_positions(force: bool = False, notify: bool = True) -> int:
+    """[NEW v4.2] تنظيف تلقائي لمراكز الغبار"""
+    cleaned = 0
+    dust_log = _read_json(DUST_LOG_FILE, [])
+    try:
+        files = [f for f in os.listdir(POSITIONS_DIR) if f.endswith(".json")]
+    except:
+        return 0
+    for fname in files:
+        try:
+            pos = _read_json(f"{POSITIONS_DIR}/{fname}", None)
+            if not pos:
+                try: os.remove(f"{POSITIONS_DIR}/{fname}")
+                except: pass
+                cleaned += 1
+                continue
+            symbol = pos.get("symbol", fname.replace(".json","").replace("_","/",1))
+            is_dust, reason = _is_dust_position(symbol, pos)
+            if is_dust:
+                logger.info(f"[cleanup_dust] 🧹 حذف غبار: {symbol} | {reason}")
+                dust_log.append({"symbol": symbol, "reason": reason,
+                                 "amount": pos.get("amount", 0),
+                                 "cleaned_at": now_riyadh().isoformat(timespec="seconds")})
+                clear_position(symbol)
+                cleaned += 1
+                if notify and STRAT_TG_SEND:
+                    _tg_once(f"dust_cleaned_{symbol}",
+                             f"🧹 تنظيف غبار: {symbol}\nالسبب: {reason}",
+                             ttl_sec=3600)
+        except Exception as e:
+            logger.warning(f"[cleanup_dust] {fname}: error={e}")
+    if dust_log:
+        try: _atomic_write(DUST_LOG_FILE, dust_log[-200:])
+        except: pass
+    if cleaned > 0:
+        logger.info(f"[cleanup_dust] ✅ تم تنظيف {cleaned} مركز/مراكز")
+    return cleaned
+
+
+_LAST_DUST_CLEANUP = 0.0
+def _maybe_cleanup_dust():
+    global _LAST_DUST_CLEANUP
+    now_s = time.time()
+    interval = float(os.getenv("DUST_CLEANUP_INTERVAL_SEC", "3600"))
+    if (now_s - _LAST_DUST_CLEANUP) >= interval:
+        cleanup_dust_positions(notify=True)
+        _LAST_DUST_CLEANUP = now_s
+
+
+def on_startup():
+    """يُستدعى عند بدء التشغيل — ينظف الغبار تلقائياً"""
+    global _LAST_DUST_CLEANUP
+    logger.info("[startup] 🚀 strategy v4.2")
+    cleaned = cleanup_dust_positions(force=True, notify=True)
+    _LAST_DUST_CLEANUP = time.time()
+    if cleaned > 0:
+        logger.info(f"[startup] ✅ تم تنظيف {cleaned} مركز غبار")
+    return cleaned
+
+
 # ================== [FIX] fetch_balance مع retry ==================
 def _fetch_balance_safe(coin: str, retries: int = 3, delay: float = 1.0) -> float:
     """
@@ -1606,6 +1702,18 @@ def _safe_sell(base_symbol: str, want_qty: float):
         qty = raw
 
     # تطبيق minQty
+    # [FIX-KEY v4.2] إذا avail أقل بكثير من min_qty → غبار، لا تُعيد المحاولة
+    if min_qty > 0 and avail < min_qty * 0.9:
+        logger.warning(
+            f"[_safe_sell] {base_symbol}: DUST — avail={avail:.8f} << min_qty={min_qty:.8f} → حذف المركز"
+        )
+        _tg_once(
+            f"dust_auto_{base_symbol}",
+            f"🧹 غبار محذوف: {base_symbol} | avail={avail:.8f} < min_qty={min_qty:.8f}",
+            ttl_sec=SELL_WARN_TTL
+        )
+        return None, None, 0.0
+
     if min_qty > 0 and qty < min_qty:
         adjusted = math.floor(min(avail, min_qty * 1.001) / step) * step if step > 0 else min_qty
         if adjusted <= avail:
@@ -2099,6 +2207,14 @@ def manage_position(symbol):
             pos["stop_loss"] = float(pos.get("entry_price",0.0)*0.97)
         save_position(symbol, pos)
 
+    # [FIX-3 v4.2] تحقق من صحة المركز أولاً
+    _symbol_check = pos.get("symbol", symbol)
+    _is_dust_mgmt, _dust_reason_mgmt = _is_dust_position(_symbol_check, pos)
+    if _is_dust_mgmt:
+        logger.info(f"[manage] {symbol}: مركز غبار ({_dust_reason_mgmt}) — حذف")
+        clear_position(symbol)
+        return True
+
     base    = pos["symbol"].split("#")[0]
     try:
         current = float(fetch_price(base))
@@ -2237,6 +2353,7 @@ def manage_position(symbol):
                                     save_position(symbol,pos)
                                     if STRAT_TG_SEND:
                                         _tg(f"🧭 Trailing SL {symbol} → <code>{new_sl:.6f}</code>")
+                    return True  # [FIX-2 v4.2] early return بعد أول TP
 
     # ── Trailing عام ──
     if mgmt.get("TRAIL_AFTER_TP1") and pos["amount"] > 0 and any(pos.get("tp_hits",[])):
@@ -2268,7 +2385,7 @@ def manage_position(symbol):
                 register_trade_result(pnl)
                 if STRAT_TG_SEND:
                     _tg(f"🛑 SL جزئي {symbol} @ <code>{exit_px:.6f}</code>")
-                return True
+                return True  # [FIX-2 v4.2] early return
 
     return False
 
