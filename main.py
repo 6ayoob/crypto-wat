@@ -19,7 +19,8 @@ from time import perf_counter
 from datetime import datetime, timezone, timedelta
 
 import requests
-
+from brain_scheduler import start_brain_scheduler
+start_brain_scheduler()  # يبدأ العقل في الخلفية
 from config import (
     TELEGRAM_TOKEN, TELEGRAM_CHAT_ID,
     SYMBOLS, STRAT_LTF_TIMEFRAME, STRAT_HTF_TIMEFRAME,
