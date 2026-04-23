@@ -24,6 +24,17 @@ from okx_api import (
     fetch_symbol_filters,
 )
 
+# [NEW v4.2] العقل المدبر
+try:
+    from market_brain import get_brain_directives as _get_brain_directives
+    BRAIN_AVAILABLE = True
+except ImportError:
+    BRAIN_AVAILABLE = False
+    def _get_brain_directives():
+        return {"entry_allowed": True, "score_threshold_override": None,
+                "size_multiplier": 1.0, "max_open_positions_override": None,
+                "blocked_patterns": [], "preferred_modes": [], "notes": []}
+
 from config import (
     TRADE_AMOUNT_USDT,
     MAX_OPEN_POSITIONS,
@@ -1204,6 +1215,17 @@ def check_signal(symbol: str):
     # [NEW v4.2] تنظيف دوري
     _maybe_cleanup_dust()
 
+    # [NEW v4.2] قراءة توجيهات العقل المدبر
+    _brain = _get_brain_directives() if BRAIN_AVAILABLE else {}
+    _brain_entry_ok = bool(_brain.get("entry_allowed", True))
+    _brain_blocked  = list(_brain.get("blocked_patterns", []))
+    _brain_score    = _brain.get("score_threshold_override")
+    _effective_score_thr = int(_brain_score) if _brain_score is not None else SCORE_THRESHOLD
+
+    # إذا العقل قال لا دخول
+    if not _brain_entry_ok:
+        return _rej("brain_no_entry", regime=_brain.get("regime","?"))
+
     left = _cooldown_left_min(base)
     if left > 0.0:
         return _rej("cooldown", left_min=round(left,1), reason=_cooldown_reason(base))
@@ -1406,8 +1428,12 @@ def check_signal(symbol: str):
                 chosen_mode = "breakout"; break
 
         if chosen_mode:
-            if int(score) < int(SCORE_THRESHOLD):
-                return _rej("score_low", score=score, need=SCORE_THRESHOLD)
+            # [NEW v4.2] استخدام عتبة السكور من العقل المدبر
+            if int(score) < _effective_score_thr:
+                return _rej("score_low", score=score, need=_effective_score_thr)
+            # [NEW v4.2] فلتر الأنماط المحظورة من العقل
+            if pattern in _brain_blocked:
+                return _rej("brain_blocked_pattern", pattern=pattern)
             _pass("buy", mode=chosen_mode, score=int(score))
             _mark_signal_now(base)
             return {
@@ -1945,6 +1971,18 @@ def execute_buy(symbol, sig=None):
                 trade_usdt = min(trade_usdt*aggr_mult, max_allowed)
                 sig["messages"]["aggressive_clean"] = f"🔥 Aggressive: score={sc_aggr} → ≤x{AGGR_MAX_RISK_MULT:.2f}"
         except: pass
+
+    # [NEW v4.2] تطبيق size_multiplier من العقل المدبر
+    if BRAIN_AVAILABLE:
+        _b = _get_brain_directives()
+        _brain_mult = float(_b.get("size_multiplier", 1.0))
+        if _brain_mult != 1.0:
+            trade_usdt *= _brain_mult
+            sig["messages"]["brain_size"] = f"🧠 Brain: size×{_brain_mult:.2f} ({_b.get('regime','?')})"
+            logger.info(f"[execute_buy] 🧠 Brain size×{_brain_mult:.2f} → {trade_usdt:.2f}$")
+        _brain_max_pos = _b.get("max_open_positions_override")
+        if _brain_max_pos is not None and count_open_positions() >= int(_brain_max_pos):
+            return None, f"🧠 Brain: حد المراكز ({int(_brain_max_pos)}) — {_b.get('regime','?')}"
 
     if TRADE_USDT_MAX > 0: trade_usdt = min(trade_usdt, TRADE_USDT_MAX)
     trade_usdt = max(trade_usdt, TRADE_USDT_MIN)
