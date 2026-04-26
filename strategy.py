@@ -101,10 +101,20 @@ def _print(s):
 
 # ================== Constants ==================
 RIYADH_TZ          = timezone(timedelta(hours=3))
-POSITIONS_DIR       = "positions"
-CLOSED_POSITIONS_FILE = "closed_positions.json"
-RISK_STATE_FILE     = "risk_state.json"
-DUST_LOG_FILE       = "dust_cleaned.json"
+
+# [NEW] مسارات التخزين الدائم على Render Disk
+try:
+    from paths import (
+        POSITIONS_DIR, CLOSED_POSITIONS_FILE,
+        RISK_STATE_FILE, DUST_LOG_FILE
+    )
+    print(f"[strategy] ✅ مسارات دائمة: {POSITIONS_DIR}", flush=True)
+except ImportError:
+    POSITIONS_DIR         = "positions"
+    CLOSED_POSITIONS_FILE = "closed_positions.json"
+    RISK_STATE_FILE       = "risk_state.json"
+    DUST_LOG_FILE         = "dust_cleaned.json"
+    print("[strategy] ⚠️ paths.py غير موجود — استخدام المسارات المحلية", flush=True)
 
 try:    os.makedirs(POSITIONS_DIR, exist_ok=True)
 except: pass
