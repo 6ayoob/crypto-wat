@@ -24,8 +24,14 @@ if not logging.getLogger().hasHandlers():
 
 # ===== Constants =====
 RIYADH_TZ        = timezone(timedelta(hours=3))
-BRAIN_STATE_FILE = "brain_state.json"
-BRAIN_LOG_FILE   = "brain_log.json"
+
+# [NEW] مسارات التخزين الدائم
+try:
+    from paths import BRAIN_STATE_FILE, BRAIN_LOG_FILE
+    print(f"[brain] ✅ مسارات دائمة: {BRAIN_STATE_FILE}", flush=True)
+except ImportError:
+    BRAIN_STATE_FILE = "brain_state.json"
+    BRAIN_LOG_FILE   = "brain_log.json"
 
 # ===== ENV helpers =====
 def _ef(name, default):
@@ -480,11 +486,14 @@ def generate_directives(
         score_thr = score_thr  # محايد
         size_mult = 0.85
         notes.append(f"📈 انتعاش — حذر مع إمكانية الدخول")
+        regime_info["htf_relax"] = True
 
     else:  # RANGING
         score_thr = min(SCORE_MAX_CEILING, score_thr + 3)
         size_mult = 0.80
         notes.append(f"↔️ سوق جانبي — تقليل الحجم وتفضيل Pullback")
+        # [NEW] في السوق الجانبي: خفف شرط HTF لأن العملات تحت EMA50 طبيعي
+        regime_info["htf_relax"] = True
 
     # ─── تعديلات بناءً على الأداء ───
 
@@ -574,6 +583,7 @@ def _default_state() -> Dict[str, Any]:
         "btc_adx":                     20.0,
         "btc_trend":                   "neutral",
         "volatility_ratio":            1.0,
+        "htf_relax":                   False,
     }
 
 
@@ -643,6 +653,7 @@ def run_brain_cycle():
         "btc_trend":        regime_info.get("btc_trend", "neutral"),
         "btc_price":        regime_info.get("btc_price", 0.0),
         "volatility_ratio": regime_info.get("volatility_ratio", 1.0),
+        "htf_relax":        regime_info.get("htf_relax", False),
         "pattern_stats":    perf_info.get("pattern_stats", {}),
         "mode_stats":       perf_info.get("mode_stats", {}),
     }
