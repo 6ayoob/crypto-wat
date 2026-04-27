@@ -47,6 +47,13 @@ from config import (
     MIN_NOTIONAL_USDT,
 )
 
+# [v3.0] استيراد متغيرات رأس المال الجديدة
+try:
+    from config import ACTUAL_CAPITAL_USDT, RISK_PER_TRADE_PCT
+except ImportError:
+    ACTUAL_CAPITAL_USDT  = 0.0
+    RISK_PER_TRADE_PCT   = 5.0
+
 # ==== ATR & RVOL dynamic defaults ====
 ATR_NEED_BASE   = float(os.getenv("ATR_NEED_BASE",   0.0022))
 ATR_BR_WEAK     = float(os.getenv("ATR_BR_WEAK",     0.45))
@@ -145,7 +152,7 @@ TP1_FRACTION       = 0.5
 TRAIL_MIN_STEP_RATIO = 0.001
 
 MAX_TRADES_PER_DAY    = _env_int("MAX_TRADES_PER_DAY",    15)
-MAX_CONSEC_LOSSES     = _env_int("MAX_CONSEC_LOSSES",      4)
+MAX_CONSEC_LOSSES     = _env_int("MAX_CONSEC_LOSSES",      6)  # [FIX v3.0] رُفع من 4 إلى 6
 DAILY_LOSS_LIMIT_USDT = _env_float("DAILY_LOSS_LIMIT_USDT", 40.0)
 MAX_OPEN_POSITIONS    = _env_int("MAX_OPEN_POSITIONS",     5)
 
@@ -168,7 +175,7 @@ USE_EMA100_LTF_FILTER     = _env_bool("USE_EMA100_LTF_FILTER",     True)
 GOLDEN_CROSS_RVOL_BOOST   = _env_float("GOLDEN_CROSS_RVOL_BOOST",  1.10)
 
 # ===== Scoring =====
-SCORE_THRESHOLD = _env_int("SCORE_THRESHOLD", 50)
+SCORE_THRESHOLD = _env_int("SCORE_THRESHOLD", 55)  # [FIX v3.0] رُفع من 50 إلى 55
 
 # ===== Exhaustion filter =====
 EXH_RSI_MAX        = _env_float("EXH_RSI_MAX",        78.0)  # [FIX v4.2] رُفع من 75
@@ -1398,7 +1405,17 @@ def check_signal(symbol: str):
             is_breakout and ema100_trend=="up" and float(rvol_eff)>=need_rvol_base*1.10)
 
         if trend == "down":
-            if not ((br is not None and br >= max(0.58,eff_min+0.04)) or strong_breakout):
+            # [FIX v3.0] في حالة RECOVERY من العقل → نخفف شرط HTF
+            _brain_htf_relax = False
+            try:
+                if BRAIN_AVAILABLE:
+                    _b = _get_brain_directives()
+                    _brain_htf_relax = bool(_b.get("htf_relax", False))
+            except: pass
+
+            if not (_brain_htf_relax or
+                    (br is not None and br >= max(0.58, eff_min+0.04)) or
+                    strong_breakout):
                 return _rej("htf_trend", trend=trend)
         elif trend == "neutral" and not neutral_ok:
             if not (weak_market or strong_breakout):
@@ -1938,7 +1955,17 @@ def execute_buy(symbol, sig=None):
     LEADER_SIZE_MULT_ENV      = _env_float("LEADER_SIZE_MULT",      LEADER_SIZE_MULT)
     LEADER_DONT_DOWNSCALE_ENV = _env_bool("LEADER_DONT_DOWNSCALE", LEADER_DONT_DOWNSCALE)
 
-    trade_usdt = float(TRADE_BASE_USDT)
+    # [FIX v3.0] حجم الصفقة بناءً على رأس المال الفعلي
+    try:
+        if ACTUAL_CAPITAL_USDT > 1.0:
+            _base_size = ACTUAL_CAPITAL_USDT * RISK_PER_TRADE_PCT / 100.0
+            trade_usdt = max(float(MIN_TRADE_USDT), round(_base_size, 2))
+            logger.info(f"[execute_buy] رأس المال={ACTUAL_CAPITAL_USDT:.2f}$ → trade={trade_usdt:.2f}$ ({RISK_PER_TRADE_PCT}%)")
+        else:
+            trade_usdt = float(TRADE_BASE_USDT)
+    except:
+        trade_usdt = float(TRADE_BASE_USDT)
+
     br         = _get_breadth_ratio_cached()
     eff_min    = _breadth_min_auto()
     is_leader  = _is_relative_leader_vs_btc(base)
@@ -2122,9 +2149,17 @@ def execute_buy(symbol, sig=None):
             )
     except: pass
 
+    # [FIX v3.0] رسالة تشمل نسبة رأس المال
+    _cap_info = ""
+    try:
+        if ACTUAL_CAPITAL_USDT > 1.0:
+            _pct = trade_usdt_final / ACTUAL_CAPITAL_USDT * 100
+            _cap_info = f" | {_pct:.1f}% رأس المال"
+    except: pass
+
     return order, (
         f"✅ شراء {symbol} | SL: {pos['stop_loss']:.6f}"
-        f" | 💰 {trade_usdt_final:.2f}$"
+        f" | 💰 {trade_usdt_final:.2f}${_cap_info}"
         + (" | Early Scout" if is_early_scout else ""))
 
 
@@ -2212,7 +2247,20 @@ def _relax_level_current():
     if hrs >= AUTO_RELAX_AFTER_HRS_1: return 1
     return 0
 
-def register_trade_result(pnl_usdt):
+def register_trade_result(pnl_usdt, pattern: str = None):
+    # [FIX v3.0] Circuit Breaker للأنماط
+    if pattern and pnl_usdt < 0:
+        try: _register_pattern_loss(pattern)
+        except: pass
+
+    # [FIX v3.0] تحديث رأس المال بعد كل صفقة
+    global ACTUAL_CAPITAL_USDT
+    try:
+        fresh = _fetch_balance_safe("USDT", retries=1, delay=0.5)
+        if fresh > 0:
+            ACTUAL_CAPITAL_USDT = fresh
+    except: pass
+
     try:
         from risk_and_notify import register_trade_result as _rr
         _rr(float(pnl_usdt)); return
@@ -2234,8 +2282,21 @@ def register_trade_result(pnl_usdt):
     hk = _hour_key(now_riyadh())
     s["hourly_pnl"][hk] = float(s["hourly_pnl"].get(hk,0.0))+float(pnl_usdt)
 
+    # [FIX v3.0] حظر بالعدد فقط إذا الخسائر كبيرة نسبياً
     if s["consecutive_losses"] >= MAX_CONSEC_LOSSES:
-        save_risk_state(s); _set_block(90,"خسائر متتالية"); return
+        # تحقق من قيمة الخسائر — لا نحظر إذا الخسائر صغيرة جداً
+        try:
+            capital = float(ACTUAL_CAPITAL_USDT) if ACTUAL_CAPITAL_USDT > 1.0 else 100.0
+            loss_pct = abs(float(s.get("daily_pnl", 0))) / capital * 100
+            if loss_pct >= 2.0:  # فقط إذا الخسائر >= 2% من رأس المال
+                save_risk_state(s); _set_block(90,"خسائر متتالية"); return
+            else:
+                # خسائر صغيرة — أعد العداد بدل الحظر
+                logger.info(f"[risk] consecutive={s['consecutive_losses']} لكن خسارة={loss_pct:.1f}% صغيرة — إعادة العداد")
+                s["consecutive_losses"] = 0
+        except:
+            save_risk_state(s); _set_block(90,"خسائر متتالية"); return
+
     if s["daily_pnl"] <= -abs(DAILY_LOSS_LIMIT_USDT):
         end_day = now_riyadh().replace(hour=23,minute=59,second=0,microsecond=0)
         mins    = max(1,int((end_day-now_riyadh()).total_seconds()//60))
