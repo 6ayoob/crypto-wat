@@ -26,7 +26,7 @@ BT_MAX_BARS_HOLD   = int(os.getenv("BT_MAX_BARS_HOLD",     "20"))
 BT_SL_ATR_MULT     = float(os.getenv("BT_SL_ATR_MULT",     "1.0"))
 BT_TP1_ATR_MULT    = float(os.getenv("BT_TP1_ATR_MULT",    "1.5"))
 BT_TP2_ATR_MULT    = float(os.getenv("BT_TP2_ATR_MULT",    "2.5"))
-BT_SCORE_MIN       = int(os.getenv("BT_SCORE_MIN",         "45"))
+BT_SCORE_MIN       = int(os.getenv("BT_SCORE_MIN",         "65"))  # رُفع من 45 بناءً على Backtesting
 BT_MAX_CONCURRENT  = int(os.getenv("BT_MAX_CONCURRENT",    "5"))
 RESULTS_FILE       = os.getenv("BT_RESULTS_FILE",
                     "/opt/render/project/data/backtest_results.json")
@@ -113,10 +113,15 @@ def _score(df: pd.DataFrame, i: int) -> Tuple[int, str]:
         hi_range  = float(df["high"].iloc[i-12:i-1].max())
         if nr_recent and c > hi_range:
             score += 25; reasons.append("NR_Breakout")
-        # Bullish Engulf
+        # Bullish Engulf — فلتر أقوى: يجب أن يكون الحجم مرتفعاً
         elif (c > o and prev["close"] < prev["open"] and
               c >= prev["open"] and o <= prev["close"]):
-            score += 20; reasons.append("BullishEngulf")
+            # تأكيد بالحجم: حجم الشمعة الحالية > المتوسط
+            vol_ma_check = float(df["volume"].iloc[i-10:i].mean())
+            if float(row["volume"]) > vol_ma_check * 1.2:
+                score += 25; reasons.append("BullishEngulf")
+            else:
+                score += 10; reasons.append("BullishEngulf_weak")
 
         # جسم الشمعة
         rng = max(float(row["high"]) - float(row["low"]), 1e-9)
@@ -168,9 +173,13 @@ def _check_entry(df: pd.DataFrame, i: int) -> Optional[Dict]:
         score, pattern = _score(df, i)
         if score < BT_SCORE_MIN: return None
 
-        # فلتر RVOL
+        # [FIX] رفض Generic — يجب أن يكون النمط واضحاً
+        if pattern == "Generic":
+            return None
+
+        # فلتر RVOL — رُفع من 0.85 إلى 1.1 لجودة أعلى
         rvol = float(row["rvol"])
-        if rvol < 0.85: return None
+        if rvol < 1.1: return None
 
         # تحديد نوع الدخول
         hi_range = float(df["high"].iloc[i-10:i-1].max())
