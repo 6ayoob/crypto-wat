@@ -115,7 +115,7 @@ def fetch_symbol_4h(symbol, total_bars_4h=1440, force_refresh=False):
                 return data
         except: pass
 
-    num_batches = (total_bars_1h + BARS_PER_REQ - 1) // BARS_PER_REQ
+    num_batches = (total_bars_4h + BARS_PER_REQ - 1) // BARS_PER_REQ
     all_candles = []
     after_ts    = None
 
@@ -129,14 +129,14 @@ def fetch_symbol_4h(symbol, total_bars_4h=1440, force_refresh=False):
         all_candles.extend(batch)
         after_ts = min(c[0] for c in batch)
         time.sleep(DELAY_SEC)
-        if len(all_candles) >= total_bars_1h:
+        if len(all_candles) >= total_bars_4h:
             break
 
     if not all_candles:
         return None
 
     all_candles.sort(key=lambda x: x[0])
-    all_candles = all_candles[-total_bars_1h:]
+    all_candles = all_candles[-total_bars_4h:]
 
     try:
         with open(cpath, "w") as f:
