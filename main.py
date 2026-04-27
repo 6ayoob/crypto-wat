@@ -1,12 +1,6 @@
 # -*- coding: utf-8 -*-
 """
-main.py — نسخة محسّنة v2.0
-التغييرات الرئيسية:
-- إصلاح loop الإدارة: كل base يُدار مرة واحدة فقط (بدل 5 مرات)
-- تفعيل variants بشكل صحيح في check_signal
-- SCAN_INTERVAL مناسب لعدد الرموز الجديد (35 بدل 300)
-- إضافة break-even notification
-- تنظيف الكود وتبسيط المنطق
+main.py — نسخة محسّنة v3.0
 """
 
 import os
@@ -19,8 +13,19 @@ from time import perf_counter
 from datetime import datetime, timezone, timedelta
 
 import requests
+
+# ================== العقل المدبر + AI ==================
 from brain_scheduler import start_brain_scheduler
-start_brain_scheduler()  # يبدأ العقل في الخلفية
+start_brain_scheduler()
+
+try:
+    from ai_analyst import start_ai_scheduler
+    start_ai_scheduler()
+    print("[init] ✅ AI Analyst بدأ", flush=True)
+except Exception as e:
+    print(f"[init] ⚠️ AI Analyst لم يبدأ: {e}", flush=True)
+
+# ================== الإعدادات ==================
 from config import (
     TELEGRAM_TOKEN, TELEGRAM_CHAT_ID,
     SYMBOLS, STRAT_LTF_TIMEFRAME, STRAT_HTF_TIMEFRAME,
@@ -46,15 +51,12 @@ except Exception:
         fetch_balance = lambda asset=None: 0.0
         fetch_price   = lambda symbol=None: 0.0
     _HAS_CACHE = False
-    from ai_analyst import start_ai_scheduler
-start_ai_scheduler()
 
 # ================== إعدادات الحلقة ==================
-# مناسبة لـ 35 رمز بدل 300
-SCAN_INTERVAL_SEC   = int(os.getenv("SCAN_INTERVAL_SEC",   "30"))   # كل 30 ثانية كافٍ
-MANAGE_INTERVAL_SEC = int(os.getenv("MANAGE_INTERVAL_SEC", "15"))   # كل 15 ثانية
+SCAN_INTERVAL_SEC   = int(os.getenv("SCAN_INTERVAL_SEC",   "30"))
+MANAGE_INTERVAL_SEC = int(os.getenv("MANAGE_INTERVAL_SEC", "15"))
 LOOP_SLEEP_SEC      = float(os.getenv("LOOP_SLEEP_SEC",    "1.0"))
-SYMBOL_SLEEP_SEC    = float(os.getenv("SYMBOL_SLEEP_SEC",  "0.10")) # تأخير بين الرموز
+SYMBOL_SLEEP_SEC    = float(os.getenv("SYMBOL_SLEEP_SEC",  "0.10"))
 
 ENABLE_DAILY_REPORT = os.getenv("ENABLE_DAILY_REPORT", "1").lower() in ("1","true","yes")
 DAILY_REPORT_HOUR   = int(os.getenv("DAILY_REPORT_HOUR",   "23"))
@@ -72,7 +74,6 @@ STOP_DEBOUNCE_WINDOW_SEC = int(os.getenv("STOP_DEBOUNCE_WINDOW_SEC", "5"))
 
 SINGLETON_PIDFILE = os.getenv("PIDFILE", "").strip()
 
-# بوابة السيولة
 EXCHANGE_MIN_NOTIONAL_USDT = float(os.getenv("EXCHANGE_MIN_NOTIONAL_USDT", "5.0"))
 BALANCE_RESERVE_USDT       = float(os.getenv("BALANCE_RESERVE_USDT",       "5.0"))
 FEE_BUF_BPS                = float(os.getenv("FEE_BUF_BPS", "20"))
@@ -189,11 +190,9 @@ _last_stop_ts = 0.0
 def _handle_stop(signum, frame) -> None:
     global _stop_flag, _last_stop_ts
     now = time.time()
-
     if STOP_POLICY == "ignore":
         _print(f"⏸️ إشارة {signum} تم تجاهلها.")
         return
-
     if STOP_POLICY == "debounce":
         if (now - _last_stop_ts) <= STOP_DEBOUNCE_WINDOW_SEC:
             _stop_flag = True
@@ -202,7 +201,6 @@ def _handle_stop(signum, frame) -> None:
             _last_stop_ts = now
             tg_info(f"⚠️ إشارة إيقاف. أرسل مرة ثانية خلال {STOP_DEBOUNCE_WINDOW_SEC}ث للتأكيد.", silent=True)
         return
-
     _stop_flag = True
     tg_info("⏹️ جاري الإيقاف…", silent=True)
 
@@ -224,21 +222,14 @@ def _can_open() -> bool:
 
 # ================== اكتشاف أرصدة Spot ==================
 def _discover_spot_positions(min_usd: float = 5.0) -> None:
-    """
-    ينشئ ملفات مراكز مستوردة لأي رصيد Spot موجود.
-    يعمل على BASE فريد فقط (لا تكرار).
-    """
     seen_bases = set()
     for symbol in SYMBOLS:
         base = symbol.split("#")[0]
         if base in seen_bases:
             continue
         seen_bases.add(base)
-
-        # تخطّى إن وجد مركز بالفعل
         if load_position(base) is not None:
             continue
-
         coin = base.split("/")[0]
         try:
             qty = float(fetch_balance(coin) or 0.0)
@@ -261,25 +252,19 @@ def _discover_spot_positions(min_usd: float = 5.0) -> None:
         except Exception as e:
             _print(f"[import] {base} error: {e}")
 
-# ================== إدارة المراكز — مُصلَحة ==================
+# ================== إدارة المراكز ==================
 def _manage_all_positions() -> None:
-    """
-    إدارة كل المراكز المفتوحة.
-    الإصلاح الرئيسي: كل base يُدار مرة واحدة فقط (بدل 5 مرات مع variants).
-    """
     seen_bases = set()
     for symbol in SYMBOLS:
         if _stop_flag:
             break
         base = symbol.split("#")[0]
         if base in seen_bases:
-            continue              # ← تجنب التكرار
+            continue
         seen_bases.add(base)
-
         pos = load_position(base)
         if pos is None:
-            continue              # لا مركز مفتوح
-
+            continue
         try:
             result = manage_position(base)
             if result:
@@ -291,41 +276,27 @@ def _manage_all_positions() -> None:
                     tg_info(text or f"✅ إغلاق: <b>{base}</b>", parse_mode="HTML", silent=False)
         except Exception as e:
             _print(f"[manage] {base} error: {e}")
-
         time.sleep(0.05)
 
-# ================== فحص الإشارات — مُصلَح ==================
+# ================== فحص الإشارات ==================
 def _scan_signals() -> None:
-    """
-    فحص إشارات الدخول.
-    الإصلاح الرئيسي: يمرر الـ symbol الكامل (مع #variant) لـ check_signal
-    حتى تعمل الـ variants بشكل صحيح.
-    """
     seen_bases = set()
-
     for symbol in SYMBOLS:
         if _stop_flag:
             break
-
         base = symbol.split("#")[0]
-
-        # تجنب فتح أكثر من مركز لنفس الـ base
         if base in seen_bases:
             continue
         if load_position(base) is not None:
             seen_bases.add(base)
             continue
-
         if not _can_open():
             _print(f"[scan] MAX_OPEN_POSITIONS={MAX_OPEN_POSITIONS} reached.")
             break
-
         if not _has_liquidity():
             _print(f"[scan] رصيد غير كافٍ — إيقاف الفحص.")
             break
-
         try:
-            # ← الإصلاح: نمرر symbol الكامل (مع variant) لا base فقط
             sig = check_signal(symbol)
         except Exception as e:
             _print(f"[check_signal] {symbol} error: {e}")
@@ -341,12 +312,10 @@ def _scan_signals() -> None:
             try:
                 order, msg = execute_buy(base, sig if isinstance(sig, dict) else None)
                 if order:
-                    seen_bases.add(base)  # منع تكرار الدخول في نفس الجولة
-                    notify_text = msg if (msg and isinstance(msg, str)) else None
+                    seen_bases.add(base)
                     tg_info(
-                        notify_text or f"🚀 دخول: <b>{symbol}</b>",
-                        parse_mode="HTML",
-                        silent=False
+                        msg or f"🚀 دخول: <b>{symbol}</b>",
+                        parse_mode="HTML", silent=False
                     )
                     _print(f"[buy] ✅ {symbol} | {msg}")
                 else:
@@ -354,7 +323,6 @@ def _scan_signals() -> None:
             except Exception as e:
                 _print(f"[execute_buy] {symbol} error: {e}")
         else:
-            # طباعة سبب الرفض في وضع الـ debug
             try:
                 _, reasons = check_signal_debug(symbol)
                 if reasons:
@@ -371,7 +339,6 @@ def main() -> None:
     if not _acquire_pidfile(SINGLETON_PIDFILE):
         sys.exit(0)
 
-    # بدء كاش الأسعار الجماعي
     if _HAS_CACHE:
         try:
             start_tickers_cache(
@@ -381,25 +348,23 @@ def main() -> None:
         except Exception:
             pass
 
-    # اكتشاف أرصدة Spot موجودة
     try:
         _discover_spot_positions()
     except Exception as e:
         _print(f"[discovery] error: {e}")
 
-    # رسالة البدء
     try:
         bs   = breadth_status() or {}
         b_ok = "✅" if bs.get("ok") else "❌"
         b_r  = "—" if bs.get("ratio") is None else f"{bs['ratio']:.2f}"
         tg_info(
-            f"🚀 <b>تشغيل البوت v2.0</b>\n"
+            f"🚀 <b>تشغيل البوت v3.0</b>\n"
             f"📊 رموز: <b>{len(SYMBOLS)}</b> | HTF: <b>{STRAT_HTF_TIMEFRAME}</b> | LTF: <b>{STRAT_LTF_TIMEFRAME}</b>\n"
             f"📡 Breadth: <b>{b_r}</b> {b_ok} | رأس المال: <b>{_usdt_free():.2f}$</b>",
             parse_mode="HTML", silent=True
         )
     except Exception:
-        _print("🚀 تشغيل البوت v2.0")
+        _print("🚀 تشغيل البوت v3.0")
 
     _print(f"[init] SYMBOLS={len(SYMBOLS)} | SCAN={SCAN_INTERVAL_SEC}s | MANAGE={MANAGE_INTERVAL_SEC}s")
 
@@ -412,7 +377,6 @@ def main() -> None:
         while not _stop_flag:
             now = time.time()
 
-            # ── إدارة المراكز ──
             if now >= next_manage:
                 t0 = perf_counter()
                 try:
@@ -423,7 +387,6 @@ def main() -> None:
                     next_manage = time.time() + MANAGE_INTERVAL_SEC
                 _print(f"[manage] ⏱ {perf_counter()-t0:.2f}s")
 
-            # ── فحص الإشارات ──
             if now >= next_scan:
                 if not _has_liquidity():
                     _print(f"[scan] skip — رصيد {_usdt_free():.2f}$ < {_min_required():.2f}$")
@@ -438,12 +401,11 @@ def main() -> None:
                     finally:
                         dur = perf_counter() - t0
 
-                    # أداء الجولة
                     try:
-                        bs      = breadth_status() or {}
-                        b_r     = "—" if bs.get("ratio") is None else f"{bs['ratio']:.2f}"
-                        b_ok    = "✅" if bs.get("ok") else "❌"
-                        mf      = metrics_format()
+                        bs   = breadth_status() or {}
+                        b_r  = "—" if bs.get("ratio") is None else f"{bs['ratio']:.2f}"
+                        b_ok = "✅" if bs.get("ok") else "❌"
+                        mf   = metrics_format()
                         summary = (
                             f"⏱ <b>جولة انتهت</b> في {dur:.1f}s\n"
                             f"📡 Breadth: {b_r} {b_ok}\n"
@@ -457,7 +419,6 @@ def main() -> None:
 
                 next_scan = time.time() + SCAN_INTERVAL_SEC
 
-            # ── تقرير يومي ──
             if ENABLE_DAILY_REPORT:
                 try:
                     now_r   = _now_riyadh()
