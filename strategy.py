@@ -35,6 +35,24 @@ except ImportError:
                 "size_multiplier": 1.0, "max_open_positions_override": None,
                 "blocked_patterns": [], "preferred_modes": [], "notes": []}
 
+# [NEW M2] فلاتر الجودة
+try:
+    from signal_quality import run_quality_checks
+    QUALITY_AVAILABLE = True
+except ImportError:
+    QUALITY_AVAILABLE = False
+    def run_quality_checks(*a, **k):
+        return {"passed": True, "final_score": k.get("current_score", 50),
+                "block_reason": "", "details": {}, "score_adjustments": 0}
+
+# [NEW M3] Claude AI محلل
+try:
+    from ai_analyst import get_ai_directives as _get_ai_directives
+    AI_AVAILABLE = True
+except ImportError:
+    AI_AVAILABLE = False
+    def _get_ai_directives(): return {}
+
 from config import (
     TRADE_AMOUNT_USDT,
     MAX_OPEN_POSITIONS,
@@ -1239,7 +1257,21 @@ def check_signal(symbol: str):
     _brain_score    = _brain.get("score_threshold_override")
     _effective_score_thr = int(_brain_score) if _brain_score is not None else SCORE_THRESHOLD
 
-    # إذا العقل قال لا دخول
+    # [NEW M3] دمج توجيهات AI فوق العقل المدبر
+    _ai = _get_ai_directives() if AI_AVAILABLE else {}
+    if _ai:
+        # AI يتجاوز العقل إذا أعطى score أعلى
+        _ai_score = _ai.get("score_threshold_override")
+        if _ai_score is not None:
+            _effective_score_thr = max(_effective_score_thr, int(_ai_score))
+        # AI يمنع الدخول
+        if not _ai.get("entry_allowed", True):
+            _brain_entry_ok = False
+        # AI يضيف رموز محظورة
+        _ai_blocked = list(_ai.get("avoid_symbols", []))
+        _brain_blocked = list(set(_brain_blocked + _ai_blocked))
+
+    # إذا العقل أو AI قال لا دخول
     if not _brain_entry_ok:
         return _rej("brain_no_entry", regime=_brain.get("regime","?"))
 
@@ -1461,6 +1493,33 @@ def check_signal(symbol: str):
             # [NEW v4.2] فلتر الأنماط المحظورة من العقل
             if pattern in _brain_blocked:
                 return _rej("brain_blocked_pattern", pattern=pattern)
+
+            # [NEW M2] فلاتر الجودة الاحترافية
+            if QUALITY_AVAILABLE:
+                try:
+                    from strategy import count_open_positions, POSITIONS_DIR
+                    import os as _os
+                    _open_syms = [f.replace(".json","").replace("_","/",1)
+                                  for f in _os.listdir(POSITIONS_DIR)
+                                  if f.endswith(".json")]
+                except:
+                    _open_syms = []
+
+                _qc = run_quality_checks(
+                    symbol=base, df=df,
+                    current_price=float(price),
+                    atr=float(atr_val),
+                    tf=STRAT_LTF_TIMEFRAME,
+                    open_positions=_open_syms,
+                    current_score=int(score),
+                )
+                if not _qc["passed"]:
+                    return _rej(f"quality_{_qc['block_reason'][:20]}", reason=_qc["block_reason"])
+                # تحديث السكور بعد التعديلات
+                score = _qc["final_score"]
+                if int(score) < _effective_score_thr:
+                    return _rej("score_low_after_quality",
+                                score=score, need=_effective_score_thr)
             _pass("buy", mode=chosen_mode, score=int(score))
             _mark_signal_now(base)
             return {
@@ -2020,6 +2079,18 @@ def execute_buy(symbol, sig=None):
         _brain_max_pos = _b.get("max_open_positions_override")
         if _brain_max_pos is not None and count_open_positions() >= int(_brain_max_pos):
             return None, f"🧠 Brain: حد المراكز ({int(_brain_max_pos)}) — {_b.get('regime','?')}"
+
+    # [NEW M3] تطبيق size_multiplier من AI
+    if AI_AVAILABLE:
+        _ai_d = _get_ai_directives()
+        _ai_mult = float(_ai_d.get("size_multiplier", 1.0))
+        if _ai_mult != 1.0:
+            trade_usdt *= _ai_mult
+            sig["messages"]["ai_size"] = f"🤖 AI: size×{_ai_mult:.2f}"
+            logger.info(f"[execute_buy] 🤖 AI size×{_ai_mult:.2f} → {trade_usdt:.2f}$")
+        _ai_max_pos = _ai_d.get("max_open_positions_override")
+        if _ai_max_pos is not None and count_open_positions() >= int(_ai_max_pos):
+            return None, f"🤖 AI: حد المراكز ({int(_ai_max_pos)})"
 
     if TRADE_USDT_MAX > 0: trade_usdt = min(trade_usdt, TRADE_USDT_MAX)
     trade_usdt = max(trade_usdt, TRADE_USDT_MIN)
