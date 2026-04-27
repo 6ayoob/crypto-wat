@@ -150,22 +150,32 @@ TRADE_AMOUNT_USDT = TRADE_BASE_USDT  # alias للتوافق
 # 📈 الرموز
 # ===============================
 SEED_SYMBOLS: List[str] = [
-    # الماجورز
+    # الماجورز — سيولة عالية + حركة واضحة
     "BTC/USDT", "ETH/USDT", "BNB/USDT", "SOL/USDT", "XRP/USDT",
-    # ميد-كاب قوية
-    "ADA/USDT", "AVAX/USDT", "LINK/USDT", "DOT/USDT", "NEAR/USDT",
-    "ATOM/USDT", "ARB/USDT", "OP/USDT", "INJ/USDT", "APT/USDT",
+
+    # ميد-كاب قوية — أثبتت أداءً في Backtesting
+    "ADA/USDT", "AVAX/USDT", "LINK/USDT", "NEAR/USDT", "APT/USDT",
+    "ARB/USDT", "OP/USDT", "INJ/USDT", "SUI/USDT", "ONDO/USDT",
+
     # DeFi
     "AAVE/USDT", "UNI/USDT",
+
     # ميمز سيولة عالية
-    "DOGE/USDT", "SHIB/USDT", "PEPE/USDT",
-    # أخرى
-    "TRX/USDT", "LTC/USDT", "TON/USDT", "STX/USDT", "HBAR/USDT",
+    "DOGE/USDT", "PEPE/USDT",
+
+    # أثبتت أداءً جيداً في Backtesting
+    "KAT/USDT", "BASED/USDT", "MON/USDT",
+
+    # أخرى عالية السيولة
+    "TRX/USDT", "LTC/USDT", "TON/USDT", "ORDI/USDT", "HYPE/USDT",
+
+    # محذوف: USDG (مستقرة WR=0%), XAUT (ذهب WR=0%),
+    #         CHIP (بيانات قليلة), AXS (WR=18% ضعيف)
 ]
 
 AUTO_EXPAND_SYMBOLS  = bool(int(os.getenv("AUTO_EXPAND_SYMBOLS", "1")))
 TARGET_SYMBOLS_COUNT = int(os.getenv("TARGET_SYMBOLS_COUNT", "25"))
-MIN_USDT_VOL_24H     = float(os.getenv("MIN_USDT_VOL_24H", "15000000"))
+MIN_USDT_VOL_24H     = float(os.getenv("MIN_USDT_VOL_24H", "20000000"))  # رُفع لجودة أعلى
 DEBUG_CONFIG_SYMBOLS = bool(int(os.getenv("DEBUG_CONFIG_SYMBOLS", "1")))
 ENABLE_BRT_TOP_N     = int(os.getenv("ENABLE_BRT_TOP_N", "10"))
 
@@ -204,7 +214,7 @@ MAX_TRADES_PER_DAY = int(os.getenv("MAX_TRADES_PER_DAY", "15"))
 # ===============================
 # 🔢 [FIX-5] السكور — جودة أعلى
 # ===============================
-SCORE_THRESHOLD = int(os.getenv("SCORE_THRESHOLD", "55"))   # رُفع من 50 إلى 55
+SCORE_THRESHOLD = int(os.getenv("SCORE_THRESHOLD", "65"))   # رُفع من 55 إلى 65 بناءً على Backtesting
 
 # ===============================
 # 📡 تيليجرام
