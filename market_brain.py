@@ -307,6 +307,14 @@ def analyze_market_regime(btc_data: Optional[List]) -> Dict[str, Any]:
             strength = 0.4
             desc = f"سوق جانبي — ADX={adx:.0f} RSI={rsi:.0f}"
 
+        # جلب Breadth
+        breadth_val = None
+        try:
+            from strategy import _get_breadth_ratio_cached
+            breadth_val = _get_breadth_ratio_cached()
+        except:
+            pass
+
         return {
             "regime": regime,
             "strength": round(strength, 3),
@@ -316,6 +324,7 @@ def analyze_market_regime(btc_data: Optional[List]) -> Dict[str, Any]:
             "btc_trend": btc_trend,
             "btc_price": round(price_now, 2),
             "btc_ema50": round(ema50, 2),
+            "breadth_ratio": breadth_val,
             "description": desc
         }
 
@@ -459,6 +468,31 @@ def generate_directives(
 
     # ─── تعديلات بناءً على حالة السوق ───
 
+    # [FIX] فلتر Breadth الحرج — يتجاوز كل شيء آخر
+    breadth_ratio = regime_info.get("breadth_ratio")
+    if breadth_ratio is None:
+        # نحسبها من OHLCV إذا لم تكن موجودة
+        try:
+            from strategy import _get_breadth_ratio_cached
+            breadth_ratio = _get_breadth_ratio_cached()
+        except:
+            breadth_ratio = None
+
+    if breadth_ratio is not None:
+        if breadth_ratio < 0.20:
+            regime   = "CRASH"
+            entry_ok = False
+            size_mult= 0.0
+            notes.append(f"🚫 CRASH: Breadth={breadth_ratio:.2f} < 0.20 — إيقاف تام")
+        elif breadth_ratio < 0.35:
+            entry_ok  = False
+            size_mult = 0.0
+            notes.append(f"🚫 خطر: Breadth={breadth_ratio:.2f} < 0.35 — إيقاف")
+        elif breadth_ratio < 0.45:
+            size_mult = min(size_mult, 0.50)
+            score_thr = min(SCORE_MAX_CEILING, score_thr + 10)
+            notes.append(f"⚠️ Breadth={breadth_ratio:.2f} ضعيف — تقليص حاد")
+
     if regime == "CRASH":
         entry_ok  = False
         size_mult = 0.0
@@ -547,13 +581,41 @@ def generate_directives(
 #  القسم ٥: الحفظ والقراءة
 # ══════════════════════════════════════════════════════
 
+def _send_brain_telegram(state):
+    try:
+        import os as _o, requests as _r
+        tok = _o.getenv("TELEGRAM_TOKEN","")
+        cid = _o.getenv("TELEGRAM_CHAT_ID","")
+        if not (tok and cid and _o.getenv("STRAT_TG_SEND","0") in ("1","true","yes")):
+            return
+        regime = str(state.get("regime","?"))
+        br = state.get("breadth_ratio")
+        br_s = "{:.2f}".format(br) if br is not None else "?"
+        entry = "مسموح" if state.get("entry_allowed", True) else "ممنوع"
+        btc = int(state.get("btc_price", 0))
+        rsi = state.get("btc_rsi", 50)
+        sc  = state.get("score_threshold_override","?")
+        sz  = float(state.get("size_multiplier", 1.0))
+        tm  = _now().strftime("%H:%M")
+        text = "العقل المدبر: " + regime + "\n"
+        text += "BTC=" + str(btc) + "$ Breadth=" + br_s + "\n"
+        text += "RSI=" + str(rsi) + " score>=" + str(sc) + " size=" + "{:.2f}".format(sz) + "\n"
+        text += "دخول: " + entry + " | " + tm
+        _r.post("https://api.telegram.org/bot" + tok + "/sendMessage",
+                data={"chat_id": cid, "text": text, "disable_web_page_preview": True},
+                timeout=8)
+    except Exception:
+        pass
+
+
 def save_brain_state(state: Dict[str, Any]):
-    """حفظ حالة العقل في brain_state.json"""
     state["updated_at"] = _now_iso()
     _write_json(BRAIN_STATE_FILE, state)
-    logger.info(f"[brain] 💾 تم حفظ الحالة: {state.get('regime','?')} | size×{state.get('size_multiplier',1):.2f} | score≥{state.get('score_threshold_override','?')}")
-
-    # سجل تاريخي
+    logger.info("[brain] saved: %s size=%.2f score=%s",
+                state.get("regime","?"),
+                float(state.get("size_multiplier",1)),
+                state.get("score_threshold_override","?"))
+    _send_brain_telegram(state)
     log = _read_json(BRAIN_LOG_FILE, [])
     log.append({k: v for k, v in state.items() if k != "pattern_stats"})
     _write_json(BRAIN_LOG_FILE, log[-200:])
@@ -654,6 +716,7 @@ def run_brain_cycle():
         "btc_price":        regime_info.get("btc_price", 0.0),
         "volatility_ratio": regime_info.get("volatility_ratio", 1.0),
         "htf_relax":        regime_info.get("htf_relax", False),
+        "breadth_ratio":    regime_info.get("breadth_ratio", None),
         "pattern_stats":    perf_info.get("pattern_stats", {}),
         "mode_stats":       perf_info.get("mode_stats", {}),
     }
