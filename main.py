@@ -46,6 +46,8 @@ except Exception:
         fetch_balance = lambda asset=None: 0.0
         fetch_price   = lambda symbol=None: 0.0
     _HAS_CACHE = False
+    from ai_analyst import start_ai_scheduler
+start_ai_scheduler()
 
 # ================== إعدادات الحلقة ==================
 # مناسبة لـ 35 رمز بدل 300
