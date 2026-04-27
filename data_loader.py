@@ -1,13 +1,13 @@
 # -*- coding: utf-8 -*-
-# data_loader.py - جلب البيانات التاريخية (v3.0)
+# data_loader.py - جلب البيانات التاريخية (v3.1)
 #
 # الحل الاحترافي:
-# 1. جلب 1h من OKX (سنة كاملة = 8760 شمعة، OKX يسمحها)
-# 2. تحويل 1h → 15m اصطناعي (كل شمعة = 4 شموع)
-# النتيجة: 35,040 شمعة 15m = سنة كاملة حقيقية
+# 1. جلب 4h من OKX (8 أشهر = 1440 شمعة، الحد الأقصى المتاح)
+# 2. تحويل 4h → 15m اصطناعي (كل شمعة = 16 شمعة)
+# النتيجة: 23,040 شمعة 15m = 8 أشهر حقيقية
 
 from __future__ import annotations
-import os, json, time, logging, requests
+import os, json, time, logging, requests, math
 from typing import Dict, List, Optional
 
 logger = logging.getLogger("data_loader")
@@ -35,7 +35,7 @@ def _fetch_batch_1h(symbol, after_ts=None):
     try:
         params = {
             "instId": symbol.replace("/","-"),
-            "bar":    "1H",
+            "bar":    "4H",
             "limit":  str(BARS_PER_REQ),
         }
         if after_ts:
@@ -58,45 +58,54 @@ def _fetch_batch_1h(symbol, after_ts=None):
         logger.warning(f"[loader] {symbol} 1h: {e}")
         return []
 
-def _convert_1h_to_15m(candles_1h):
+def _convert_4h_to_15m(candles_4h):
     """
-    يحوّل شموع 1h إلى 15m اصطناعية.
-    كل شمعة 1h → 4 شموع 15m بتوزيع واقعي.
+    يحوّل شموع 4h إلى 15m اصطناعية.
+    كل شمعة 4h → 16 شمعة 15m بتوزيع واقعي.
     """
     result = []
-    for c in candles_1h:
+    interval = 15 * 60 * 1000  # 15 دقيقة بالمللي ثانية
+
+    for c in candles_4h:
         ts, o, h, l, close, vol = c[0], c[1], c[2], c[3], c[4], c[5]
-        interval = 15 * 60 * 1000  # 15 دقيقة بالمللي ثانية
+        n = 16  # عدد شموع 15m في كل 4h
 
-        # توزيع الحجم على 4 شموع
-        v1 = vol * 0.30
-        v2 = vol * 0.25
-        v3 = vol * 0.25
-        v4 = vol * 0.20
+        # توزيع الحركة: من Open إلى Close بشكل تدريجي مع تذبذب
+        prices = []
+        for i in range(n + 1):
+            t = i / n
+            # حركة تدريجية مع تذبذب بسيط
+            trend = o + (close - o) * t
+            wave  = (h - l) * 0.15 * math.sin(t * math.pi * 2)
+            prices.append(trend + wave)
 
-        # الشمعة الأولى: من Open نحو الاتجاه
-        mid = (o + close) / 2
-        c1_c = o + (close - o) * 0.3
-        result.append([ts,              o,   max(o,c1_c,h*0.4+o*0.6), min(o,c1_c,l*0.4+o*0.6), c1_c, v1])
+        # توزيع الحجم (أعلى في المنتصف)
+        vols = []
+        for i in range(n):
+            w = 1.0 + 0.5 * math.sin((i / n) * math.pi)
+            vols.append(w)
+        total_w = sum(vols)
+        vols = [v / total_w * vol for v in vols]
 
-        # الشمعة الثانية: تذبذب نحو الوسط
-        c2_c = o + (close - o) * 0.55
-        result.append([ts+interval,     c1_c, max(c1_c,c2_c,h*0.6+l*0.4), min(c1_c,c2_c,l*0.6+h*0.4), c2_c, v2])
-
-        # الشمعة الثالثة: نحو الإغلاق
-        c3_c = o + (close - o) * 0.80
-        result.append([ts+interval*2,   c2_c, max(c2_c,c3_c,h*0.8+l*0.2) if close > o else max(c2_c,c3_c), min(c2_c,c3_c,l*0.8+h*0.2) if close < o else min(c2_c,c3_c), c3_c, v3])
-
-        # الشمعة الرابعة: الإغلاق النهائي
-        result.append([ts+interval*3,   c3_c, max(c3_c,close,h), min(c3_c,close,l), close, v4])
+        for i in range(n):
+            bar_o = prices[i]
+            bar_c = prices[i + 1]
+            # High/Low مع هامش بسيط
+            margin = abs(h - l) * 0.05
+            bar_h = max(bar_o, bar_c) + margin
+            bar_l = min(bar_o, bar_c) - margin
+            # تأكد من عدم تجاوز حدود الشمعة الأصلية
+            bar_h = min(bar_h, h)
+            bar_l = max(bar_l, l)
+            result.append([ts + interval * i, bar_o, bar_h, bar_l, bar_c, vols[i]])
 
     result.sort(key=lambda x: x[0])
     return result
 
-def fetch_symbol_1h(symbol, total_bars_1h=8760, force_refresh=False):
+def fetch_symbol_4h(symbol, total_bars_4h=1440, force_refresh=False):
     """يجلب بيانات 1h كاملة (سنة)"""
     base  = symbol.split("#")[0]
-    cpath = _cache_path(base, "1h_raw")
+    cpath = _cache_path(base, "4h_raw")
 
     if not force_refresh and os.path.exists(cpath) and _is_fresh(cpath, 12):
         try:
@@ -115,7 +124,7 @@ def fetch_symbol_1h(symbol, total_bars_1h=8760, force_refresh=False):
     for batch_num in range(num_batches):
         batch = _fetch_batch_1h(base, after_ts)
         if not batch:
-            logger.warning(f"[loader] {base}: توقف عند دفعة {batch_num+1} ({len(all_candles)} شمعة)")
+            logger.warning(f"[loader] {base}: 4h توقف عند دفعة {batch_num+1} ({len(all_candles)} شمعة)")
             break
         all_candles.extend(batch)
         after_ts = min(c[0] for c in batch)
@@ -144,7 +153,7 @@ def fetch_symbol_data(symbol, tf=TIMEFRAME, total_bars=8640, force_refresh=False
     - ترجع شموع 15m
     """
     base  = symbol.split("#")[0]
-    cpath = _cache_path(base, "15m_converted")
+    cpath = _cache_path(base, "15m_from_4h")
 
     # قراءة من الكاش
     if not force_refresh and os.path.exists(cpath) and _is_fresh(cpath, 12):
@@ -157,20 +166,20 @@ def fetch_symbol_data(symbol, tf=TIMEFRAME, total_bars=8640, force_refresh=False
         except: pass
 
     # جلب 1h
-    bars_1h = max(2190, total_bars // 4)  # على الأقل 3 أشهر
-    data_1h = fetch_symbol_1h(base, bars_1h, force_refresh)
+    bars_4h = 1440  # على الأقل 3 أشهر
+    data_4h = fetch_symbol_4h(base, bars_4h, force_refresh)
 
-    if not data_1h or len(data_1h) < 50:
+    if not data_4h or len(data_4h) < 50:
         logger.warning(f"[loader] {base}: بيانات 1h غير كافية")
         return None
 
     # تحويل لـ 15m
-    data_15m = _convert_1h_to_15m(data_1h)
+    data_15m = _convert_4h_to_15m(data_4h)
 
     if not data_15m:
         return None
 
-    logger.info(f"[loader] {base}: {len(data_1h)} شمعة 1h → {len(data_15m)} شمعة 15m")
+    logger.info(f"[loader] {base}: {len(data_4h)} شمعة 4h → {len(data_15m)} شمعة 15m")
 
     # حفظ
     try:
@@ -223,7 +232,7 @@ def get_cache_info():
                 with open(path) as fp:
                     d = json.load(fp)
                 bars = len(d) if isinstance(d, list) else 0
-                sym  = f.replace("_15m_converted.json","").replace("_1h_raw.json","").replace("_","/",1)
+                sym  = f.replace("","").replace("","").replace("_","/",1)
                 info[f] = {"bars": bars, "size_kb": round(size,1), "age_hrs": round(age,1)}
             except: pass
     except: pass
