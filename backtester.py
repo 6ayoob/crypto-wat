@@ -26,7 +26,7 @@ BT_MAX_BARS_HOLD   = int(os.getenv("BT_MAX_BARS_HOLD",     "20"))
 BT_SL_ATR_MULT     = float(os.getenv("BT_SL_ATR_MULT",     "1.0"))
 BT_TP1_ATR_MULT    = float(os.getenv("BT_TP1_ATR_MULT",    "1.5"))
 BT_TP2_ATR_MULT    = float(os.getenv("BT_TP2_ATR_MULT",    "2.5"))
-BT_SCORE_MIN       = int(os.getenv("BT_SCORE_MIN",         "52"))  # توازن: يرفض الضعيف دون إغلاق الكل
+BT_SCORE_MIN       = int(os.getenv("BT_SCORE_MIN",         "45"))
 BT_MAX_CONCURRENT  = int(os.getenv("BT_MAX_CONCURRENT",    "5"))
 RESULTS_FILE       = os.getenv("BT_RESULTS_FILE",
                     "/opt/render/project/data/backtest_results.json")
@@ -173,13 +173,16 @@ def _check_entry(df: pd.DataFrame, i: int) -> Optional[Dict]:
         score, pattern = _score(df, i)
         if score < BT_SCORE_MIN: return None
 
-        # [FIX] رفض Generic و NR_Breakout — فاشلان في الـ Backtesting
-        if pattern in ("Generic", "NR_Breakout"):
+        # [FIX] رفض Generic فقط
+        if pattern == "Generic":
+            return None
+        # NR_Breakout يحتاج RVOL عالٍ للتأكيد
+        if pattern == "NR_Breakout" and rvol < 1.3:
             return None
 
         # فلتر RVOL
         rvol = float(row["rvol"])
-        if rvol < 0.90: return None
+        if rvol < 0.80: return None
 
         # تحديد نوع الدخول
         hi_range = float(df["high"].iloc[i-10:i-1].max())
