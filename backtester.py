@@ -26,7 +26,7 @@ BT_MAX_BARS_HOLD   = int(os.getenv("BT_MAX_BARS_HOLD",     "20"))
 BT_SL_ATR_MULT     = float(os.getenv("BT_SL_ATR_MULT",     "1.0"))
 BT_TP1_ATR_MULT    = float(os.getenv("BT_TP1_ATR_MULT",    "1.5"))
 BT_TP2_ATR_MULT    = float(os.getenv("BT_TP2_ATR_MULT",    "2.5"))
-BT_SCORE_MIN       = int(os.getenv("BT_SCORE_MIN",         "65"))  # رُفع من 45 بناءً على Backtesting
+BT_SCORE_MIN       = int(os.getenv("BT_SCORE_MIN",         "52"))  # توازن: يرفض الضعيف دون إغلاق الكل
 BT_MAX_CONCURRENT  = int(os.getenv("BT_MAX_CONCURRENT",    "5"))
 RESULTS_FILE       = os.getenv("BT_RESULTS_FILE",
                     "/opt/render/project/data/backtest_results.json")
@@ -177,9 +177,9 @@ def _check_entry(df: pd.DataFrame, i: int) -> Optional[Dict]:
         if pattern == "Generic":
             return None
 
-        # فلتر RVOL — رُفع من 0.85 إلى 1.1 لجودة أعلى
+        # فلتر RVOL
         rvol = float(row["rvol"])
-        if rvol < 1.1: return None
+        if rvol < 0.90: return None
 
         # تحديد نوع الدخول
         hi_range = float(df["high"].iloc[i-10:i-1].max())
