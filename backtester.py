@@ -173,8 +173,8 @@ def _check_entry(df: pd.DataFrame, i: int) -> Optional[Dict]:
         score, pattern = _score(df, i)
         if score < BT_SCORE_MIN: return None
 
-        # [FIX] رفض Generic — يجب أن يكون النمط واضحاً
-        if pattern == "Generic":
+        # [FIX] رفض Generic و NR_Breakout — فاشلان في الـ Backtesting
+        if pattern in ("Generic", "NR_Breakout"):
             return None
 
         # فلتر RVOL
