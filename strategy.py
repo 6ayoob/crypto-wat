@@ -544,34 +544,77 @@ def _opportunity_score(df, prev, closed):
         is_engulf = _bullish_engulf(prev, closed)
         is_nr_bo  = nr_recent and (close_v > hi_range)
 
-        if is_nr_bo:
-            score += 25; why.append("NR_Breakout"); pattern = "NR_Breakout"
-        elif is_engulf:
-            score += 20; why.append("BullishEngulf"); pattern = pattern or "BullishEngulf"
+        # [FIX v3.0] NR_Breakout — يتطلب RVOL عالٍ للتأكيد
+        if is_nr_bo and rvol >= 1.5:
+            score += 30; why.append("NR_Breakout_Confirmed"); pattern = "NR_Breakout"
+        elif is_nr_bo:
+            score += 10; why.append("NR_Breakout_Weak")  # ضعيف بدون حجم
 
+        # [FIX v3.0] BullishEngulf — يتطلب حجم + موقع جيد
+        if is_engulf and not is_nr_bo:
+            try:
+                vol_ma = float(df["volume"].iloc[-10:-1].mean())
+                vol_cur = float(closed.get("volume", 0) or 0)
+                if vol_cur > vol_ma * 1.3 and above_50:
+                    score += 25; why.append("BullishEngulf_Strong"); pattern = "BullishEngulf"
+                elif vol_cur > vol_ma * 1.0 and above_50:
+                    score += 12; why.append("BullishEngulf_OK"); pattern = "BullishEngulf"
+                else:
+                    score += 3; why.append("BullishEngulf_Weak")
+            except:
+                score += 12; why.append("BullishEngulf"); pattern = "BullishEngulf"
+
+        # جسم الشمعة
         try:
             rng  = max(float(closed["high"]) - float(closed["low"]), 1e-9)
             body = abs(close_v - open_v)
-            if body / rng >= 0.65 and close_v > open_v:
-                score += 8; why.append("StrongBody≥65%")
+            if body / rng >= 0.70 and close_v > open_v:
+                score += 10; why.append("StrongBody≥70%")
+            elif body / rng >= 0.55 and close_v > open_v:
+                score += 5; why.append("GoodBody≥55%")
         except: pass
 
+        # [FIX v3.0] قرب من مستوى دعم حقيقي
         try:
             atr_avg = float(
                 (df["high"]-df["low"]).rolling(14, min_periods=5).mean().iloc[-2])
+            # قرب EMA أو VWAP
             for ref_key in ("ema50","vwap","ema21"):
                 ref = closed.get(ref_key)
                 if ref is not None and math.isfinite(float(ref)):
-                    if abs(close_v - float(ref)) <= 0.3 * atr_avg:
-                        score += 10; why.append(f"NearValue({ref_key})"); break
+                    dist = abs(close_v - float(ref))
+                    if dist <= 0.2 * atr_avg:
+                        score += 12; why.append(f"VeryNear({ref_key})"); break
+                    elif dist <= 0.4 * atr_avg:
+                        score += 6; why.append(f"Near({ref_key})"); break
         except: pass
 
+        # [FIX v3.0] RSI — نطاق أضيق للجودة
         try:
             rsi_v = float(closed.get("rsi", 50))
-            if 50 <= rsi_v <= 68:
-                score += 10; why.append(f"RSI_Healthy({rsi_v:.0f})")
-            elif 68 < rsi_v <= 75:
-                score += 4;  why.append(f"RSI_Warm({rsi_v:.0f})")
+            if 52 <= rsi_v <= 65:
+                score += 12; why.append(f"RSI_Ideal({rsi_v:.0f})")
+            elif 48 <= rsi_v < 52 or 65 < rsi_v <= 70:
+                score += 5; why.append(f"RSI_OK({rsi_v:.0f})")
+            elif rsi_v > 70:
+                score -= 5; why.append(f"RSI_High({rsi_v:.0f})")
+        except: pass
+
+        # [FIX v3.0] تسارع الزخم — MACD أو EMA crossover
+        try:
+            ema9  = closed.get("ema9")
+            ema21 = closed.get("ema21")
+            if ema9 and ema21:
+                if float(ema9) > float(ema21) and above_50:
+                    score += 8; why.append("EMA9>21_Bullish")
+        except: pass
+
+        # [FIX v3.0] خصم إذا السعر بعيد عن EMA100 كثيراً (exhaustion)
+        try:
+            if ema100_v and atr_avg > 0:
+                dist_pct = (close_v - float(ema100_v)) / float(ema100_v)
+                if dist_pct > 0.06:
+                    score -= 10; why.append(f"TooFarEMA100({dist_pct:.1%})")
         except: pass
 
     except: pass
@@ -1494,6 +1537,10 @@ def check_signal(symbol: str):
             if pattern in _brain_blocked:
                 return _rej("brain_blocked_pattern", pattern=pattern)
 
+            # [FIX v3.0] حظر Generic نهائياً — يجب أن يكون النمط واضحاً
+            if pattern == "Generic":
+                return _rej("generic_pattern_blocked", pattern=pattern)
+
             # [NEW M2] فلاتر الجودة الاحترافية
             if QUALITY_AVAILABLE:
                 try:
@@ -1617,21 +1664,69 @@ def _build_entry_plan(symbol, sig=None):
         majors  = {s.strip().upper() for s in os.getenv("MAJORS","BTC,ETH,BNB,SOL").split(",") if s.strip()}
         if base.split("/")[0].upper() in majors:
             sl_mult *= float(os.getenv("SL_MULT_MAJORS","1.25"))
-        sl = float(price - sl_mult*atr_abs)
+        sl_atr = float(price - sl_mult*atr_abs)
+
+        # [FIX v3.0] SL هيكلي — أدنى نقطة في آخر 10 شموع
+        try:
+            _df_sl = get_ohlcv_cached(base, LTF_TIMEFRAME, 30)
+            if _df_sl is not None and len(_df_sl) >= 12:
+                _recent_low = float(_df_sl["low"].iloc[-12:-1].min())
+                sl_struct   = _recent_low * 0.998  # هامش 0.2% تحت أدنى نقطة
+                # استخدم الهيكلي إذا كان أقرب للسعر (حماية أفضل)
+                if sl_struct > sl_atr and sl_struct < price * 0.99:
+                    sl = sl_struct
+                else:
+                    sl = sl_atr
+            else:
+                sl = sl_atr
+        except:
+            sl = sl_atr
+
     elif mgmt.get("SL") == "pct":
         sl = float(price*(1.0-float(mgmt.get("SL_PCT",0.02))))
     else:
         sl = float(price - 1.0*atr_abs)
 
-    tps = []
+    # تأكد SL لا يتجاوز 8% خسارة
+    sl = max(float(sl), float(price) * 0.92)
+
+    # TP بالـ ATR (الافتراضي)
+    tps_atr = []
     if ENABLE_MULTI_TARGETS:
         mults = [float(mgmt[k]) for k in ("TP1_ATR","TP2_ATR","TP3_ATR") if k in mgmt]
         if not mults: mults = list(TP_ATR_MULTS_TREND)[:3]
         for m in mults[:MAX_TP_COUNT]:
-            tps.append(float(price+float(m)*atr_abs))
+            tps_atr.append(float(price+float(m)*atr_abs))
     else:
-        tps.append(float(price+float(mgmt.get("TP1_ATR",1.2))*atr_abs))
-        tps.append(float(price+float(mgmt.get("TP2_ATR",2.2))*atr_abs))
+        tps_atr.append(float(price+float(mgmt.get("TP1_ATR",1.2))*atr_abs))
+        tps_atr.append(float(price+float(mgmt.get("TP2_ATR",2.2))*atr_abs))
+
+    # [FIX v3.0] TP هيكلي — أقرب مقاومة حقيقية
+    tps = tps_atr
+    try:
+        _df_tp = get_ohlcv_cached(base, LTF_TIMEFRAME, 50)
+        if _df_tp is not None and len(_df_tp) >= 20:
+            _highs = _df_tp["high"].iloc[-20:-1]
+            _resistances = []
+            for _i in range(2, len(_highs)-2):
+                _h = float(_highs.iloc[_i])
+                if (_h > float(_highs.iloc[_i-1]) and _h > float(_highs.iloc[_i-2]) and
+                    _h > float(_highs.iloc[_i+1]) and _h > float(_highs.iloc[_i+2])):
+                    if _h > price * 1.003:
+                        _resistances.append(_h)
+            if _resistances:
+                _resistances.sort()
+                _risk = price - sl
+                _tp1_struct = _resistances[0]
+                # استخدم الهيكلي فقط إذا RR >= 1.2
+                if _risk > 0 and (_tp1_struct - price) / _risk >= 1.2:
+                    tps = []
+                    for _r in _resistances[:MAX_TP_COUNT]:
+                        tps.append(float(_r))
+                    if len(tps) < 2:
+                        tps.append(float(price + float(mgmt.get("TP2_ATR",2.2))*atr_abs))
+    except:
+        tps = tps_atr
 
     tps = sorted(tps)
     score_for_partials = int(sig.get("score",SCORE_THRESHOLD))
