@@ -1012,14 +1012,14 @@ NEW_SCALP_OVERRIDES = {
     "HYBRID_ORDER":["breakout","pullback"],"PULLBACK_VALUE_REF":"vwap",
     "PULLBACK_CONFIRM":"bos","RVOL_MIN":RVOL_MIN_NEW,"ATR_MIN_FOR_TREND":ATR_MIN_NEW,
     "USE_FIB":True,"BREAKOUT_BUFFER_LTF":0.0018,"RSI_GATE_POLICY":"lenient",
-    "USE_ATR_SL_TP":True,"SL_ATR_MULT":0.9,"TP1_ATR_MULT":1.2,"TP2_ATR_MULT":2.2,
+    "USE_ATR_SL_TP":True,"SL_ATR_MULT":0.9,"TP1_ATR_MULT":1.5,"TP2_ATR_MULT":3.0,
     "TRAIL_AFTER_TP1":True,"TRAIL_ATR_MULT":1.0,"LOCK_MIN_PROFIT_PCT":0.003,
     "MAX_HOLD_HOURS":6,"SYMBOL_COOLDOWN_MIN":8,
 }
 BRT_OVERRIDES = {
     "ENTRY_MODE":"breakout","RVOL_MIN":RVOL_MIN_BRT,"ATR_MIN_FOR_TREND":ATR_MIN_BRT,
     "RSI_GATE_POLICY":"balanced","USE_ATR_SL_TP":True,
-    "SL_ATR_MULT":0.9,"TP1_ATR_MULT":1.4,"TP2_ATR_MULT":2.4,
+    "SL_ATR_MULT":0.9,"TP1_ATR_MULT":1.6,"TP2_ATR_MULT":3.0,
     "TRAIL_AFTER_TP1":True,"TRAIL_ATR_MULT":1.1,
     "LOCK_MIN_PROFIT_PCT":0.004,"MAX_HOLD_HOURS":8,"SYMBOL_COOLDOWN_MIN":10,
 }
@@ -1027,26 +1027,26 @@ SRR_OVERRIDES = {
     "ENTRY_MODE":"pullback","PULLBACK_VALUE_REF":"ema21",
     "PULLBACK_CONFIRM":"bullish_engulf","RVOL_MIN":1.20,"ATR_MIN_FOR_TREND":0.0018,
     "RSI_GATE_POLICY":"balanced","USE_ATR_SL_TP":True,
-    "SL_ATR_MULT":0.9,"TP1_ATR_MULT":1.2,"TP2_ATR_MULT":2.2,
+    "SL_ATR_MULT":0.9,"TP1_ATR_MULT":1.5,"TP2_ATR_MULT":3.0,
     "TRAIL_AFTER_TP1":True,"TRAIL_ATR_MULT":1.0,
     "LOCK_MIN_PROFIT_PCT":0.004,"MAX_HOLD_HOURS":8,"SYMBOL_COOLDOWN_MIN":10,
 }
 VBR_OVERRIDES = {
     "ENTRY_MODE":"pullback","RVOL_MIN":1.2,"ATR_MIN_FOR_TREND":0.0018,
     "RSI_GATE_POLICY":"balanced","USE_ATR_SL_TP":True,
-    "SL_ATR_MULT":0.8,"TP1_ATR_MULT":1.2,"TP2_ATR_MULT":2.0,
+    "SL_ATR_MULT":0.8,"TP1_ATR_MULT":1.5,"TP2_ATR_MULT":2.8,
     "TRAIL_AFTER_TP1":True,"TRAIL_ATR_MULT":1.0,
     "LOCK_MIN_PROFIT_PCT":0.003,"MAX_HOLD_HOURS":6,"SYMBOL_COOLDOWN_MIN":8,
 }
 
 PER_STRAT_MGMT = {
-    "new":  {"SL":"atr","SL_MULT":0.9,"TP1":"sr_or_atr","TP1_ATR":1.2,"TP2_ATR":2.2,
+    "new":  {"SL":"atr","SL_MULT":0.9,"TP1":"sr_or_atr","TP1_ATR":1.5,"TP2_ATR":3.0,
              "TRAIL_AFTER_TP1":True,"TRAIL_ATR":1.0,"TIME_HRS":6},
     "old":  {"SL":"pct","SL_PCT":0.02,"TP1_PCT":0.03,"TP2_PCT":0.06,
              "TRAIL_AFTER_TP1":False,"TIME_HRS":12},
     "brt":  {"SL":"atr_below_retest","SL_MULT":1.0,"TP1":"range_or_atr",
-             "TP1_ATR":1.5,"TP2_ATR":2.5,"TRAIL_AFTER_TP1":True,"TRAIL_ATR":0.9,"TIME_HRS":8},
-    "srr":  {"SL":"atr","SL_MULT":0.9,"TP1":"sr_or_atr","TP1_ATR":1.2,"TP2_ATR":2.2,
+             "TP1_ATR":1.8,"TP2_ATR":3.2,"TRAIL_AFTER_TP1":True,"TRAIL_ATR":0.9,"TIME_HRS":8},
+    "srr":  {"SL":"atr","SL_MULT":0.9,"TP1":"sr_or_atr","TP1_ATR":1.5,"TP2_ATR":3.0,
              "TRAIL_AFTER_TP1":True,"TRAIL_ATR":1.0,"TIME_HRS":8},
     "vbr":  {"SL":"atr","SL_MULT":1.0,"TP1":"vwap_or_sr","TP2_ATR":1.8,
              "TRAIL_AFTER_TP1":True,"TRAIL_ATR":0.8,"TIME_HRS":3},
@@ -1698,8 +1698,8 @@ def _build_entry_plan(symbol, sig=None):
         for m in mults[:MAX_TP_COUNT]:
             tps_atr.append(float(price+float(m)*atr_abs))
     else:
-        tps_atr.append(float(price+float(mgmt.get("TP1_ATR",1.2))*atr_abs))
-        tps_atr.append(float(price+float(mgmt.get("TP2_ATR",2.2))*atr_abs))
+        tps_atr.append(float(price+float(mgmt.get("TP1_ATR",1.5))*atr_abs))
+        tps_atr.append(float(price+float(mgmt.get("TP2_ATR",3.0))*atr_abs))
 
     # [FIX v3.0] TP هيكلي — أقرب مقاومة حقيقية
     tps = tps_atr
