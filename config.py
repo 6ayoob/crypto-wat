@@ -227,7 +227,8 @@ STRAT_TG_SEND = bool(int(os.getenv("STRAT_TG_SEND", "1")))
 _STABLE_BASES = {
     "USDT","USDC","DAI","FDUSD","TUSD","PYUSD",
     "EUR","TRY","BRL","AED","GBP","JPY",
-    "USDG","PAXG","XAUT"  # مستقرة وذهب — لا تتحرك بشكل تداولي
+    "USDG","PAXG","XAUT",  # مستقرة وذهب
+    "RLUSD","USDY","FDUSD","ZUSD","GUSD"  # مستقرات إضافية
 }
 _LEVERAGED_SUFFIXES = ("3L","3S","5L","5S","2L","2S","10L","10S")
 OKX_BASE    = "https://www.okx.com"
