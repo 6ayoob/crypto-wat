@@ -136,7 +136,7 @@ try:
     print(f"[strategy] ✅ مسارات دائمة: {POSITIONS_DIR}", flush=True)
 except ImportError:
     POSITIONS_DIR         = "positions"
-    CLOSED_POSITIONS_FILE = "/opt/render/project/data/closed_positions.json"
+    CLOSED_POSITIONS_FILE = "closed_positions.json"
     RISK_STATE_FILE       = "risk_state.json"
     DUST_LOG_FILE         = "dust_cleaned.json"
     print("[strategy] ⚠️ paths.py غير موجود — استخدام المسارات المحلية", flush=True)
@@ -182,7 +182,7 @@ DRY_RUN           = _env_bool("DRY_RUN", False)
 # ===== Early Scout =====
 EARLY_SCOUT_ENABLE       = _env_bool("EARLY_SCOUT_ENABLE", True)
 EARLY_SCOUT_SIZE_MULT    = _env_float("EARLY_SCOUT_SIZE_MULT", 0.35)
-EARLY_SCOUT_SCORE_MIN    = _env_int("EARLY_SCOUT_SCORE_MIN",   30)
+EARLY_SCOUT_SCORE_MIN    = _env_int("EARLY_SCOUT_SCORE_MIN",   50)  # [FIX v3.3] رُفع من 30
 EARLY_SCOUT_MAX_ATR_DIST = _env_float("EARLY_SCOUT_MAX_ATR_DIST", 0.5)
 EARLY_SCOUT_BR_MIN       = _env_float("EARLY_SCOUT_BR_MIN", 0.55)
 
@@ -550,19 +550,22 @@ def _opportunity_score(df, prev, closed):
         elif is_nr_bo:
             score += 10; why.append("NR_Breakout_Weak")  # ضعيف بدون حجم
 
-        # [FIX v3.0] BullishEngulf — يتطلب حجم + موقع جيد
+        # [FIX v3.3] BullishEngulf — Strong فقط يحصل على pattern
         if is_engulf and not is_nr_bo:
             try:
                 vol_ma = float(df["volume"].iloc[-10:-1].mean())
                 vol_cur = float(closed.get("volume", 0) or 0)
                 if vol_cur > vol_ma * 1.3 and above_50:
                     score += 25; why.append("BullishEngulf_Strong"); pattern = "BullishEngulf"
-                elif vol_cur > vol_ma * 1.0 and above_50:
-                    score += 12; why.append("BullishEngulf_OK"); pattern = "BullishEngulf"
+                elif vol_cur > vol_ma * 1.1 and above_50:
+                    score += 10; why.append("BullishEngulf_OK")
+                    # لا pattern — يحتاج حجم أقوى
                 else:
-                    score += 3; why.append("BullishEngulf_Weak")
+                    score += 2; why.append("BullishEngulf_Weak")
+                    # لا pattern — ضعيف جداً
             except:
-                score += 12; why.append("BullishEngulf"); pattern = "BullishEngulf"
+                score += 10; why.append("BullishEngulf")
+                # لا pattern عند فشل الحساب
 
         # جسم الشمعة
         try:
@@ -589,15 +592,17 @@ def _opportunity_score(df, prev, closed):
                         score += 6; why.append(f"Near({ref_key})"); break
         except: pass
 
-        # [FIX v3.0] RSI — نطاق أضيق للجودة
+        # [FIX v3.3] RSI — نقاط أكثر واقعية
         try:
             rsi_v = float(closed.get("rsi", 50))
-            if 52 <= rsi_v <= 65:
-                score += 12; why.append(f"RSI_Ideal({rsi_v:.0f})")
-            elif 48 <= rsi_v < 52 or 65 < rsi_v <= 70:
-                score += 5; why.append(f"RSI_OK({rsi_v:.0f})")
-            elif rsi_v > 70:
-                score -= 5; why.append(f"RSI_High({rsi_v:.0f})")
+            if 52 <= rsi_v <= 63:
+                score += 8; why.append(f"RSI_Ideal({rsi_v:.0f})")
+            elif 48 <= rsi_v < 52 or 63 < rsi_v <= 68:
+                score += 3; why.append(f"RSI_OK({rsi_v:.0f})")
+            elif rsi_v > 68:
+                score -= 8; why.append(f"RSI_High({rsi_v:.0f})")
+            elif rsi_v < 45:
+                score -= 5; why.append(f"RSI_Low({rsi_v:.0f})")
         except: pass
 
         # [FIX v3.0] تسارع الزخم — MACD أو EMA crossover
@@ -1705,9 +1710,9 @@ def _build_entry_plan(symbol, sig=None):
     # [FIX v3.0] TP هيكلي — أقرب مقاومة حقيقية
     tps = tps_atr
     try:
-        _df_tp = get_ohlcv_cached(base, LTF_TIMEFRAME, 50)
-        if _df_tp is not None and len(_df_tp) >= 20:
-            _highs = _df_tp["high"].iloc[-20:-1]
+        _df_tp = get_ohlcv_cached(base, LTF_TIMEFRAME, 100)
+        if _df_tp is not None and len(_df_tp) >= 50:
+            _highs = _df_tp["high"].iloc[-50:-1]  # [FIX v3.3] رُفع من 20 لـ 50 شمعة
             _resistances = []
             for _i in range(2, len(_highs)-2):
                 _h = float(_highs.iloc[_i])
@@ -2153,15 +2158,18 @@ def execute_buy(symbol, sig=None):
         trade_usdt *= float(EARLY_SCOUT_SIZE_MULT)
         sig["messages"]["early_scout"] = f"🟢 Early Scout: size×{EARLY_SCOUT_SIZE_MULT:.2f}"
 
+    # [FIX v3.3] Aggressive Mode — حد أقصى صارم لمنع المخاطرة الزائدة
     if AGGR_MODE_ENABLE and not is_early_scout:
         try:
             sc_aggr = int(sig.get("score",0))
             mode    = str(sig.get("mode","")).lower()
             if sc_aggr >= AGGR_SCORE_MIN and ((not AGGR_BREAKOUT_ONLY) or mode=="breakout"):
-                aggr_mult  = 1.60 if sc_aggr >= AGGR_SCORE_STRONG else 1.35
-                max_allowed= TRADE_BASE_USDT*float(AGGR_MAX_RISK_MULT)
+                # [FIX] تقليل الـ multiplier وإضافة حد أقصى مطلق
+                aggr_mult  = 1.30 if sc_aggr >= AGGR_SCORE_STRONG else 1.15
+                max_allowed= min(TRADE_BASE_USDT*float(AGGR_MAX_RISK_MULT),
+                                 float(os.getenv("MAX_TRADE_USDT", "30")))
                 trade_usdt = min(trade_usdt*aggr_mult, max_allowed)
-                sig["messages"]["aggressive_clean"] = f"🔥 Aggressive: score={sc_aggr} → ≤x{AGGR_MAX_RISK_MULT:.2f}"
+                sig["messages"]["aggressive_clean"] = f"🔥 Aggressive: score={sc_aggr} → x{aggr_mult:.2f}"
         except: pass
 
     # [NEW v4.2] تطبيق size_multiplier من العقل المدبر
