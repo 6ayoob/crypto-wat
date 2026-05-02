@@ -1167,18 +1167,19 @@ def regime_thresholds(breadth_ratio, atrp_now):
     try:    br = max(0.0, min(1.0, float(breadth_ratio) if breadth_ratio is not None else 0.5))
     except: br = 0.5
 
+    # [FIX v3.2] خفض ATR للسوق الهادئ الصاعد
     if br >= 0.60:
-        thr = {"ATRP_MIN_MAJ":0.0015,"ATRP_MIN_ALT":0.0018,"ATRP_MIN_MICRO":0.0022,
-               "RVOL_NEED_BASE":1.10,"NOTIONAL_AVG_MIN":18000,
-               "NOTIONAL_MINBAR":max(14000.0,MIN_BAR_NOTIONAL_USD*0.6),"NEUTRAL_HTF_PASS":True}
+        thr = {"ATRP_MIN_MAJ":0.0009,"ATRP_MIN_ALT":0.0011,"ATRP_MIN_MICRO":0.0014,
+               "RVOL_NEED_BASE":1.00,"NOTIONAL_AVG_MIN":12000,
+               "NOTIONAL_MINBAR":max(8000.0,MIN_BAR_NOTIONAL_USD*0.4),"NEUTRAL_HTF_PASS":True}
     elif br >= 0.50:
-        thr = {"ATRP_MIN_MAJ":0.0018,"ATRP_MIN_ALT":0.0022,"ATRP_MIN_MICRO":0.0026,
-               "RVOL_NEED_BASE":1.20,"NOTIONAL_AVG_MIN":23000,
-               "NOTIONAL_MINBAR":max(19000.0,MIN_BAR_NOTIONAL_USD*0.9),"NEUTRAL_HTF_PASS":True}
+        thr = {"ATRP_MIN_MAJ":0.0011,"ATRP_MIN_ALT":0.0014,"ATRP_MIN_MICRO":0.0018,
+               "RVOL_NEED_BASE":1.10,"NOTIONAL_AVG_MIN":16000,
+               "NOTIONAL_MINBAR":max(12000.0,MIN_BAR_NOTIONAL_USD*0.6),"NEUTRAL_HTF_PASS":True}
     else:
-        thr = {"ATRP_MIN_MAJ":0.0022,"ATRP_MIN_ALT":0.0026,"ATRP_MIN_MICRO":0.0030,
-               "RVOL_NEED_BASE":1.28,"NOTIONAL_AVG_MIN":28000,
-               "NOTIONAL_MINBAR":max(24000.0,MIN_BAR_NOTIONAL_USD),"NEUTRAL_HTF_PASS":False}
+        thr = {"ATRP_MIN_MAJ":0.0014,"ATRP_MIN_ALT":0.0018,"ATRP_MIN_MICRO":0.0022,
+               "RVOL_NEED_BASE":1.20,"NOTIONAL_AVG_MIN":20000,
+               "NOTIONAL_MINBAR":max(16000.0,MIN_BAR_NOTIONAL_USD),"NEUTRAL_HTF_PASS":False}
 
     try:
         if float(atrp_now) >= 0.01:
