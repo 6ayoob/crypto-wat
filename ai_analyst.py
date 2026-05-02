@@ -96,13 +96,18 @@ def _build_context() -> str:
         pattern= t.get("pattern", "?")
         trades_summary += f"  • {symbol}: {pnl:+.2f}$ | {reason} | {pattern} | {mode}\n"
 
+    # تحقق من صحة البيانات
+    btc_px = float(brain.get('btc_price', 0) or 0)
+    btc_ok = btc_px > 1000  # BTC يجب أن يكون أكثر من 1000$
+
     context = f"""
 === حالة البوت الحالية ===
 الوقت: {_now_iso()}
+تحذير: {'بيانات BTC صحيحة' if btc_ok else 'BTC price = 0 — العقل لم يتحدث بعد، تجاهل هذا التحذير'}
 
 === العقل المدبر (market_brain) ===
 الحالة: {brain.get('regime', '?')}
-BTC: {brain.get('btc_price', 0):.0f}$ | RSI: {brain.get('btc_rsi', 50):.0f} | ADX: {brain.get('btc_adx', 20):.0f}
+BTC: {btc_px:.0f}$ | RSI: {brain.get('btc_rsi', 50):.0f} | ADX: {brain.get('btc_adx', 20):.0f}
 الاتجاه: {brain.get('btc_trend', '?')}
 التذبذب: {brain.get('volatility_ratio', 1):.2f}x
 الإعدادات الحالية: score≥{brain.get('score_threshold_override', 55)} | size×{brain.get('size_multiplier', 1):.2f}
@@ -144,6 +149,9 @@ def _call_claude(context: str) -> Optional[str]:
 - ركز على ما يجب تغييره الآن
 - إذا الوضع جيد → قل ذلك واذكر ما يمكن تحسينه
 - إذا هناك خطر → كن صريحاً وواضحاً
+- إذا BTC price = 0 → هذا يعني العقل المدبر لم يتحدث بعد، لا تعتبره مشكلة تقنية
+- لا تطلب إعادة تشغيل البوت أو فحص API إذا كانت الصفقات تعمل بشكل طبيعي
+- إذا دخل البوت صفقات → لا يوجد عطل تقني
 
 يجب أن يكون ردك بتنسيق JSON فقط، هكذا:
 {
