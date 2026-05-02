@@ -228,7 +228,8 @@ _STABLE_BASES = {
     "USDT","USDC","DAI","FDUSD","TUSD","PYUSD",
     "EUR","TRY","BRL","AED","GBP","JPY",
     "USDG","PAXG","XAUT",  # مستقرة وذهب
-    "RLUSD","USDY","FDUSD","ZUSD","GUSD"  # مستقرات إضافية
+    "RLUSD","USDY","FDUSD","ZUSD","GUSD",  # مستقرات إضافية
+    "WLFI"  # حركة ضيقة جداً — خسر صفقتين
 }
 _LEVERAGED_SUFFIXES = ("3L","3S","5L","5S","2L","2S","10L","10S")
 OKX_BASE    = "https://www.okx.com"
