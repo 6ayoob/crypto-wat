@@ -136,7 +136,7 @@ try:
     print(f"[strategy] ✅ مسارات دائمة: {POSITIONS_DIR}", flush=True)
 except ImportError:
     POSITIONS_DIR         = "positions"
-    CLOSED_POSITIONS_FILE = "closed_positions.json"
+    CLOSED_POSITIONS_FILE = "/opt/render/project/data/closed_positions.json"
     RISK_STATE_FILE       = "risk_state.json"
     DUST_LOG_FILE         = "dust_cleaned.json"
     print("[strategy] ⚠️ paths.py غير موجود — استخدام المسارات المحلية", flush=True)
