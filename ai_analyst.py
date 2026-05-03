@@ -153,19 +153,30 @@ def _call_claude(context: str) -> Optional[str]:
 - لا تطلب إعادة تشغيل البوت أو فحص API إذا كانت الصفقات تعمل بشكل طبيعي
 - إذا دخل البوت صفقات → لا يوجد عطل تقني
 
+قواعد entry_allowed — مهمة جداً:
+- entry_allowed يجب أن يكون TRUE في معظم الأوقات
+- ضع entry_allowed = FALSE فقط عند: RSI > 80 أو Breadth < 0.20 أو انهيار واضح
+- RSI بين 45-55 = طبيعي جداً → entry_allowed = TRUE
+- ADX < 25 = سوق هادئ لا خطر → entry_allowed = TRUE
+- RECOVERY regime = سوق ينتعش → entry_allowed = TRUE
+- بدلاً من منع الدخول، خفف size_multiplier إذا كنت غير متأكد
+- لا تمنع الدخول بسبب "منطقة رمادية" — هذا وقت الفرص الحقيقية
+
 يجب أن يكون ردك بتنسيق JSON فقط، هكذا:
 {
   "market_assessment": "تقييم السوق في جملة واحدة",
   "performance_assessment": "تقييم الأداء في جملة واحدة",
   "directives": {
-    "entry_allowed": true/false,
-    "score_threshold_override": 50-70,
-    "size_multiplier": 0.5-1.5,
+    "entry_allowed": true,
+    "score_threshold_override": 45-65,
+    "size_multiplier": 0.7-1.3,
     "preferred_modes": ["breakout", "pullback"],
     "avoid_symbols": ["رموز يجب تجنبها إن وجدت"],
     "max_open_positions_override": 3-8,
     "special_notes": "ملاحظات خاصة"
   },
+  ملاحظة: entry_allowed = false فقط عند خطر حقيقي (RSI>80, Breadth<0.20, انهيار)
+  في حالة الشك: اجعل entry_allowed=true وخفف size_multiplier إلى 0.7-0.8
   "telegram_message": "رسالة قصيرة للمستخدم (بالعربي، 3-5 أسطر)",
   "confidence": 0.0-1.0
 }"""
