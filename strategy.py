@@ -1672,17 +1672,53 @@ def _build_entry_plan(symbol, sig=None):
             sl_mult *= float(os.getenv("SL_MULT_MAJORS","1.25"))
         sl_atr = float(price - sl_mult*atr_abs)
 
-        # [FIX v3.0] SL هيكلي — أدنى نقطة في آخر 10 شموع
+        # [FIX v4.0] SL هيكلي احترافي — Swing Low حقيقي
         try:
-            _df_sl = get_ohlcv_cached(base, LTF_TIMEFRAME, 30)
-            if _df_sl is not None and len(_df_sl) >= 12:
-                _recent_low = float(_df_sl["low"].iloc[-12:-1].min())
-                sl_struct   = _recent_low * 0.998  # هامش 0.2% تحت أدنى نقطة
-                # استخدم الهيكلي إذا كان أقرب للسعر (حماية أفضل)
-                if sl_struct > sl_atr and sl_struct < price * 0.99:
-                    sl = sl_struct
+            _df_sl = get_ohlcv_cached(base, LTF_TIMEFRAME, 60)
+            if _df_sl is not None and len(_df_sl) >= 20:
+                _lows = _df_sl["low"].iloc[-40:-1]
+
+                # ١. إيجاد Swing Lows الحقيقية (قاع محاط بقمتين من كل جانب)
+                _swing_lows = []
+                for _k in range(3, len(_lows)-3):
+                    _l = float(_lows.iloc[_k])
+                    # قاع حقيقي = أدنى من الشموع الـ3 المجاورة من كل جانب
+                    if (_l < float(_lows.iloc[_k-1]) and
+                        _l < float(_lows.iloc[_k-2]) and
+                        _l < float(_lows.iloc[_k-3]) and
+                        _l < float(_lows.iloc[_k+1]) and
+                        _l < float(_lows.iloc[_k+2]) and
+                        _l < float(_lows.iloc[_k+3])):
+                        _swing_lows.append(_l)
+
+                if _swing_lows:
+                    # ٢. أقرب Swing Low تحت السعر الحالي
+                    _valid = [s for s in _swing_lows if s < price * 0.998]
+                    if _valid:
+                        _nearest_swing = max(_valid)  # أقرب قاع للسعر
+                        # ٣. SL = تحت الـ Swing Low بهامش 0.3%
+                        sl_struct = _nearest_swing * 0.997
+
+                        # ٤. تحقق من RR >= 1.5 قبل القبول
+                        _risk_struct = price - sl_struct
+                        _tp1_est = price + _risk_struct * 1.5
+                        _rr_ok = _risk_struct > 0 and _risk_struct < price * 0.06
+
+                        if _rr_ok and sl_struct > sl_atr:
+                            sl = sl_struct
+                        elif _rr_ok and sl_struct < sl_atr:
+                            # الهيكلي أوسع من ATR — استخدمه إذا لم يتجاوز 5%
+                            sl = sl_struct
+                        else:
+                            sl = sl_atr
+                    else:
+                        # لا يوجد Swing Low واضح → استخدم ATR مع توسيع
+                        sl = float(price - max(sl_mult, 1.5) * atr_abs)
                 else:
-                    sl = sl_atr
+                    # لا يوجد Swing Low → أدنى نقطة في 20 شمعة
+                    _recent_low = float(_df_sl["low"].iloc[-20:-1].min())
+                    sl_struct = _recent_low * 0.997
+                    sl = sl_struct if sl_struct < price * 0.98 else sl_atr
             else:
                 sl = sl_atr
         except:
@@ -1707,30 +1743,53 @@ def _build_entry_plan(symbol, sig=None):
         tps_atr.append(float(price+float(mgmt.get("TP1_ATR",1.5))*atr_abs))
         tps_atr.append(float(price+float(mgmt.get("TP2_ATR",3.0))*atr_abs))
 
-    # [FIX v3.0] TP هيكلي — أقرب مقاومة حقيقية
+    # [FIX v4.0] TP ديناميكي ذكي — Swing Highs حقيقية + RR محسوب
     tps = tps_atr
     try:
         _df_tp = get_ohlcv_cached(base, LTF_TIMEFRAME, 100)
         if _df_tp is not None and len(_df_tp) >= 50:
-            _highs = _df_tp["high"].iloc[-50:-1]  # [FIX v3.3] رُفع من 20 لـ 50 شمعة
-            _resistances = []
-            for _i in range(2, len(_highs)-2):
+            _highs = _df_tp["high"].iloc[-50:-1]
+            _risk = price - sl
+
+            # ١. إيجاد Swing Highs حقيقية (قمة محاطة بقيعان من كل جانب)
+            _swing_highs = []
+            for _i in range(3, len(_highs)-3):
                 _h = float(_highs.iloc[_i])
-                if (_h > float(_highs.iloc[_i-1]) and _h > float(_highs.iloc[_i-2]) and
-                    _h > float(_highs.iloc[_i+1]) and _h > float(_highs.iloc[_i+2])):
-                    if _h > price * 1.003:
-                        _resistances.append(_h)
-            if _resistances:
-                _resistances.sort()
-                _risk = price - sl
-                _tp1_struct = _resistances[0]
-                # استخدم الهيكلي فقط إذا RR >= 1.2
-                if _risk > 0 and (_tp1_struct - price) / _risk >= 1.2:
-                    tps = []
-                    for _r in _resistances[:MAX_TP_COUNT]:
-                        tps.append(float(_r))
+                if (_h > float(_highs.iloc[_i-1]) and
+                    _h > float(_highs.iloc[_i-2]) and
+                    _h > float(_highs.iloc[_i-3]) and
+                    _h > float(_highs.iloc[_i+1]) and
+                    _h > float(_highs.iloc[_i+2]) and
+                    _h > float(_highs.iloc[_i+3])):
+                    if _h > price * 1.002:  # فوق السعر بـ 0.2%+
+                        _swing_highs.append(_h)
+
+            if _swing_highs and _risk > 0:
+                _swing_highs.sort()
+
+                # ٢. فلتر: فقط المقاومات بـ RR >= 1.5
+                _valid_tps = []
+                for _sh in _swing_highs:
+                    _rr = (_sh - price) / _risk
+                    if _rr >= 1.5:
+                        _valid_tps.append(_sh)
+
+                if _valid_tps:
+                    tps = _valid_tps[:MAX_TP_COUNT]
+
+                    # ٣. إضافة TP بعيد إذا أقل من TP كافٍ
                     if len(tps) < 2:
-                        tps.append(float(price + float(mgmt.get("TP2_ATR",2.2))*atr_abs))
+                        tps.append(float(price + 3.0 * _risk))  # RR=3
+                    if len(tps) < 3:
+                        tps.append(float(price + 5.0 * _risk))  # RR=5
+
+                else:
+                    # لا يوجد Swing High بـ RR كافٍ → استخدم ATR مع RR جيد
+                    tps = [
+                        float(price + 1.5 * _risk),  # RR=1.5
+                        float(price + 2.5 * _risk),  # RR=2.5
+                        float(price + 4.0 * _risk),  # RR=4.0
+                    ]
     except:
         tps = tps_atr
 
