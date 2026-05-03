@@ -136,7 +136,7 @@ try:
     print(f"[strategy] ✅ مسارات دائمة: {POSITIONS_DIR}", flush=True)
 except ImportError:
     POSITIONS_DIR         = "positions"
-    CLOSED_POSITIONS_FILE = "/opt/render/project/data/closed_positions.json"
+    CLOSED_POSITIONS_FILE = "closed_positions.json"
     RISK_STATE_FILE       = "risk_state.json"
     DUST_LOG_FILE         = "dust_cleaned.json"
     print("[strategy] ⚠️ paths.py غير موجود — استخدام المسارات المحلية", flush=True)
@@ -2729,11 +2729,51 @@ def close_trade(symbol, exit_price, pnl_net, reason="MANUAL"):
     register_trade_result(float(pnl_net))
     try:
         if STRAT_TG_SEND:
+            # حساب المدة
+            _duration_str = "?"
+            try:
+                _opened = datetime.fromisoformat(pos.get("opened_at",""))
+                if _opened.tzinfo is None:
+                    _opened = _opened.replace(tzinfo=RIYADH_TZ)
+                _mins = int((now_riyadh()-_opened).total_seconds()//60)
+                _duration_str = f"{_mins} دقيقة" if _mins < 60 else f"{_mins//60}س {_mins%60}د"
+            except: pass
+
+            # تأثير على رأس المال
+            _cap_str = ""
+            try:
+                _cap = float(ACTUAL_CAPITAL_USDT) if ACTUAL_CAPITAL_USDT > 1.0 else 0.0
+                if _cap > 0:
+                    _cap_pct = float(pnl_net)/_cap*100
+                    _cap_str = f"\n💼 رأس المال: {_cap:.1f}$ ({_cap_pct:+.1f}%)"
+            except: pass
+
+            # رمز السبب
+            _reason_emoji = {
+                "SL": "🛑 Stop Loss",
+                "TP": "🎯 Take Profit",
+                "TIME_EXIT": "⌛ وقت انتهى",
+                "TIME_HOLD_MAX": "⌛ مدة احتفاظ",
+                "CLOSE_TREND_EMA50": "🧭 إغلاق ترند",
+                "MANUAL": "✋ يدوي",
+            }.get(reason, f"🚪 {reason}")
+
+            _pnl_emoji = "🟢" if float(pnl_net) >= 0 else "🔴"
+            _score = pos.get("score", "-")
+            _pattern = pos.get("pattern", "-")
+
             _tg(
-                f"🔻 خروج كامل {symbol}\n"
-                f"🚪 السبب: <code>{reason}</code>\n"
-                f"💵 P&L: <code>{float(pnl_net):+.2f} USDT</code>\n"
-                f"🎯 دخول: <code>{float(entry):.6f}</code> • خروج: <code>{float(exit_price):.6f}</code>"
+                f"━━━━━━━━━━━━━━\n"
+                f"{_pnl_emoji} <b>إغلاق {symbol}</b>\n"
+                f"━━━━━━━━━━━━━━\n"
+                f"🚪 السبب:  {_reason_emoji}\n"
+                f"📥 دخول:   <code>{float(entry):.6f}</code>\n"
+                f"📤 خروج:   <code>{float(exit_price):.6f}</code>\n"
+                f"💵 P&L:    <code>{float(pnl_net):+.2f}$</code> ({float(pnl_pct)*100:+.2f}%)\n"
+                f"⏱ المدة:  {_duration_str}\n"
+                f"📊 Score:  {_score} | {_pattern}"
+                f"{_cap_str}\n"
+                f"━━━━━━━━━━━━━━"
             )
     except: pass
     clear_position(symbol)
