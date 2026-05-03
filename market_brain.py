@@ -94,7 +94,7 @@ def _write_json(path, data):
 
 def _load_closed_trades() -> List[Dict]:
     """تحميل آخر N صفقة مغلقة"""
-    trades = _read_json("closed_positions.json", [])
+    trades = _read_json("/opt/render/project/data/closed_positions.json", [])
     return trades[-BRAIN_LOOKBACK_TRADES:] if trades else []
 
 
